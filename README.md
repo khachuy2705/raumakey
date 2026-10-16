@@ -1,0 +1,20 @@
+# Raumakey
+
+Raumakey is a planned GPL-compatible Vietnamese input method for Windows, implemented in Rust with native Win32 and TSF integration.
+
+The project is currently in the approved design and implementation-planning stage. No product code has been written yet.
+
+## Target
+
+- Windows 10 and later
+- Runtime acceptance: x86_64
+- Compile gates: i686, x86_64, and ARM64 MSVC targets
+- Native Win32 UI, tray controller, COM TSF TIP, fallback input transport, macros, conversion, configuration, and read-only EVKey migration
+
+## Documents
+
+- Design: [`docs/superpowers/specs/2026-10-16-raumakey-design.md`](docs/superpowers/specs/2026-10-16-raumakey-design.md)
+- Clean-room behavioral reference: [`docs/reference/evkey_clean_room_spec.md`](docs/reference/evkey_clean_room_spec.md)
+- Compatibility matrix: [`docs/reference/evkey_compatibility_test_matrix.md`](docs/reference/evkey_compatibility_test_matrix.md)
+
+The original reconstruction dossier is retained locally under `restricted_evidence/` and excluded from Git. Implementation agents are prohibited from reading it.
