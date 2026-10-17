@@ -1,0 +1,213 @@
+# Matrix rows B21–B23 and B29 (modifiers and secure fields) of
+# docs/reference/evkey_compatibility_test_matrix.md, transcribed from
+# crates/raumakey-engine/tests/matrix.rs. Schema and evidence rules: raumakey_tests::vectors.
+#
+# Not transcribed, because no key script expresses them: shortcuts with Alt or Win and the
+# Alt+Enter and hard-reset separators of B21, Caps Lock in B23, and the source's checks that a
+# shortcut or a secure field never looks up a macro.
+schema_version = 1
+
+# B21: a Ctrl shortcut bypasses the engine and resets it; the next word starts fresh.
+
+[[vector]]
+id = "b21-ctrl-shortcut-passes-reset"
+rows = ["B21"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::b21_shortcuts_bypass_the_engine_and_reset"
+method = "telex"
+keys = "a{CTRL+c}a"
+transactions = [
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,true)',
+    'Tx(0,"",false,None,false)',
+]
+text = "aa"
+
+# B21: Ctrl+Space, Ctrl+Tab, and Ctrl+Enter are shortcuts, not word boundaries: no macro
+# expansion and no restore.
+
+[[vector]]
+id = "b21-ctrl-space-after-a-trigger"
+rows = ["B21"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::b21_shortcut_separators_bypass_macros_and_restore"
+method = "telex"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko{CTRL+SPACE}"
+steps = [{ index = 2, transaction = 'Tx(0,"",false,None,true)' }]
+text = "ko "
+idle = true
+
+[[vector]]
+id = "b21-ctrl-tab-after-a-trigger"
+rows = ["B21"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::b21_shortcut_separators_bypass_macros_and_restore"
+method = "telex"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko{CTRL+TAB}"
+steps = [{ index = 2, transaction = 'Tx(0,"",false,None,true)' }]
+text = "ko\t"
+idle = true
+
+[[vector]]
+id = "b21-ctrl-space-skips-the-restore"
+rows = ["B21"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::b21_shortcut_separators_bypass_macros_and_restore"
+method = "telex"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "after{CTRL+SPACE}"
+steps = [{ index = 5, transaction = 'Tx(0,"",false,None,true)' }]
+text = "àter "
+idle = true
+
+[[vector]]
+id = "b21-next-word-after-ctrl-space"
+rows = ["B21"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::b21_shortcut_separators_bypass_macros_and_restore"
+method = "telex"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko{CTRL+SPACE}a"
+transactions = [
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,true)',
+    'Tx(0,"",false,None,false)',
+]
+text = "ko a"
+
+[[vector]]
+id = "b21-ctrl-enter-skips-the-restore"
+rows = ["B21"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::b21_shortcut_separators_bypass_macros_and_restore"
+method = "telex"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "after{CTRL+ENTER}"
+text = "àter\r"
+
+[[vector]]
+id = "b21-ctrl-space-vietnamese-off"
+rows = ["B21"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::b21_shortcut_separators_bypass_macros_and_restore"
+method = "telex"
+options = { enabled = false, macros_when_disabled = true }
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko{CTRL+SPACE}"
+text = "ko "
+
+[[vector]]
+id = "b21-ctrl-tab-vietnamese-off"
+rows = ["B21"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::b21_shortcut_separators_bypass_macros_and_restore"
+method = "telex"
+options = { enabled = false, macros_when_disabled = true }
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko{CTRL+TAB}"
+text = "ko\t"
+
+# B22: AltGr characters are typed once and go through the engine like any character.
+
+[[vector]]
+id = "b22-altgr-char-continues-word"
+rows = ["B22"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::b22_altgr_characters_are_typed_once"
+method = "telex"
+keys = "a{ALTGR+@}"
+steps = [{ index = 1, transaction = 'Tx(0,"",false,None,false)' }]
+text = "a@"
+idle = false
+
+[[vector]]
+id = "b22-altgr-letters-transform"
+rows = ["B22"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::b22_altgr_characters_are_typed_once"
+method = "telex"
+keys = "{ALTGR+a}{ALTGR+a}"
+text = "â"
+
+[[vector]]
+id = "b22-altgr-euro-sign"
+rows = ["B22"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::b22_altgr_characters_are_typed_once"
+method = "telex"
+keys = "{ALTGR+€}"
+text = "€"
+
+# B23: the case comes from the typed text.
+
+[[vector]]
+id = "b23-upper-case-word"
+rows = ["B23"]
+evidence = ["baseline", "proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::b23_case_comes_from_the_typed_text"
+method = "telex"
+keys = "VIEETJ"
+text = "VIỆT"
+
+[[vector]]
+id = "b23-title-case-word"
+rows = ["B23"]
+evidence = ["baseline", "proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::b23_case_comes_from_the_typed_text"
+method = "telex"
+keys = "Vieetj"
+text = "Việt"
+
+[[vector]]
+id = "b23-mixed-case-word"
+rows = ["B23"]
+evidence = ["baseline", "proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::b23_case_comes_from_the_typed_text"
+method = "telex"
+keys = "vIEETJ"
+text = "vIỆT"
+
+[[vector]]
+id = "b23-upper-case-stroke"
+rows = ["B23"]
+evidence = ["baseline", "proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::b23_case_comes_from_the_typed_text"
+method = "telex"
+keys = "DDAAY"
+text = "ĐÂY"
+
+[[vector]]
+id = "b23-title-case-stroke"
+rows = ["B23"]
+evidence = ["baseline", "proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::b23_case_comes_from_the_typed_text"
+method = "telex"
+keys = "DDaay"
+text = "Đây"
+
+# B29: in a secure field every key passes through with a reset (transform, macros, and
+# backspace history are bypassed); after the field Telex works again.
+
+[[vector]]
+id = "b29-secure-field-bypasses-all"
+rows = ["B29"]
+evidence = ["proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::b29_secure_fields_bypass_everything"
+method = "telex"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "{SECURE}aas ko{SPACE}{BS}{/SECURE}aa"
+steps = [
+    { index = 0, transaction = 'Tx(0,"",false,None,true)' },
+    { index = 1, transaction = 'Tx(0,"",false,None,true)' },
+    { index = 2, transaction = 'Tx(0,"",false,None,true)' },
+    { index = 3, transaction = 'Tx(0,"",false,None,true)' },
+    { index = 4, transaction = 'Tx(0,"",false,None,true)' },
+    { index = 5, transaction = 'Tx(0,"",false,None,true)' },
+    { index = 6, transaction = 'Tx(0,"",false,None,true)' },
+    { index = 7, transaction = 'Tx(0,"",false,None,true)' },
+    { index = 8, transaction = 'Tx(0,"",false,None,true)' },
+]
+text = "aas koâ"

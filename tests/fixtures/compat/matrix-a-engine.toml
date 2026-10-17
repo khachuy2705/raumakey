@@ -1,0 +1,676 @@
+# Matrix rows A1–A18 (engine and input methods) of
+# docs/reference/evkey_compatibility_test_matrix.md, transcribed from
+# crates/raumakey-engine/tests/matrix.rs. Schema and evidence rules: raumakey_tests::vectors.
+schema_version = 1
+
+# A1–A7: the matrix gives the transactions and the final text.
+
+[[vector]]
+id = "a01-telex-aa"
+rows = ["A1"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a01_telex_double_a_makes_circumflex"
+method = "telex"
+keys = "aa"
+transactions = ['Tx(0,"",false,None,false)', 'Tx(1,"â",true,None,false)']
+text = "â"
+
+[[vector]]
+id = "a02-telex-dd"
+rows = ["A2"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a02_telex_double_d_makes_stroke"
+method = "telex"
+keys = "dd"
+transactions = ['Tx(0,"",false,None,false)', 'Tx(1,"đ",true,None,false)']
+text = "đ"
+
+[[vector]]
+id = "a03-telex-as"
+rows = ["A3"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a03_telex_tone_key"
+method = "telex"
+keys = "as"
+transactions = ['Tx(0,"",false,None,false)', 'Tx(1,"á",true,None,false)']
+text = "á"
+
+[[vector]]
+id = "a04-vni-a6"
+rows = ["A4"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a04_a05_vni_marks_and_tones"
+method = "vni"
+keys = "a6"
+transactions = ['Tx(0,"",false,None,false)', 'Tx(1,"â",true,None,false)']
+text = "â"
+
+[[vector]]
+id = "a05-vni-a1"
+rows = ["A5"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a04_a05_vni_marks_and_tones"
+method = "vni"
+keys = "a1"
+transactions = ['Tx(0,"",false,None,false)', 'Tx(1,"á",true,None,false)']
+text = "á"
+
+[[vector]]
+id = "a06-viqr-circumflex"
+rows = ["A6"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a06_a07_viqr_marks_and_tones"
+method = "viqr"
+keys = "a^"
+transactions = ['Tx(0,"",false,None,false)', 'Tx(1,"â",true,None,false)']
+text = "â"
+
+[[vector]]
+id = "a07-viqr-acute"
+rows = ["A7"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a06_a07_viqr_marks_and_tones"
+method = "viqr"
+keys = "a'"
+transactions = ['Tx(0,"",false,None,false)', 'Tx(1,"á",true,None,false)']
+text = "á"
+
+# A8: a VIQR backslash escapes the next key. Escaped boundary punctuation commits the word
+# (design §20.9); the reset flag of the escaped apostrophe's transaction follows from it. Plan
+# §3.6 would keep the escaped key in the word, so every vector whose expected values change
+# without the decision (keys after the escaped key, or asserted transactions) names it;
+# tests/compat_vectors.rs checks this.
+
+[[vector]]
+id = "a08-viqr-escaped-apostrophe"
+rows = ["A8"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "\\'"
+transactions = ['Tx(0,"",false,None,false)', "Tx(1,\"'\",true,None,true)"]
+text = "'"
+
+[[vector]]
+id = "a08-viqr-escape-after-a-letter"
+rows = ["A8"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "a\\'"
+text = "a'"
+
+[[vector]]
+id = "a08-viqr-escaped-period-space"
+rows = ["A8"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "Nam\\.{SPACE}"
+text = "Nam. "
+
+[[vector]]
+id = "a08-viqr-escaped-period-commits"
+rows = ["A8"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "a\\."
+transactions = [
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(1,".",true,None,true)',
+]
+text = "a."
+
+[[vector]]
+id = "a08-viqr-escape-then-a-word"
+rows = ["A8"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "\\'a'"
+text = "'á"
+
+[[vector]]
+id = "a08-viqr-escaped-parenthesis"
+rows = ["A8"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "ba\\("
+text = "ba("
+
+[[vector]]
+id = "a08-viqr-escaped-backslash"
+rows = ["A8"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "\\\\"
+text = "\\"
+
+[[vector]]
+id = "a08-viqr-toned-word-then-period"
+rows = ["A8"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "ho.c\\.{SPACE}"
+text = "học. "
+
+[[vector]]
+id = "a08-viqr-escaped-question-mark"
+rows = ["A8"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "Vie^.t\\?{SPACE}"
+text = "Việt? "
+
+[[vector]]
+id = "a08-viqr-escaped-mark-then-tone"
+rows = ["A8"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "\\^a'"
+text = "^a'"
+
+[[vector]]
+id = "a08-viqr-vowel-then-escaped-mark"
+rows = ["A8"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "a\\^"
+text = "a^"
+
+[[vector]]
+id = "a08-viqr-escaped-mark-then-space"
+rows = ["A8"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "a\\^{SPACE}"
+text = "a^ "
+
+[[vector]]
+id = "a08-viqr-escaped-d"
+rows = ["A8"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "\\dd"
+text = "dd"
+
+[[vector]]
+id = "a08-viqr-d-escaped-d-d"
+rows = ["A8"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "d\\dd"
+text = "ddd"
+
+[[vector]]
+id = "a08-viqr-escaped-d-then-tone"
+rows = ["A8"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "\\da'"
+text = "da'"
+
+[[vector]]
+id = "a08-viqr-escaped-hyphen"
+rows = ["A8"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "e\\-mail{SPACE}"
+text = "e-mail "
+
+[[vector]]
+id = "a08-viqr-escaped-asterisk"
+rows = ["A8"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "x\\*2"
+text = "x*2"
+
+[[vector]]
+id = "a08-viqr-unbound-key-disarms"
+rows = ["A8"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "\\b"
+text = "\\b"
+
+[[vector]]
+id = "a08-viqr-unbound-key-then-a-tone"
+rows = ["A8"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a08_viqr_backslash_escapes_the_next_key"
+method = "viqr"
+keys = "\\ba'"
+text = "\\ba'"
+
+# A9: an action that does not apply is typed literally. The source also checks that every
+# transaction passes through or ends with the key; that per-step shape is not transcribed.
+
+[[vector]]
+id = "a09-telex-tone-no-vowel"
+rows = ["A9"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a09_inapplicable_actions_never_lose_keys"
+method = "telex"
+keys = "bs"
+text = "bs"
+
+[[vector]]
+id = "a09-telex-lone-z"
+rows = ["A9"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a09_inapplicable_actions_never_lose_keys"
+method = "telex"
+keys = "z"
+text = "z"
+
+[[vector]]
+id = "a09-telex-z-no-vowel"
+rows = ["A9"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a09_inapplicable_actions_never_lose_keys"
+method = "telex"
+keys = "bz"
+text = "bz"
+
+[[vector]]
+id = "a09-telex-dot-below-no-vowel"
+rows = ["A9"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a09_inapplicable_actions_never_lose_keys"
+method = "telex"
+keys = "pj"
+text = "pj"
+
+[[vector]]
+id = "a09-vni-tone-no-vowel"
+rows = ["A9"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a09_inapplicable_actions_never_lose_keys"
+method = "vni"
+keys = "b1"
+text = "b1"
+
+[[vector]]
+id = "a09-vni-circumflex-no-vowel"
+rows = ["A9"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a09_inapplicable_actions_never_lose_keys"
+method = "vni"
+keys = "b6"
+text = "b6"
+
+[[vector]]
+id = "a09-vni-breve-on-e"
+rows = ["A9"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a09_inapplicable_actions_never_lose_keys"
+method = "vni"
+keys = "e8"
+text = "e8"
+
+[[vector]]
+id = "a09-vni-horn-on-i"
+rows = ["A9"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a09_inapplicable_actions_never_lose_keys"
+method = "vni"
+keys = "i7"
+text = "i7"
+
+[[vector]]
+id = "a09-vni-stroke-on-b"
+rows = ["A9"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a09_inapplicable_actions_never_lose_keys"
+method = "vni"
+keys = "b9"
+text = "b9"
+
+[[vector]]
+id = "a09-viqr-tone-no-vowel"
+rows = ["A9"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a09_inapplicable_actions_never_lose_keys"
+method = "viqr"
+keys = "b'"
+text = "b'"
+
+[[vector]]
+id = "a09-viqr-breve-on-e"
+rows = ["A9"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a09_inapplicable_actions_never_lose_keys"
+method = "viqr"
+keys = "e("
+text = "e("
+
+[[vector]]
+id = "a09-viqr-horn-on-b"
+rows = ["A9"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a09_inapplicable_actions_never_lose_keys"
+method = "viqr"
+keys = "b+"
+text = "b+"
+
+[[vector]]
+id = "a09-viqr-lone-circumflex"
+rows = ["A9"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a09_inapplicable_actions_never_lose_keys"
+method = "viqr"
+keys = "^"
+text = "^"
+
+# A10, A11: the qu and gi onsets.
+
+[[vector]]
+id = "a10-qu-onset"
+rows = ["A10"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a10_qu_onset_keeps_tone_off_the_u"
+method = "telex"
+keys = "quas"
+transactions = [
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(1,"á",true,None,false)',
+]
+text = "quá"
+
+[[vector]]
+id = "a11-gi-onset"
+rows = ["A11"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a11_gi_onset"
+method = "telex"
+keys = "gias"
+transactions = [
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(1,"á",true,None,false)',
+]
+text = "giá"
+
+# A12: the tone follows the placement style and the coda.
+
+[[vector]]
+id = "a12-old-tone-moves-with-coda"
+rows = ["A12"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a12_tone_follows_style_and_coda"
+method = "telex"
+keys = "hoafn"
+transactions = [
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(2,"òa",true,None,false)',
+    'Tx(2,"oàn",true,None,false)',
+]
+text = "hoàn"
+
+[[vector]]
+id = "a12-modern-coda-appended"
+rows = ["A12"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a12_tone_follows_style_and_coda"
+method = "telex"
+options = { modern_tone = true }
+keys = "hoafn"
+transactions = [
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(1,"à",true,None,false)',
+    'Tx(0,"",false,None,false)',
+]
+text = "hoàn"
+
+[[vector]]
+id = "a12-old-hoafng"
+rows = ["A12"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a12_tone_follows_style_and_coda"
+method = "telex"
+keys = "hoafng"
+text = "hoàng"
+
+[[vector]]
+id = "a12-modern-hoafng"
+rows = ["A12"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a12_tone_follows_style_and_coda"
+method = "telex"
+options = { modern_tone = true }
+keys = "hoafng"
+text = "hoàng"
+
+[[vector]]
+id = "a12-old-toanf"
+rows = ["A12"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a12_tone_follows_style_and_coda"
+method = "telex"
+keys = "toanf"
+text = "toàn"
+
+[[vector]]
+id = "a12-modern-toanf"
+rows = ["A12"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a12_tone_follows_style_and_coda"
+method = "telex"
+options = { modern_tone = true }
+keys = "toanf"
+text = "toàn"
+
+[[vector]]
+id = "a12-old-khoern"
+rows = ["A12"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a12_tone_follows_style_and_coda"
+method = "telex"
+keys = "khoern"
+text = "khoẻn"
+
+[[vector]]
+id = "a12-modern-khoern"
+rows = ["A12"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a12_tone_follows_style_and_coda"
+method = "telex"
+options = { modern_tone = true }
+keys = "khoern"
+text = "khoẻn"
+
+[[vector]]
+id = "a12-old-thuyr"
+rows = ["A12"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a12_tone_follows_style_and_coda"
+method = "telex"
+keys = "thuyr"
+text = "thủy"
+
+[[vector]]
+id = "a12-modern-thuyr"
+rows = ["A12"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a12_tone_follows_style_and_coda"
+method = "telex"
+options = { modern_tone = true }
+keys = "thuyr"
+text = "thuỷ"
+
+[[vector]]
+id = "a12-old-huyf"
+rows = ["A12"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a12_tone_follows_style_and_coda"
+method = "telex"
+keys = "huyf"
+text = "hùy"
+
+[[vector]]
+id = "a12-modern-huyf"
+rows = ["A12"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a12_tone_follows_style_and_coda"
+method = "telex"
+options = { modern_tone = true }
+keys = "huyf"
+text = "huỳ"
+
+[[vector]]
+id = "a12-old-huyfnh"
+rows = ["A12"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a12_tone_follows_style_and_coda"
+method = "telex"
+keys = "huyfnh"
+text = "huỳnh"
+
+[[vector]]
+id = "a12-modern-huyfnh"
+rows = ["A12"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a12_tone_follows_style_and_coda"
+method = "telex"
+options = { modern_tone = true }
+keys = "huyfnh"
+text = "huỳnh"
+
+# A13, A14: a repeated action undoes itself and keeps the key.
+
+[[vector]]
+id = "a13-repeated-tone"
+rows = ["A13"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a13_repeated_tone_undoes_and_keeps_the_key"
+method = "telex"
+keys = "ass"
+transactions = [
+    'Tx(0,"",false,None,false)',
+    'Tx(1,"á",true,None,false)',
+    'Tx(1,"as",true,None,false)',
+]
+text = "as"
+
+[[vector]]
+id = "a14-repeated-mark"
+rows = ["A14"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a14_repeated_mark_undoes_and_keeps_the_key"
+method = "telex"
+keys = "aaa"
+transactions = [
+    'Tx(0,"",false,None,false)',
+    'Tx(1,"â",true,None,false)',
+    'Tx(1,"aa",true,None,false)',
+]
+text = "aa"
+
+# A15, A16: an invalid transformed word at a boundary. The options repeat the defaults that
+# the matrix names as A15's precondition.
+
+[[vector]]
+id = "a15-invalid-word-is-restored"
+rows = ["A15"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a15_invalid_converted_word_is_restored_at_the_boundary"
+method = "telex"
+options = { spell_check = true, auto_restore_invalid = true }
+keys = "after{SPACE}"
+steps = [{ index = 5, transaction = 'Tx(4,"after ",true,None,true)' }]
+text = "after "
+
+[[vector]]
+id = "a16-no-restore-when-disabled"
+rows = ["A16"]
+evidence = ["baseline", "proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::a16_no_restore_when_disabled"
+method = "telex"
+options = { auto_restore_invalid = false }
+keys = "after{SPACE}"
+steps = [{ index = 5, transaction = 'Tx(0,"",false,None,true)' }]
+text = "àter "
+
+# A17: semantic backspace.
+
+[[vector]]
+id = "a17-backspace-restores-state"
+rows = ["A17"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a17_semantic_backspace_restores_the_previous_state"
+method = "telex"
+keys = "aa{BS}"
+steps = [{ index = 2, transaction = 'Tx(1,"a",true,None,false)' }]
+text = "a"
+owned = "a"
+
+[[vector]]
+id = "a17-backspaces-empty-the-word"
+rows = ["A17"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::a17_semantic_backspace_restores_the_previous_state"
+method = "telex"
+keys = "aa{BS}{BS}{BS}"
+text = ""
+idle = true
+
+# A18: 33 keys, then 35 backspaces, with the context limit raised so that the word stays
+# owned. Backspaces 1–32 restore the snapshots (the source checks each against the text after
+# the matching key; that relation is not transcribed); the oldest snapshot was evicted, so
+# backspace 33 falls back to a pass-through with reset (plan §3.9 replaces the matrix's legacy
+# op 2 fallback, design §20.5), and the last two pass through.
+
+[[vector]]
+id = "a18-history-is-bounded"
+rows = ["A18"]
+evidence = ["proposed", "raumakey-decision"]
+decisions = ["plan §3.9"]
+source = "crates/raumakey-engine/tests/matrix.rs::a18_history_is_bounded_and_falls_back_to_pass_through"
+method = "telex"
+options = { context_limit_codepoints = 64 }
+keys = """
+ddaawbchklmnpqtvbchklmnpqtvbchklm\
+{BS}{BS}{BS}{BS}{BS}\
+{BS}{BS}{BS}{BS}{BS}\
+{BS}{BS}{BS}{BS}{BS}\
+{BS}{BS}{BS}{BS}{BS}\
+{BS}{BS}{BS}{BS}{BS}\
+{BS}{BS}{BS}{BS}{BS}\
+{BS}{BS}{BS}{BS}{BS}"""
+steps = [
+    { index = 65, transaction = 'Tx(0,"",false,None,true)' },
+    { index = 66, transaction = 'Tx(0,"",false,None,false)' },
+    { index = 67, transaction = 'Tx(0,"",false,None,false)' },
+]
+text = ""
+idle = true

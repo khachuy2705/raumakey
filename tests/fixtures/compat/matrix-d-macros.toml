@@ -1,0 +1,470 @@
+# Matrix rows D47–D54 (macros and Unicode) of docs/reference/evkey_compatibility_test_matrix.md,
+# transcribed from crates/raumakey-engine/tests/matrix.rs. Schema and evidence rules:
+# raumakey_tests::vectors.
+#
+# The source runs these rows with a macro lookup double; here they run with the real
+# raumakey_macro::MacroTable. Its checks of the double's recorded lookups are not transcribed.
+# NFD texts are written with \u escapes, never as raw combining marks, which are
+# invisible and which an editor that normalizes on save would change (tests/compat_vectors.rs
+# checks this). The source asserts that the text is NFD and canonically equivalent to the NFC
+# text, and the NFD form is the only such string.
+schema_version = 1
+
+# D47: a trigger at a boundary expands.
+
+[[vector]]
+id = "d47-trigger-and-space"
+rows = ["D47", "D50"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d47_macro_expands_at_a_boundary"
+method = "telex"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko{SPACE}"
+transactions = [
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(2,"không ",true,None,true)',
+]
+text = "không "
+
+[[vector]]
+id = "d47-trigger-and-comma"
+rows = ["D47"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d47_macro_expands_at_a_boundary"
+method = "telex"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko,"
+text = "không,"
+
+[[vector]]
+id = "d47-trigger-and-enter"
+rows = ["D47"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d47_macro_expands_at_a_boundary"
+method = "telex"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko{ENTER}"
+steps = [{ index = 2, transaction = 'Tx(2,"không",true,Some(RETURN),true)' }]
+text = "không\r"
+
+[[vector]]
+id = "d47-trigger-and-tab"
+rows = ["D47"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d47_macro_expands_at_a_boundary"
+method = "telex"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko{TAB}"
+steps = [{ index = 2, transaction = 'Tx(2,"không",true,Some(TAB),true)' }]
+text = "không\t"
+
+# D48: a trigger inside a word does not expand.
+
+[[vector]]
+id = "d48-letter-before-the-trigger"
+rows = ["D48"]
+evidence = ["baseline", "proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::d48_trigger_inside_a_word_does_not_expand"
+method = "telex"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "xko{SPACE}"
+text = "xko "
+
+[[vector]]
+id = "d48-letter-after-the-trigger"
+rows = ["D48"]
+evidence = ["baseline", "proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::d48_trigger_inside_a_word_does_not_expand"
+method = "telex"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "kon{SPACE}"
+text = "kon "
+
+[[vector]]
+id = "d48-no-boundary"
+rows = ["D48"]
+evidence = ["baseline", "proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::d48_trigger_inside_a_word_does_not_expand"
+method = "telex"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "kok"
+text = "kok"
+
+# D49: Shift+Space commits the word unchanged (D7); a VIQR-escaped boundary commits it
+# literally (design §20.9).
+
+[[vector]]
+id = "d49-shift-space-commits-trigger"
+rows = ["D49"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["D7"]
+source = "crates/raumakey-engine/tests/matrix.rs::d49_shift_space_and_escape_commit_without_expansion"
+method = "telex"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko{SHIFT+SPACE}"
+transactions = [
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,true)',
+]
+text = "ko "
+
+[[vector]]
+id = "d49-shift-space-skips-restore"
+rows = ["D49"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["D7"]
+source = "crates/raumakey-engine/tests/matrix.rs::d49_shift_space_and_escape_commit_without_expansion"
+method = "telex"
+keys = "after{SHIFT+SPACE}"
+text = "àter "
+
+[[vector]]
+id = "d49-viqr-escaped-period-commits"
+rows = ["D49"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/matrix.rs::d49_shift_space_and_escape_commit_without_expansion"
+method = "viqr"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko\\."
+text = "ko."
+
+# D50: the replacement follows the case of the typed trigger (lower case: d47-trigger-and-space).
+
+[[vector]]
+id = "d50-title-case-trigger"
+rows = ["D50"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d50_macro_case_follows_the_trigger"
+method = "telex"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "Ko{SPACE}"
+text = "Không "
+
+[[vector]]
+id = "d50-upper-case-trigger"
+rows = ["D50"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d50_macro_case_follows_the_trigger"
+method = "telex"
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "KO{SPACE}"
+text = "KHÔNG "
+
+[[vector]]
+id = "d50-exact-case-stored-trigger"
+rows = ["D50"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d50_macro_case_follows_the_trigger"
+method = "telex"
+options = { auto_case_macro = false }
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "KO{SPACE}"
+text = "KO "
+
+# D51: macros while Vietnamese mode is off.
+
+[[vector]]
+id = "d51-off-without-macros"
+rows = ["D51"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d51_macros_while_vietnamese_is_off"
+method = "telex"
+options = { enabled = false }
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "aas ko{SPACE}"
+text = "aas ko "
+
+[[vector]]
+id = "d51-off-with-macros"
+rows = ["D51"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d51_macros_while_vietnamese_is_off"
+method = "telex"
+options = { enabled = false, macros_when_disabled = true }
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "aas ko{SPACE}"
+text = "aas không "
+
+[[vector]]
+id = "d51-off-with-macros-transactions"
+rows = ["D51"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d51_macros_while_vietnamese_is_off"
+method = "telex"
+options = { enabled = false, macros_when_disabled = true }
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko{SPACE}"
+transactions = [
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(2,"không ",true,None,true)',
+]
+text = "không "
+
+[[vector]]
+id = "d51-off-with-macros-disabled"
+rows = ["D51"]
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d51_macros_while_vietnamese_is_off"
+method = "telex"
+options = { enabled = false, macros_when_disabled = true, macros_enabled = false }
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko{SPACE}"
+text = "ko "
+
+# D51 with D53: disabled-mode expansions use the output normalization; typed combining marks
+# stay as typed.
+
+[[vector]]
+id = "d51-d53-off-nfd-space"
+rows = ["D51", "D53"]
+evidence = ["baseline", "proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::d51_d53_disabled_mode_macros_use_the_output_normalization"
+method = "telex"
+options = { normalization = "nfd", enabled = false, macros_when_disabled = true }
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko{SPACE}"
+steps = [{ index = 2, transaction = "Tx(2,\"kho\u0302ng \",true,None,true)" }]
+text = "kho\u0302ng "
+
+[[vector]]
+id = "d51-d53-off-nfd-enter"
+rows = ["D51", "D53"]
+evidence = ["baseline", "proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::d51_d53_disabled_mode_macros_use_the_output_normalization"
+method = "telex"
+options = { normalization = "nfd", enabled = false, macros_when_disabled = true }
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko{ENTER}"
+steps = [{ index = 2, transaction = "Tx(2,\"kho\u0302ng\",true,Some(RETURN),true)" }]
+text = "kho\u0302ng\r"
+
+[[vector]]
+id = "d51-d53-on-nfd-space"
+rows = ["D51", "D53"]
+evidence = ["baseline", "proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::d51_d53_disabled_mode_macros_use_the_output_normalization"
+method = "telex"
+options = { normalization = "nfd", macros_when_disabled = true }
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko{SPACE}"
+text = "kho\u0302ng "
+
+# The NFC case of the source (NFC is the default) is d51-off-with-macros-transactions.
+
+[[vector]]
+id = "d51-d53-off-preserve-space"
+rows = ["D51", "D53"]
+evidence = ["baseline", "proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::d51_d53_disabled_mode_macros_use_the_output_normalization"
+method = "telex"
+options = { normalization = "preserve", enabled = false, macros_when_disabled = true }
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "ko{SPACE}"
+text = "không "
+
+[[vector]]
+id = "d51-d53-off-nfd-typed-mark-kept"
+rows = ["D51", "D53"]
+evidence = ["baseline", "proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::d51_d53_disabled_mode_macros_use_the_output_normalization"
+method = "telex"
+options = { normalization = "nfd", enabled = false, macros_when_disabled = true }
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "o\u0302{SPACE}"
+text = "o\u0302 "
+
+[[vector]]
+id = "d51-d53-off-nfc-typed-mark-kept"
+rows = ["D51", "D53"]
+evidence = ["baseline", "proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::d51_d53_disabled_mode_macros_use_the_output_normalization"
+method = "telex"
+options = { normalization = "nfc", enabled = false, macros_when_disabled = true }
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "o\u0302{SPACE}"
+text = "o\u0302 "
+
+# D52: NFD input matches an NFC trigger.
+
+[[vector]]
+id = "d52-nfd-input-matches-nfc"
+rows = ["D52"]
+evidence = ["proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::d52_nfd_input_matches_nfc_trigger"
+method = "telex"
+macros = [
+    { trigger = "â", replacement = "âm" },
+    { trigger = "tiếng", replacement = "tiếng Việt" },
+]
+keys = "a\u0302{SPACE}"
+text = "âm "
+
+[[vector]]
+id = "d52-nfd-output-looks-up-nfc"
+rows = ["D52"]
+evidence = ["proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::d52_nfd_input_matches_nfc_trigger"
+method = "telex"
+options = { normalization = "nfd" }
+macros = [
+    { trigger = "â", replacement = "âm" },
+    { trigger = "tiếng", replacement = "tiếng Việt" },
+]
+keys = "tieengs{SPACE}"
+text = "tie\u0302\u0301ng Vie\u0323\u0302t "
+
+# D53: NFD output is canonically equivalent to the NFC output, and deletions count UTF-16
+# units of the NFD text.
+
+[[vector]]
+id = "d53-nfd-tieengs"
+rows = ["D53"]
+evidence = ["proposed", "baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d53_nfd_output_is_canonically_equivalent_and_counts_utf16_units"
+method = "telex"
+options = { normalization = "nfd" }
+keys = "tieengs"
+steps = [
+    { index = 3, transaction = "Tx(1,\"e\u0302\",true,None,false)" },
+    { index = 6, transaction = "Tx(4,\"e\u0302\u0301ng\",true,None,false)" },
+]
+text = "tie\u0302\u0301ng"
+
+[[vector]]
+id = "d53-nfd-vieetj"
+rows = ["D53"]
+evidence = ["proposed", "baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d53_nfd_output_is_canonically_equivalent_and_counts_utf16_units"
+method = "telex"
+options = { normalization = "nfd" }
+keys = "vieetj"
+text = "vie\u0323\u0302t"
+
+[[vector]]
+id = "d53-nfd-nguwowif"
+rows = ["D53"]
+evidence = ["proposed", "baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d53_nfd_output_is_canonically_equivalent_and_counts_utf16_units"
+method = "telex"
+options = { normalization = "nfd" }
+keys = "nguwowif"
+text = "ngu\u031Bo\u031B\u0300i"
+
+[[vector]]
+id = "d53-nfd-ddaay"
+rows = ["D53"]
+evidence = ["proposed", "baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d53_nfd_output_is_canonically_equivalent_and_counts_utf16_units"
+method = "telex"
+options = { normalization = "nfd" }
+keys = "Ddaay"
+text = "Đa\u0302y"
+
+[[vector]]
+id = "d53-nfd-upper-case-vieetj"
+rows = ["D53"]
+evidence = ["proposed", "baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d53_nfd_output_is_canonically_equivalent_and_counts_utf16_units"
+method = "telex"
+options = { normalization = "nfd" }
+keys = "VIEETJ"
+text = "VIE\u0323\u0302T"
+
+[[vector]]
+id = "d53-nfd-thuowr"
+rows = ["D53"]
+evidence = ["proposed", "baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d53_nfd_output_is_canonically_equivalent_and_counts_utf16_units"
+method = "telex"
+options = { normalization = "nfd" }
+keys = "thuowr"
+text = "thuo\u031B\u0309"
+
+[[vector]]
+id = "d53-nfd-backspace"
+rows = ["D53"]
+evidence = ["proposed", "baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d53_nfd_output_is_canonically_equivalent_and_counts_utf16_units"
+method = "telex"
+options = { normalization = "nfd" }
+keys = "aa{BS}"
+text = "a"
+
+[[vector]]
+id = "d53-nfd-repeated-tone"
+rows = ["D53"]
+evidence = ["proposed", "baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d53_nfd_output_is_canonically_equivalent_and_counts_utf16_units"
+method = "telex"
+options = { normalization = "nfd" }
+keys = "ass"
+text = "as"
+
+[[vector]]
+id = "d53-nfd-hoafn"
+rows = ["D53"]
+evidence = ["proposed", "baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d53_nfd_output_is_canonically_equivalent_and_counts_utf16_units"
+method = "telex"
+options = { normalization = "nfd" }
+keys = "hoafn"
+text = "hoa\u0300n"
+
+[[vector]]
+id = "d53-nfd-restore"
+rows = ["D53"]
+evidence = ["proposed", "baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d53_nfd_output_is_canonically_equivalent_and_counts_utf16_units"
+method = "telex"
+options = { normalization = "nfd" }
+keys = "after{SPACE}"
+text = "after "
+
+[[vector]]
+id = "d53-preserve-tieengs"
+rows = ["D53"]
+evidence = ["proposed", "baseline"]
+source = "crates/raumakey-engine/tests/matrix.rs::d53_nfd_output_is_canonically_equivalent_and_counts_utf16_units"
+method = "telex"
+options = { normalization = "preserve" }
+keys = "tieengs"
+text = "tiếng"
+
+# D54: supplementary scalars are never split; the engine deletes only what it owns.
+
+[[vector]]
+id = "d54-backspaces-stop-at-the-emoji"
+rows = ["D54"]
+evidence = ["proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::d54_supplementary_scalars_are_never_split"
+method = "telex"
+initial_text = "😀"
+keys = "aa{BS}{BS}{BS}"
+steps = [
+    { index = 3, transaction = 'Tx(1,"",true,None,false)' },
+    { index = 4, transaction = 'Tx(0,"",false,None,false)' },
+]
+text = ""
+
+[[vector]]
+id = "d54-emoji-then-a-word"
+rows = ["D54"]
+evidence = ["proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::d54_supplementary_scalars_are_never_split"
+method = "telex"
+keys = "😀{SPACE}tieengs"
+text = "😀 tiếng"
+
+[[vector]]
+id = "d54-backspaces-after-an-emoji"
+rows = ["D54"]
+evidence = ["proposed"]
+source = "crates/raumakey-engine/tests/matrix.rs::d54_supplementary_scalars_are_never_split"
+method = "telex"
+keys = "😀aa{BS}{BS}"
+steps = [{ index = 4, transaction = 'Tx(1,"",true,None,false)' }]
+text = "😀"

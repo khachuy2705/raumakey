@@ -27,14 +27,19 @@ raumakey-config.workspace = true
 raumakey-policy.workspace = true
 raumakey-ipc.workspace = true
 raumakey-converter.workspace = true
-raumakey-migrate.workspace = true
+crc32fast.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+unicode-normalization.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows.workspace = true
+# The runner reads the OS build and architecture through its read-only wrappers.
+raumakey-windows.workspace = true
+
+[build-dependencies]
+# build.rs embeds the runner's manifest, version information, and icon (Windows MSVC only).
+raumakey-resources.workspace = true
 
 [dev-dependencies]
-proptest.workspace = true
 tempfile.workspace = true

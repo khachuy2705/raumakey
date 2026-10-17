@@ -1007,24 +1007,25 @@ behavior was verified in a Windows host application (§0 rule 6).
   gaps in §14.2 and the defects in §14.4. `raumakey-migrate`, `raumakey-windows`, and `xtask` are
   mostly done. `xtask` includes the release-gate evidence contract of §12. The TIP has its
   platform-independent session core (`raumakey_tip::session`), tested with fakes.
+  `raumakey-tests` has the fuzz smoke suite, a macro/engine suite with the real `MacroTable`,
+  the compatibility vectors, and the runner's `vectors` mode.
 - **Not done:** the controller (`raumakey.exe`) is an empty stub and the TIP
-  (`raumakey_tip.dll`) has no COM layer, so Raumakey cannot be installed or used.
-  `raumakey-tests` is a stub, and `fuzz/`, `tests/fixtures/`, and `tests/windows/` do not exist.
-- **Gates:** `cargo xtask ci` fails by design until the `fuzz_smoke` target exists (§12);
-  `ci --no-fuzz` passes (§14.6). Neither "cross-build verified" nor "runtime x86_64 verified"
-  can be claimed (design §19).
+  (`raumakey_tip.dll`) has no COM layer, so Raumakey cannot be installed or used. The `fuzz/`
+  workspace, the runner's `live` mode, and `tests/windows/` do not exist.
+- **Gates:** `cargo xtask ci` passes, including the fuzz smoke suite (§14.6). Neither
+  "cross-build verified" nor "runtime x86_64 verified" can be claimed (design §19).
 
 ### 14.2 By stage
 
 | Stage | Status | Done | Not done |
 |---|---|---|---|
 | 1 | Done | Workspace, toolchain pin (Rust 1.99.1, three MSVC targets), `LICENSE`, `THIRD_PARTY.md`, `deny.toml`, `raumakey-model` | `THIRD_PARTY.md` corrections (design §20.6 item 9); §1.1 and §1.3 do not match the manifests |
-| 2 | Done (library) | `raumakey-engine` with every §3.10 golden vector; `raumakey-macro` | No test runs the engine with the real `MacroTable`; the Circumflex fallback with spell checking off has no test (design §20.8 item 9); the macro defects in §14.4 items 1, 2, and 4 |
+| 2 | Done (library) | `raumakey-engine` with every §3.10 golden vector; `raumakey-macro`; the engine runs with the real `MacroTable` in `tests/tests/macro_engine.rs` | The Circumflex fallback with spell checking off has no test (design §20.8 item 9); the macro defects in §14.4 items 1, 2, and 4 |
 | 3 | Mostly done (library) | `raumakey-config`, `raumakey-converter`, `raumakey-migrate` (sources, parsing, commit with rollback, idempotence) | Commit durability (design §20.7); a Windows `LegacyRegistry` adapter; default EVKey folder discovery; the `migrate` and `convert` commands |
 | 4 | Done (library) | `raumakey-policy`; `raumakey-ipc` with frames, messages, client and server sessions, backoff, and the `evkey-compat` codec | The controller's server hub and snapshot builder; the policy and the engine disagree on `Restricted` secure fields (design §20.8 item 1) |
 | 5 | Building blocks only | `raumakey-resources`; `raumakey-windows` wrappers for errors, panic guards, strings, handles, SIDs, object names, security, pipes, registry, known folders, file replacement, clipboard, input (including `GetMessageExtraInfo`), hooks, foreground, keyboard, processes, shell, task scheduler, COM apartments, single instance, legacy objects, hidden and message-only windows with the message loop and `PostMessageW`, popup menus, icons, modules, COM server support (class factory, object and lock counts), and message boxes | No `build.rs` calls `raumakey-resources`; dialogs and controls, and the building blocks of §14.5 item 3; `raumakey-controller` is `fn main() {}` |
 | 6 | Session core and registration code | TSF registration planner, executor, and verification in `raumakey-windows`, tested with fakes; the TIP's platform-independent session core (`raumakey_tip::session`: document port, key path, per-document state, mouse-press resets, probe bookkeeping, D24 while disconnected, snapshots), tested with fakes | The COM layer (§14.5 item 4); verification does not enumerate the profile (§10.4); D17 and D21 have no decision text |
-| 7 | Partial | `xtask` commands `ci`, `cross`, `inspect`, `package`, `audit`, `notices`, and `release-gate` | `raumakey-tests` (fixtures, contract suites, fuzz targets, `fuzz_smoke`, runner); `fuzz/`; PowerShell suite; manual checklist; the `xtask` items of design §20.6 item 7 that the follow-up left open (§14.5 item 7); documentation (§14.5 item 8) |
+| 7 | Partial | `xtask` commands `ci`, `cross`, `inspect`, `package`, `audit`, `notices`, and `release-gate`; `raumakey-tests`: eight fuzz targets run by `fuzz_smoke` (the seven of §12 plus configuration concurrency, matrix #46), the macro/engine suite, 202 compatibility vectors in `tests/fixtures/compat/` for the engine-level matrix rows and the §3.10 golden vectors, and `raumakey-test-runner vectors [--json]` | The other contract suites of §12 (policy rows, migration fixtures, IPC frames, legacy codec rows, converter round trips); the runner's `live` mode; `fuzz/`; PowerShell suite; manual checklist; the `xtask` items of design §20.6 item 7 that the follow-up left open (§14.5 item 7); documentation (§14.5 item 8) |
 | 8 | Not started | `xtask audit` passed in the design §20 snapshot (design §20.2; not rerun) | Hardening (design §20.7), whole-branch review, release-gate evidence |
 
 Design §20.6 item 8 is half done: the implementation is in Git (`24ba7a6` and later revisions).
@@ -1037,17 +1038,8 @@ records the failing test runs and the independent reviews of the work merged sin
 
 ### 14.3 Started, not in this revision
 
-On 2026-10-17 the following work was started in a local Git worktree on the development host
-(`target/wt/tests`, detached at `24ba7a6`; uncommitted and not pushed). It has code and tests but
-is still under review and still changing, and none of it is part of this revision. The list
-describes it as it was when this revision was written:
-
-- `raumakey-tests`: `fuzz_targets` with the seven targets of §12, `tests/fuzz_smoke.rs` with a
-  seeded PRNG, a macro/engine suite that runs the engine with the real `MacroTable`,
-  compatibility vectors in `tests/fixtures/compat/`, the runner's `vectors` mode (`live` is not
-  implemented), and a `build.rs` that gives the runner its resources.
-
-Once this work is merged, `xtask ci` can run its fuzz step, and this section must be updated.
+None. The work started on 2026-10-17 in local worktrees is reviewed and merged;
+`2026-10-17-phase1-task-notes.md` records its failing test runs and reviews.
 
 ### 14.4 Defects found after design §20
 
@@ -1060,7 +1052,8 @@ of design §20.7 is reachable with valid input. Each was confirmed against the c
    so the macro never expands (matrix #47): `v.v` never expands in Telex, VNI, or VIQR. VIQR
    binds `'`, `?`, `.`, `(`, and `\` as actions, and a user key map can bind any punctuation, so
    a VIQR trigger such as `a.` still matches through its raw keys. Decide whether validation
-   rejects such triggers or matching continues across punctuation.
+   rejects such triggers or matching continues across punctuation. Ignored `BUG` tests in
+   `tests/tests/macro_engine.rs` reproduce items 1, 2, and 4.
 2. A trigger may have up to 64 scalars (§4), but a word that takes more keys than
    `context_limit_codepoints` (default 32, range 8..=128) overflows (§3.9) and never expands.
    With the defaults no trigger of 33–64 scalars expands. Marks and tones can add up to four
@@ -1083,7 +1076,7 @@ revision commits the `xtask` fixes of the 2026-10-17 follow-up. Steps 7 and 8 do
 steps 3–6 and may run in parallel with them (§13). Every step records its failing test runs and
 its independent review (§0 rule 1, §13).
 
-1. Review and merge the work in §14.3.
+1. Done: the work started on 2026-10-17 is reviewed and merged (§14.3).
 2. Decide design §20.8 items 1–9 and §14.4 items 1, 2, and 4, record the answers as decisions
    (item 5 is answered by writing D17 and D21), and align the code and tests with them.
 3. Add the `build.rs` files and the remaining `raumakey-windows` building blocks: dialogs and
@@ -1108,9 +1101,9 @@ its independent review (§0 rule 1, §13).
    and snapshot builder, calling `verify_peer_same_user_and_session` on every connection; the
    tray, hook thread, fallback transport, and panel; opt-in diagnostics; and the `evkey-compat`
    legacy server.
-6. Finish `raumakey-tests` and the runner (`vectors`, `live`), the `fuzz/` workspace,
-   `tests/windows/Invoke-RaumakeyAcceptance.ps1`, and `MANUAL_ACCEPTANCE.md`. Run the manual
-   `#[ignore]`d `raumakey-windows` tests (10 in this revision) and keep their
+6. Finish `raumakey-tests` (the other contract suites of §12), the runner's `live` mode, the
+   `fuzz/` workspace, `tests/windows/Invoke-RaumakeyAcceptance.ps1`, and `MANUAL_ACCEPTANCE.md`.
+   Run the manual `#[ignore]`d `raumakey-windows` tests (10 in this revision) and keep their
    results as evidence.
 7. Finish `xtask`: ship notices and license texts, check the manifest's Common Controls v6,
    PerMonitorV2, and supportedOS entries in `inspect`, run the i686 tests under WOW64, compile
@@ -1127,15 +1120,16 @@ Run on 2026-10-17 on the Windows 11 x86_64 development host (Rust 1.99.1, `rust-
 | Command | Result |
 |---|---|
 | `cargo fmt --all --check` | Pass |
-| `cargo xtask ci --no-fuzz`: Clippy with `-D warnings`, default features and all five `evkey-compat` features | Pass |
-| `cargo xtask ci --no-fuzz`: `cargo test --locked --workspace` | 1,442 passed, 0 failed, 10 ignored |
-| The same tests with all five `evkey-compat` features | 1,515 passed, 0 failed, 10 ignored |
+| `cargo xtask ci`: Clippy with `-D warnings`, default features and all five `evkey-compat` features | Pass |
+| `cargo xtask ci`: `cargo test --locked --workspace` | 1,535 passed, 0 failed, 13 ignored |
+| The same tests with all five `evkey-compat` features | 1,609 passed, 0 failed, 13 ignored |
+| `cargo xtask ci`: the fuzz smoke step (`cargo test --locked -p raumakey-tests --test fuzz_smoke`) | 10 passed |
+| `cargo test --locked -p raumakey-tests --target i686-pc-windows-msvc` (WOW64) | 93 passed, 0 failed, 3 ignored |
 | `cargo test --locked -p raumakey-windows -p raumakey-tsf --target i686-pc-windows-msvc` (WOW64) | 346 passed, 0 failed, 10 ignored |
 | `cargo xtask cross` (debug: x86_64, i686, aarch64) | Pass |
+| `raumakey-test-runner vectors --json <file>` (debug, x86_64) | 202 of 202 vectors passed |
 
-The 10 ignored tests are the manual `raumakey-windows` tests (design §15.1); menu tracking and
-message boxes added two. `cargo xtask ci` without `--no-fuzz` was not rerun: the follow-up
-observed its intended failure at the missing `fuzz_smoke` target on the same `xtask` code
-(`2026-10-17-review-followup.md`, step 7), and the unit test
-`missing_fuzz_suite_fails_before_starting_ci_commands` passed in this run. PE inspection,
-packaging, and the audit were not rerun for this revision; design §20.2 has their last results.
+The 13 ignored tests are the 10 manual `raumakey-windows` tests (design §15.1) and the 3 `BUG`
+tests of §14.4. The i686 run of `raumakey-windows` and `raumakey-tsf` is from `834dbf5`; neither
+crate has changed since. PE inspection, packaging, and the audit were not rerun for this
+revision; design §20.2 has their last results.

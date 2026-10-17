@@ -19,6 +19,7 @@ rule 6).
 | `raumakey-ipc` | `RuntimeSnapshot::validate` rejects a user-defined input method whose key map the snapshot does not carry (commit `d069063`) | §14.4 item 3 |
 | `raumakey-windows` | Hidden and message-only windows with the message loop and `PostMessageW`, popup menus, icons, modules, COM server support (class factory, object and lock counts), message boxes, and `GetMessageExtraInfo` | §14.2 stage 5 |
 | `raumakey-tsf` | The platform-independent TIP session core `raumakey_tip::session`, tested with fakes | §14.2 stage 6 |
+| `raumakey-tests` | Eight fuzz targets run by `fuzz_smoke`, the macro/engine suite with the real `MacroTable`, 202 compatibility vectors, and `raumakey-test-runner vectors [--json]` | §14.2 stage 7 |
 
 ## raumakey-ipc
 
@@ -154,10 +155,53 @@ Open minor findings from the last re-review:
 
 - minor, `crates/raumakey-tsf/tests/session/gates.rs:125`: No test covers the documented rule that a local probe result is applied again to every later snapshot that lacks a record (service.rs:530-531, mod.rs:112-117).
 - minor, `crates/raumakey-tsf/src/session/mod.rs:167`: The COM-layer contract (mod.rs:167-170, record_probe docs at service.rs:524-540) only says to report each recorded result with Command::ReportProbe.
-## Verification of the merged revision
+### raumakey-tests
 
-Run on the main checkout after merging `raumakey-windows` and `raumakey-tsf` on top of
-`d069063` (plan §14.6):
+Implementation, step 1: 5 red and 10 green runs.
+
+- Red: fuzz_smoke.rs (with corpus, generators and a splitmix64 PRNG) written before raumakey_tests::fuzz_targets existed `cargo test --locked -p raumakey-tests --test fuzz_smoke` failed `fuzz_smoke (compile error E0432: unresolved import `raumakey_tests::fuzz_targets`)`. The fuzz_targets module did not exist yet;
+- Red: fuzz_targets module added with the byte reader and one panicking stub per target `cargo test --locked -p raumakey-tests --features evkey-compat --test fuzz_smoke` failed `engine_sequences`, `malformed_utf16`, `config_documents`, `macro_files`, `ipc_frames`, `legacy_sequence_wrap`, `transaction_application`, `every_target_accepts_the_empty_input_and_one_byte`. Each stub panics 'not implemented', so every target test fails at corpus entry 0.
+- Red: Reader::chance must be false for zero bytes; `cargo test --locked -p raumakey-tests --lib` failed `fuzz_targets::reader::tests::take_and_rest_stop_at_the_end`, `fuzz_targets::reader::tests::rare_choices_are_off_for_zero_bytes`. chance() treated an exhausted reader's zero bytes as yes, so short inputs almost always took the rare 8K-unit insert path.
+- Red: Ignored BUG tests for triggers the table accepts but the engine cannot reach `cargo test --locked -p raumakey-tests --test macro_engine -- --ignored` failed `d47_an_accepted_trigger_with_boundary_punctuation_expands`, `d47_an_accepted_trigger_longer_than_the_default_context_expands`. 'v.v' + space stays 'v.v ' and a 40-character trigger + space stays unexpanded in Telex, VNI and VIQR;
+- Red: Oracle mutation check: one deliberately broken expectation per target (sed/perl on copies, then restored) `cargo test --locked -p raumakey-tests --features evkey-compat --test fuzz_smoke -- <target>` failed `transaction_application`, `macro_files`, `malformed_utf16`, `legacy_sequence_wrap`, `ipc_frames`, `config_documents`, `engine_sequences`. Each mutated reference (wrong replay text, highest id wins, wrong scalar boundary, sequence+1, frames reached, TOML text comparison, suffix length) was caught;
+
+Implementation, step 2: 8 red and 4 green runs.
+
+- Red: Wrote tests/compat_vectors.rs and tests/test_runner.rs before any production code `cargo test --locked -p raumakey-tests --test compat_vectors --test test_runner` failed `compat_vectors (compile error E0432: unresolved import raumakey_tests::vectors)`, `test_runner (compile error E0432: unresolved imports raumakey_tests::runner and raumakey_tests::vectors)`. Neither module existed.
+- Red: Added vectors and runner skeletons (types, docs, stub function bodies) and the loader and executor unit tests (src/vectors/tests.rs) `cargo test --locked -p raumakey-tests --lib --test compat_vectors --test test_runner --no-fail-fast` failed `17 vectors::tests (all loader and executor tests)`, `compat_vectors::every_embedded_vector_passes`, `compat_vectors::every_engine_level_matrix_row_has_a_vector`, `compat_vectors::every_plan_golden_vector_has_a_vector`, `compat_vectors::the_embedded_list_matches_the_fixture_directory`, `14 test_runner tests (parsing, report, environment, binary)`. Stubs: parse_fixture returned Empty, run_vector returned Fail, EMBEDDED was empty and the fixture directory did not exist, parse_args returned NoCommand, the report was empty, and the binary was still fn main() {}.
+- Red: Implemented validation and the TOML loader `cargo test --locked -p raumakey-tests --lib vectors` failed `vectors::tests::ids_are_lowercase_groups_and_unique`, `vectors::tests::a_passing_vector_records_the_run`, `vectors::tests::every_mismatch_is_a_failure`, `vectors::tests::invalid_vectors_fail_setup_without_running`, `vectors::tests::vectors_run_with_the_real_macro_table_and_the_initial_text`. The four executor tests failed against the stub run_vector, as intended.
+- Red: Transcribed the 5 fixture files and filled EMBEDDED `cargo test --locked -p raumakey-tests --test compat_vectors` failed `no_two_vectors_share_a_setup`. All 203 vectors passed on their first run.
+- Red: Runner unit test for the registry-value filters, written against stub helpers `cargo test --locked -p raumakey-tests --lib runner` failed `runner::tests::registry_values_are_kept_only_in_their_documented_form`. The stub is_build_number and is_display_version returned false.
+- Red: Test that only the runner binary carries the version strings and the manifest identity, written before build.rs `cargo test --locked -p raumakey-tests --test test_runner only_the_runner` failed `only_the_runner_binary_carries_the_windows_resources`. Failed with 'no FileDescription': the runner had no version resource yet.
+- Red: Characterisation test for the executor's not-applied and owned-suffix checks, using a doctored ScriptOutcome `cargo test --locked -p raumakey-tests --lib unapplied` failed `unapplied_transactions_and_a_stray_word_are_failures (compile error E0603: function check is private)`. A mutation check had shown that no test reached these defensive checks, because the real engine never produces an unapplied transaction.
+- Red: Mutation checks: apply one fault, run the matching test, restore the file and verify its SHA-256 `python -I <scratchpad>/mutate.py <worktree> (cargo test --locked -p raumakey-tests ... per mutation)` failed `debug_output_hides_keys_texts_and_macros`, `every_embedded_vector_passes (wrong text; wrong transaction)`, `every_vector_names_an_existing_source_test`, `every_engine_level_matrix_row_has_a_vector`, `every_plan_golden_vector_has_a_vector`, `unapplied_transactions_and_a_stray_word_are_failures (2 mutations)`, `the_report_holds_every_vector_with_the_design_fields`, `the_probed_environment_names_this_process (wrong UBR value)`. 11 of 12 mutations were caught and every file was restored.
+
+First fix round: 10 red and 9 green runs.
+
+- Red: Characterise the over-limit macro defect with the new BUG-ignored test `cargo test --locked -p raumakey-tests --test macro_engine -- --ignored d47_d53_accepted_replacements_beyond_the_insert_limit_expand` failed `d47_d53_accepted_replacements_beyond_the_insert_limit_expand`. 'big{SPACE}: an accepted macro never expands' (production defect, plan §14.4 item 4).
+- Red: Loader must reject ids that are not VectorIds `cargo test --locked -p raumakey-tests --lib ids_are_diagnostic_vector_ids` failed `vectors::tests::ids_are_diagnostic_vector_ids`. 'accepted 1 vectors': a 33-byte id passed because MAX_ID_LEN was 64.
+- Red: Every embedded id must be a VectorId `cargo test --locked -p raumakey-tests --test compat_vectors every_vector_id_is_a_diagnostic_vector_id` failed `every_vector_id_is_a_diagnostic_vector_id`. 40 ids are not valid VectorIds (longer than 32 characters).
+- Red: Guard: vectors resting on the VIQR escape decision must name it `cargo test --locked -p raumakey-tests --test compat_vectors` failed `vectors_resting_on_the_viqr_escape_decision_name_it`, `the_escape_scan_follows_plan_3_6`. The guard listed exactly a08-viqr-escape-then-a-word.
+- Red: Guards: no raw combining marks in fixtures; `cargo test --locked -p raumakey-tests --test compat_vectors` failed `fixture_sources_write_combining_marks_as_escapes`, `rowless_baseline_vectors_are_plan_golden_vectors`. 20 raw-mark lines in matrix-d-macros.toml.
+- Red: Engine target must report invalid transactions after a host edit `cargo test --locked -p raumakey-tests --lib fuzz_targets::engine` failed `fuzz_targets::engine::tests::a_malformed_insert_is_a_finding_after_a_host_edit`, `fuzz_targets::engine::tests::an_insert_over_the_limit_is_a_finding_after_a_host_edit`, `fuzz_targets::engine::tests::a_replay_without_consume_is_a_finding_after_a_host_edit`. 'test did not panic as expected': the stale branch reset silently on any apply error.
+- Red: Oracle split into plan-derived and labelled model rules `cargo test --locked -p raumakey-tests --lib fuzz_targets::transaction` failed `fuzz_targets::transaction::tests::plan_2_7_gives_enter_tab_and_space_their_text`, `fuzz_targets::transaction::tests::the_model_rules_apply_only_where_plan_2_7_does_not_decide`, `fuzz_targets::transaction::tests::the_simulator_replays_the_events_own_key_with_its_text`. Compile error E0425: plan_replay_text and model_replay_rule did not exist.
+- Red: A panicking vector must be a failure, not an abort `cargo test --locked -p raumakey-tests --lib a_panicking_run` failed `vectors::tests::a_panicking_run_is_a_failure_of_its_vector`. Compile error: run::run_vector_with was unresolved and Failure::Panic did not exist.
+- Red: Location-only panic line for the runner binary `cargo test --locked -p raumakey-tests --lib runner::` failed `runner::tests::a_panic_is_reported_by_its_location_only`. Compile error: runner::panic_line was unresolved.
+- Red: fuzz_smoke test for config_concurrency written first `cargo test --locked -p raumakey-tests --test fuzz_smoke` failed `config_concurrency`, `every_target_accepts_the_empty_input_and_one_byte`. Compile error E0425: fuzz_targets::config_concurrency did not exist.
+
+Reviews:
+
+- Specification and test adequacy: not approved (1 major, 5 minor, 3 nit).
+- Correctness, safety, and code quality: not approved (2 major, 3 minor, 4 nit).
+- Re-review after the first fix round: approved (1 minor).
+
+Open minor findings from the last re-review:
+
+- minor, `tests/tests/fuzz_smoke/corpus.rs:285`: The new config_concurrency corpus entry `stale_and_future_revisions` does not decode the way its comments say.
+
+## Verification
+
+After merging `raumakey-windows` and `raumakey-tsf` on top of `d069063` (commit `834dbf5`):
 
 - `cargo fmt --all --check`: pass.
 - `cargo xtask ci --no-fuzz`: Clippy with `-D warnings` passed with default features and with all
@@ -167,5 +211,14 @@ Run on the main checkout after merging `raumakey-windows` and `raumakey-tsf` on 
   passed under WOW64, 0 failed, 10 manual tests ignored.
 - `cargo xtask cross`: debug builds for x86_64, i686, and aarch64 passed.
 
-The `raumakey-tests` work (fuzz targets, `fuzz_smoke`, macro/engine suite, compatibility vectors,
-and the runner's `vectors` mode) is still under review and is not part of this revision.
+After merging `raumakey-tests` (this revision; plan §14.6):
+
+- `cargo fmt --all --check`: pass.
+- `cargo xtask ci`, now with its fuzz smoke step: Clippy with `-D warnings` passed with both
+  feature sets; 1,535 tests passed with default features and 1,609 with the compatibility
+  features, 0 failed, 13 ignored (10 manual tests and the 3 `BUG` tests of plan §14.4);
+  `fuzz_smoke` passed 10 tests.
+- `cargo test --locked -p raumakey-tests --target i686-pc-windows-msvc`: 93 passed under WOW64,
+  3 `BUG` tests ignored.
+- `cargo xtask cross`: debug builds for x86_64, i686, and aarch64 passed.
+- `raumakey-test-runner vectors --json <file>`: 202 of 202 vectors passed.

@@ -483,20 +483,21 @@ version = "0.1.0"
 name = "raumakey-tests"
 version = "0.1.0"
 dependencies = [
- "proptest",
+ "crc32fast",
  "raumakey-config",
  "raumakey-converter",
  "raumakey-engine",
  "raumakey-ipc",
  "raumakey-macro",
- "raumakey-migrate",
  "raumakey-model",
  "raumakey-policy",
+ "raumakey-resources",
+ "raumakey-windows",
  "serde",
  "serde_json",
  "tempfile",
  "toml",
- "windows",
+ "unicode-normalization",
 ]
 
 [[package]]

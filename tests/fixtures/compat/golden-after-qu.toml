@@ -1,0 +1,332 @@
+# Words after the qu onset that plan §3.4's rhyme table omits (quết, quệt, quạu, quọ), with
+# default options in every method, transcribed from
+# crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors. The words stay as typed at a
+# boundary (no auto-restore). The extra rhymes after qu are a code decision that design §20.9
+# lists and the plan does not record yet. These words are neither matrix rows nor plan §3.10
+# golden vectors, so no document gives them a baseline oracle: their evidence is the decision
+# alone. Schema and evidence rules: raumakey_tests::vectors.
+schema_version = 1
+
+[[vector]]
+id = "qu-telex-quet-acute"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "telex"
+keys = "queets"
+text = "quết"
+
+[[vector]]
+id = "qu-telex-quet-acute-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "telex"
+keys = "queets{SPACE}"
+text = "quết "
+
+[[vector]]
+id = "qu-vni-quet-acute"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "vni"
+keys = "que6t1"
+text = "quết"
+
+[[vector]]
+id = "qu-vni-quet-acute-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "vni"
+keys = "que6t1{SPACE}"
+text = "quết "
+
+[[vector]]
+id = "qu-viqr-quet-acute"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "viqr"
+keys = "que^t'"
+text = "quết"
+
+[[vector]]
+id = "qu-viqr-quet-acute-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "viqr"
+keys = "que^t'{SPACE}"
+text = "quết "
+
+[[vector]]
+id = "qu-telex-quet-dot"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "telex"
+keys = "queetj"
+text = "quệt"
+
+[[vector]]
+id = "qu-telex-quet-dot-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "telex"
+keys = "queetj{SPACE}"
+text = "quệt "
+
+[[vector]]
+id = "qu-vni-quet-dot"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "vni"
+keys = "que6t5"
+text = "quệt"
+
+[[vector]]
+id = "qu-vni-quet-dot-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "vni"
+keys = "que6t5{SPACE}"
+text = "quệt "
+
+[[vector]]
+id = "qu-viqr-quet-dot"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "viqr"
+keys = "que^t."
+text = "quệt"
+
+[[vector]]
+id = "qu-viqr-quet-dot-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "viqr"
+keys = "que^t.{SPACE}"
+text = "quệt "
+
+[[vector]]
+id = "qu-telex-quau-dot"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "telex"
+keys = "quauj"
+text = "quạu"
+
+[[vector]]
+id = "qu-telex-quau-dot-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "telex"
+keys = "quauj{SPACE}"
+text = "quạu "
+
+[[vector]]
+id = "qu-vni-quau-dot"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "vni"
+keys = "quau5"
+text = "quạu"
+
+[[vector]]
+id = "qu-vni-quau-dot-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "vni"
+keys = "quau5{SPACE}"
+text = "quạu "
+
+[[vector]]
+id = "qu-viqr-quau-dot"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "viqr"
+keys = "quau."
+text = "quạu"
+
+[[vector]]
+id = "qu-viqr-quau-dot-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "viqr"
+keys = "quau.{SPACE}"
+text = "quạu "
+
+[[vector]]
+id = "qu-telex-quo-dot"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "telex"
+keys = "quoj"
+text = "quọ"
+
+[[vector]]
+id = "qu-telex-quo-dot-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "telex"
+keys = "quoj{SPACE}"
+text = "quọ "
+
+[[vector]]
+id = "qu-vni-quo-dot"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "vni"
+keys = "quo5"
+text = "quọ"
+
+[[vector]]
+id = "qu-vni-quo-dot-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "vni"
+keys = "quo5{SPACE}"
+text = "quọ "
+
+[[vector]]
+id = "qu-viqr-quo-dot"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "viqr"
+keys = "quo."
+text = "quọ"
+
+[[vector]]
+id = "qu-viqr-quo-dot-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "viqr"
+keys = "quo.{SPACE}"
+text = "quọ "
+
+[[vector]]
+id = "qu-telex-title-quet-acute"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "telex"
+keys = "Queets"
+text = "Quết"
+
+[[vector]]
+id = "qu-telex-title-quet-acute-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "telex"
+keys = "Queets{SPACE}"
+text = "Quết "
+
+[[vector]]
+id = "qu-vni-title-quet-acute"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "vni"
+keys = "Que6t1"
+text = "Quết"
+
+[[vector]]
+id = "qu-vni-title-quet-acute-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "vni"
+keys = "Que6t1{SPACE}"
+text = "Quết "
+
+[[vector]]
+id = "qu-viqr-title-quet-acute"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "viqr"
+keys = "Que^t'"
+text = "Quết"
+
+[[vector]]
+id = "qu-viqr-title-quet-acute-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "viqr"
+keys = "Que^t'{SPACE}"
+text = "Quết "
+
+[[vector]]
+id = "qu-telex-upper-quau-dot"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "telex"
+keys = "QUAUJ"
+text = "QUẠU"
+
+[[vector]]
+id = "qu-telex-upper-quau-dot-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "telex"
+keys = "QUAUJ{SPACE}"
+text = "QUẠU "
+
+[[vector]]
+id = "qu-vni-upper-quau-dot"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "vni"
+keys = "QUAU5"
+text = "QUẠU"
+
+[[vector]]
+id = "qu-vni-upper-quau-dot-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "vni"
+keys = "QUAU5{SPACE}"
+text = "QUẠU "
+
+[[vector]]
+id = "qu-viqr-upper-quau-dot"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "viqr"
+keys = "QUAU."
+text = "QUẠU"
+
+[[vector]]
+id = "qu-viqr-upper-quau-dot-space"
+evidence = ["raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::after_qu_golden_vectors"
+method = "viqr"
+keys = "QUAU.{SPACE}"
+text = "QUẠU "

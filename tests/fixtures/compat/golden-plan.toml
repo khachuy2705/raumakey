@@ -1,0 +1,407 @@
+# Golden vectors of plan §3.10, transcribed from crates/raumakey-engine/tests/golden.rs. Schema
+# and evidence rules: raumakey_tests::vectors. Defaults v1 (Telex) unless a vector says
+# otherwise.
+#
+# Golden vectors with the same setup as a matrix vector are not repeated here: aa, dd, as, ass,
+# aaa, quas, gias, VIEETJ, hoafn (both styles), thuyr (both styles), after + space (Telex), and
+# \' (VIQR) are in matrix-a-engine.toml and matrix-b-modifiers.toml.
+# tests/compat_vectors.rs checks that every plan §3.10 vector has a fixture.
+schema_version = 1
+
+# Telex letters and words.
+
+[[vector]]
+id = "golden-telex-aw"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "aw"
+text = "ă"
+
+[[vector]]
+id = "golden-telex-ow"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "ow"
+text = "ơ"
+
+[[vector]]
+id = "golden-telex-uw"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "uw"
+text = "ư"
+
+[[vector]]
+id = "golden-telex-w"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "w"
+text = "ư"
+
+[[vector]]
+id = "golden-telex-ww"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "ww"
+text = "w"
+
+[[vector]]
+id = "golden-telex-tw"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "tw"
+text = "tư"
+
+[[vector]]
+id = "golden-telex-nhw"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "nhw"
+text = "như"
+
+[[vector]]
+id = "golden-telex-ddd"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "ddd"
+text = "dd"
+
+[[vector]]
+id = "golden-telex-tieengs"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "tieengs"
+text = "tiếng"
+
+[[vector]]
+id = "golden-telex-vieetj"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "vieetj"
+text = "việt"
+
+[[vector]]
+id = "golden-telex-nguwowif"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "nguwowif"
+text = "người"
+
+[[vector]]
+id = "golden-telex-nguoiwf"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "nguoiwf"
+text = "người"
+
+[[vector]]
+id = "golden-telex-thuowr"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "thuowr"
+text = "thuở"
+
+[[vector]]
+id = "golden-telex-huow"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "huow"
+text = "huơ"
+
+[[vector]]
+id = "golden-telex-truowngf"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "truowngf"
+text = "trường"
+
+[[vector]]
+id = "golden-telex-ruowuj"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "ruowuj"
+text = "rượu"
+
+[[vector]]
+id = "golden-telex-khuyeens"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "khuyeens"
+text = "khuyến"
+
+[[vector]]
+id = "golden-telex-quys"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "quys"
+text = "quý"
+
+[[vector]]
+id = "golden-telex-quyeets"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "quyeets"
+text = "quyết"
+
+[[vector]]
+id = "golden-telex-gif"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "gif"
+text = "gì"
+
+[[vector]]
+id = "golden-telex-giuwax"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "giuwax"
+text = "giữa"
+
+[[vector]]
+id = "golden-telex-giuwowngf"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "giuwowngf"
+text = "giường"
+
+[[vector]]
+id = "golden-telex-ddi"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "ddi"
+text = "đi"
+
+[[vector]]
+id = "golden-telex-did"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "did"
+text = "đi"
+
+[[vector]]
+id = "golden-telex-ddaay"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "Ddaay"
+text = "Đây"
+
+[[vector]]
+id = "golden-telex-chaof"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "chaof"
+text = "chào"
+
+[[vector]]
+id = "golden-telex-cuar"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "cuar"
+text = "của"
+
+[[vector]]
+id = "golden-telex-muoons"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "muoons"
+text = "muốn"
+
+[[vector]]
+id = "golden-telex-nghieeng"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "nghieeng"
+text = "nghiêng"
+
+[[vector]]
+id = "golden-telex-awa"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "awa"
+text = "â"
+
+[[vector]]
+id = "golden-telex-tesst"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "tesst"
+text = "test"
+
+[[vector]]
+id = "golden-telex-class"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::telex_golden_vectors"
+method = "telex"
+keys = "class"
+text = "class"
+
+# Tone placement styles (thuyr and hoafn are A12 vectors).
+
+[[vector]]
+id = "golden-old-style-hoaf"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::tone_style_golden_vectors"
+method = "telex"
+keys = "hoaf"
+text = "hòa"
+
+[[vector]]
+id = "golden-modern-style-hoaf"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::tone_style_golden_vectors"
+method = "telex"
+options = { modern_tone = true }
+keys = "hoaf"
+text = "hoà"
+
+[[vector]]
+id = "golden-old-style-khoer"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::tone_style_golden_vectors"
+method = "telex"
+keys = "khoer"
+text = "khỏe"
+
+[[vector]]
+id = "golden-modern-style-khoer"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::tone_style_golden_vectors"
+method = "telex"
+options = { modern_tone = true }
+keys = "khoer"
+text = "khoẻ"
+
+# Boundaries (after + space is the A15 vector). A word whose tone was undone is no longer
+# transformed, so it is not restored (design §20.9).
+
+[[vector]]
+id = "golden-boundary-windows"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::boundary_golden_vectors"
+method = "telex"
+keys = "windows{SPACE}"
+text = "windows "
+
+[[vector]]
+id = "golden-boundary-class"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::boundary_golden_vectors"
+method = "telex"
+keys = "class{SPACE}"
+text = "class "
+
+[[vector]]
+id = "golden-boundary-tesst"
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["design §20.9"]
+source = "crates/raumakey-engine/tests/golden.rs::boundary_golden_vectors"
+method = "telex"
+keys = "tesst{SPACE}"
+text = "test "
+
+# VNI.
+
+[[vector]]
+id = "golden-vni-tie6ng1"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::vni_golden_vectors"
+method = "vni"
+keys = "tie6ng1"
+text = "tiếng"
+
+[[vector]]
+id = "golden-vni-vie65t"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::vni_golden_vectors"
+method = "vni"
+keys = "vie65t"
+text = "việt"
+
+[[vector]]
+id = "golden-vni-nguo72i"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::vni_golden_vectors"
+method = "vni"
+keys = "nguo72i"
+text = "người"
+
+[[vector]]
+id = "golden-vni-a66"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::vni_golden_vectors"
+method = "vni"
+keys = "a66"
+text = "a6"
+
+[[vector]]
+id = "golden-vni-d9"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::vni_golden_vectors"
+method = "vni"
+keys = "d9"
+text = "đ"
+
+# VIQR (the escaped apostrophe is an A8 vector).
+
+[[vector]]
+id = "golden-viqr-tieng"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::viqr_golden_vectors"
+method = "viqr"
+keys = "tie^'ng"
+text = "tiếng"
+
+[[vector]]
+id = "golden-viqr-viet"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::viqr_golden_vectors"
+method = "viqr"
+keys = "vie^.t"
+text = "việt"
+
+[[vector]]
+id = "golden-viqr-nguoi"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::viqr_golden_vectors"
+method = "viqr"
+keys = "ngu+o+`i"
+text = "người"
+
+[[vector]]
+id = "golden-viqr-dd"
+evidence = ["baseline"]
+source = "crates/raumakey-engine/tests/golden.rs::viqr_golden_vectors"
+method = "viqr"
+keys = "dd"
+text = "đ"
