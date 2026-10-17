@@ -6,10 +6,14 @@
 //! windows that are never shown (created on a fresh thread and destroyed before it ends; nothing
 //! is broadcast), `WH_CBT` hooks of such a thread only (they see only that thread's windows),
 //! menus that are never shown, in-process COM objects that are never registered, system DLLs
-//! mapped as data, a uniquely named temporary copy of a data-only DLL (no code runs), and
-//! read-only queries. Anything that sends input, hooks the keyboard or mouse, touches the
-//! real clipboard, writes `HKEY_LOCAL_MACHINE`, registers COM/TSF, schedules tasks, or shows a
-//! menu, a message box, or a notification icon is `#[ignore]`d and run manually.
+//! mapped as data, a uniquely named temporary copy of a data-only DLL (no code runs),
+//! impersonation on a fresh test thread (which reverts before it ends) of tokens that exist only
+//! in this process (a low-integrity copy of the process token, an AppContainer "lowbox" token
+//! made with `NtCreateLowBoxToken` for a made-up package SID, with no AppContainer profile, or
+//! the anonymous logon), and read-only queries. Anything that sends input, hooks the keyboard or
+//! mouse, touches the real clipboard, writes `HKEY_LOCAL_MACHINE`, registers COM/TSF, schedules
+//! tasks, or shows a menu, a message box, or a notification icon is `#[ignore]`d and run
+//! manually.
 //!
 //! The quiet panic hook is tested in its own binary (`tests/panic_hook.rs`) because installing
 //! it would silence the failure messages of this suite.

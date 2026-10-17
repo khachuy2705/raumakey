@@ -5,10 +5,15 @@ use core::fmt;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 
-use raumakey_engine::VietnameseEngine;
-use raumakey_engine::script::{self, ScriptOutcome};
+use raumakey_engine::script::{self, KeyToken, ScriptOutcome, ScriptRunError, ScriptStep};
+use raumakey_engine::{EngineState, VietnameseEngine};
+use raumakey_model::error::ResetReason;
+use raumakey_model::host::HostContext;
 use raumakey_model::options::{DEFAULTS_VERSION, EngineOptions};
+use raumakey_model::policy::SecureFieldMode;
+use raumakey_model::transaction::{EditTransaction, TextSimulator};
 use raumakey_model::utf16;
+use raumakey_policy::CompatibilityPolicy;
 use serde::Serialize;
 
 use super::{Evidence, Vector, VectorError, VectorMacro};
@@ -206,6 +211,8 @@ pub struct VectorResult {
     pub config_revision: ConfigRevision,
     /// The effective engine options; `None` when they are invalid.
     pub options: Option<EngineOptions>,
+    /// The secure-field mode of the compatibility policy the run used (D25).
+    pub secure_field_mode: SecureFieldMode,
     /// The vector's macro entries.
     pub macros: Vec<VectorMacro>,
     /// Document text before the first key.
@@ -255,6 +262,7 @@ pub(super) fn run_vector_with(
         application: Application::in_process(),
         config_revision: ConfigRevision::IN_PROCESS,
         options: vector.effective_options().ok(),
+        secure_field_mode: vector.secure_field_mode(),
         macros: vector.macros.clone(),
         initial_text: vector.initial_text.clone(),
         keys: vector.keys.clone(),
@@ -277,7 +285,7 @@ pub(super) fn run_vector_with(
 }
 
 /// Validates the vector, builds the engine with a real `MacroTable`, and runs the key script
-/// from `initial_text` the way an adapter does (`script::run_script_with`).
+/// from `initial_text` the way the TIP does (see [`run_as_adapter`]).
 fn execute(vector: &Vector) -> Result<ScriptOutcome, Failure> {
     let setup = |error: VectorError| Failure::Setup {
         reason: error.to_string(),
@@ -290,12 +298,88 @@ fn execute(vector: &Vector) -> Result<ScriptOutcome, Failure> {
     let host = script::script_host().map_err(|_| Failure::Setup {
         reason: "the script host name is invalid".to_owned(),
     })?;
-    script::run_script_with(&engine, &options, &tokens, &host, &vector.initial_text).map_err(
-        |error| Failure::EngineError {
-            step: error.step,
-            error: error.error.to_string(),
-        },
+    let policy = CompatibilityPolicy::new(Arc::new(vector.compatibility()));
+    run_as_adapter(
+        &engine,
+        &options,
+        &policy,
+        &tokens,
+        &host,
+        &vector.initial_text,
     )
+    .map_err(|error| Failure::EngineError {
+        step: error.step,
+        error: error.error.to_string(),
+    })
+}
+
+/// Runs `tokens` in `host` from a document holding `initial_text`, as the TIP's session core
+/// does (`raumakey_tip::session`, D25): the compatibility policy is resolved for each key.
+///
+/// - A key of a secure field whose policy does not allow Vietnamese (`Bypass`, the default)
+///   never reaches the engine: it passes through and ends the word
+///   (`Tx(0,"",false,None,true)`), so neither transformation nor macros apply there.
+/// - Every other key runs through the engine with the vector's options, Vietnamese and
+///   macros turned off where the policy says so (in `Restricted` mode a secure field keeps
+///   Vietnamese and loses macros).
+///
+/// As in `raumakey_engine::script::run_script_from`, the next state is committed only when
+/// the simulated document accepted the transaction; otherwise the engine resets and the key
+/// passes through.
+fn run_as_adapter(
+    engine: &VietnameseEngine,
+    options: &EngineOptions,
+    policy: &CompatibilityPolicy,
+    tokens: &[KeyToken],
+    host: &HostContext,
+    initial_text: &str,
+) -> Result<ScriptOutcome, ScriptRunError> {
+    let mut simulator = TextSimulator::with_text(initial_text);
+    let mut state = EngineState::new();
+    let mut secure = false;
+    let mut steps = Vec::with_capacity(tokens.len());
+    for (step, token) in tokens.iter().enumerate() {
+        match token {
+            KeyToken::SecureOn => secure = true,
+            KeyToken::SecureOff => secure = false,
+            _ => {}
+        }
+        let event = script::event_for(token, host, secure);
+        let resolved = policy.resolve(&event.host);
+        let (transaction, next) = if event.host.is_secure_field && !resolved.vietnamese_allowed {
+            (
+                EditTransaction::pass_through_reset(),
+                engine.reset(&state, ResetReason::ContextChanged),
+            )
+        } else {
+            let mut effective = options.clone();
+            effective.enabled &= resolved.vietnamese_allowed;
+            effective.macros_enabled &= resolved.macro_allowed;
+            let result = engine
+                .process(&event, &effective, &state)
+                .map_err(|error| ScriptRunError { step, error })?;
+            (result.transaction, result.next)
+        };
+        let accepted = simulator.apply(&event, &transaction).is_ok();
+        if accepted {
+            state = next;
+        } else {
+            state = engine.reset(&state, ResetReason::ApplyFailed);
+            // The key passes through; a pass-through edit always applies.
+            let _ = simulator.apply(&event, &EditTransaction::pass_through_reset());
+        }
+        steps.push(ScriptStep {
+            token: *token,
+            event,
+            transaction,
+            accepted,
+        });
+    }
+    Ok(ScriptOutcome {
+        final_text: simulator.as_string(),
+        steps,
+        final_state: state,
+    })
 }
 
 /// Records the run in `result` and adds a [`Failure`] for every expectation that does not

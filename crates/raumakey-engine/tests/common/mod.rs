@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use raumakey_engine::VietnameseEngine;
 use raumakey_engine::script::{self, ScriptOutcome};
+use raumakey_model::input::is_boundary_punctuation;
 use raumakey_model::macros::{Boundary, CaseMode, MacroExpansion, MacroId, MacroLookup, NoMacros};
 use raumakey_model::options::{EngineOptions, InputMethod, Normalization};
 
@@ -74,11 +75,13 @@ pub fn txs(engine: &VietnameseEngine, options: &EngineOptions, keys: &str) -> Ve
 }
 
 /// Macro lookup double: exact trigger first, then (adaptive) a lowercase match with the
-/// replacement adapted to the typed case. Records every lookup.
+/// replacement adapted to the typed case. Records every lookup and every prefix query.
+/// Triggers with boundary punctuation are token triggers (D28).
 #[derive(Debug, Default)]
 pub struct MacroDouble {
     entries: Vec<(String, String)>,
     pub calls: Mutex<Vec<(String, Boundary, CaseMode)>>,
+    pub prefix_calls: Mutex<Vec<(String, CaseMode)>>,
 }
 
 impl MacroDouble {
@@ -89,11 +92,16 @@ impl MacroDouble {
                 .map(|(t, r)| ((*t).to_owned(), (*r).to_owned()))
                 .collect(),
             calls: Mutex::new(Vec::new()),
+            prefix_calls: Mutex::new(Vec::new()),
         })
     }
 
     pub fn calls(&self) -> Vec<(String, Boundary, CaseMode)> {
         self.calls.lock().expect("calls").clone()
+    }
+
+    pub fn prefix_calls(&self) -> Vec<(String, CaseMode)> {
+        self.prefix_calls.lock().expect("prefix calls").clone()
     }
 }
 
@@ -150,5 +158,23 @@ impl MacroLookup for MacroDouble {
             }
         }
         None
+    }
+
+    fn has_token_triggers(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|(trigger, _)| trigger.chars().any(is_boundary_punctuation))
+    }
+
+    fn is_trigger_prefix(&self, prefix: &str, case_mode: CaseMode) -> bool {
+        self.prefix_calls
+            .lock()
+            .expect("prefix calls")
+            .push((prefix.to_owned(), case_mode));
+        let lower = prefix.to_lowercase();
+        self.entries.iter().any(|(trigger, _)| {
+            trigger.starts_with(prefix)
+                || (case_mode == CaseMode::Adaptive && trigger.to_lowercase().starts_with(&lower))
+        })
     }
 }

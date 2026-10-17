@@ -14,7 +14,8 @@ use crate::strings::WideString;
 
 /// Holds `Local\Raumakey.<sidhash>.<component>` for as long as it is alive.
 ///
-/// The mutex is created with user-only security. Its existence, not its ownership, marks the
+/// The mutex is created with user-only security. It stays private under plan D27: only the
+/// controller opens it, and no TIP needs it. Its existence, not its ownership, marks the
 /// running instance, so the guard can be dropped on any thread.
 #[derive(Debug)]
 pub struct SingleInstance {

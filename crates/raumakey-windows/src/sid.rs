@@ -5,12 +5,12 @@ use std::os::windows::io::OwnedHandle;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::Security::{
-    GetTokenInformation, PSID, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
+    GetTokenInformation, PSID, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation,
+    TokenSessionId, TokenUser,
 };
 use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::core::{PCWSTR, PWSTR};
 
@@ -19,12 +19,19 @@ use crate::handle::{self, LocalMemory};
 use crate::names::{SidHash, sid_hash16};
 use crate::strings::read_pwstr;
 
-/// SID string (`S-1-…`) of the user running this process.
+/// `GetCurrentProcessToken()`: the pseudo handle `-4` for this process's primary token, with
+/// `TOKEN_QUERY` and `TOKEN_QUERY_SOURCE` access (Windows 8 and later; an inline function of
+/// `processthreadsapi.h`). It is neither opened nor closed, so no access check runs: it names
+/// the process token even while the calling thread impersonates a token (for example an
+/// AppContainer or low-integrity one) that could not open it.
+fn current_process_token() -> HANDLE {
+    HANDLE(-4_isize as *mut core::ffi::c_void)
+}
+
+/// SID string (`S-1-…`) of the user running this process (from the process token, whatever
+/// the calling thread impersonates).
 pub fn current_user_sid_string() -> WinResult<String> {
-    // SAFETY: GetCurrentProcess returns a pseudo handle that needs no cleanup.
-    let process = unsafe { GetCurrentProcess() };
-    let token = open_token(process)?;
-    token_user_sid_string(handle::raw(&token))
+    token_user_sid_string(current_process_token())
 }
 
 /// [`sid_hash16`] of [`current_user_sid_string`].
@@ -32,10 +39,23 @@ pub fn current_user_sid_hash() -> WinResult<SidHash> {
     current_user_sid_string().map(|sid| sid_hash16(&sid))
 }
 
-/// Terminal Services session of this process.
+/// Terminal Services session of this process (from the process token, whatever the calling
+/// thread impersonates).
 pub fn current_session_id() -> WinResult<u32> {
-    // SAFETY: no preconditions.
-    process_session_id(unsafe { GetCurrentProcessId() })
+    let mut session = 0_u32;
+    let mut returned = 0_u32;
+    // SAFETY: the pseudo token handle has TOKEN_QUERY; `session` is a buffer of the size passed.
+    unsafe {
+        GetTokenInformation(
+            current_process_token(),
+            TokenSessionId,
+            Some((&raw mut session).cast()),
+            size_of::<u32>() as u32,
+            &mut returned,
+        )
+    }
+    .context("GetTokenInformation(TokenSessionId)")?;
+    Ok(session)
 }
 
 /// Terminal Services session of process `pid`.
@@ -63,11 +83,10 @@ pub fn process_is_elevated(pid: u32) -> WinResult<bool> {
     token_is_elevated(handle::raw(&token))
 }
 
-/// Whether this process runs with an elevated token.
+/// Whether this process runs with an elevated token (whatever the calling thread
+/// impersonates).
 pub fn current_process_is_elevated() -> WinResult<bool> {
-    // SAFETY: GetCurrentProcess returns a pseudo handle that needs no cleanup.
-    let token = open_token(unsafe { GetCurrentProcess() })?;
-    token_is_elevated(handle::raw(&token))
+    token_is_elevated(current_process_token())
 }
 
 fn open_process(pid: u32) -> WinResult<OwnedHandle> {

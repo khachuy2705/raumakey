@@ -7,6 +7,21 @@
 //!
 //! Persistence lives in `raumakey-config` (`MacroDocument`); [`MacroStore::from_entries`] and
 //! [`MacroStore::entries`] convert from and to its entry list.
+//!
+//! # Loading stored data
+//!
+//! Load user data (`macros.toml`, imports kept from earlier versions) with
+//! [`MacroStore::from_entries_lenient`], never with [`MacroStore::from_entries`]. Data written
+//! before plan D29 and D30 can hold entries that are invalid now: triggers of 33–64 scalars,
+//! and replacements that do not fit one engine insert with a delimiter. The lenient loader
+//! reports each of them as an [`EntryIssue`] with its input position, and every valid entry
+//! keeps working; the strict loader would refuse the whole list and disable every macro.
+//!
+//! The store does not hold the rejected entries, so [`MacroStore::entries`] leaves them out.
+//! The caller must keep them verbatim, by the positions the issues name, and write them back
+//! unchanged with the store's entries rather than drop them, so that the user can still see,
+//! fix, or export them. This crate has no API for that yet; the controller's configuration
+//! lifecycle must provide it.
 
 use core::fmt;
 use std::collections::BTreeSet;
@@ -56,6 +71,9 @@ pub struct MacroStore {
     entries: Vec<MacroEntry>,
     /// Largest identifier in use; `None` when the store is empty.
     max_id: Option<u64>,
+    /// Largest identifier of an entry that [`MacroStore::from_entries_lenient`] skipped. The
+    /// caller writes such entries back verbatim, so new entries never reuse their identifiers.
+    reserved_max: Option<u64>,
     /// Lookup table of the current entries, built by the first snapshot after a change.
     table: OnceLock<Arc<MacroTable>>,
 }
@@ -76,7 +94,10 @@ impl MacroStore {
     ///
     /// Every entry is validated and normalized to NFC. Fails with
     /// [`MacroError::InvalidEntry`] for the first invalid entry or [`MacroError::DuplicateId`]
-    /// when two entries share an identifier.
+    /// when two entries share an identifier. For user data use
+    /// [`from_entries_lenient`](Self::from_entries_lenient) instead (see the [module
+    /// documentation](self)): data stored before plan D29 and D30 can hold entries that are
+    /// invalid now.
     pub fn from_entries(
         revision: u64,
         entries: impl IntoIterator<Item = MacroEntry>,
@@ -97,9 +118,14 @@ impl MacroStore {
     /// Builds a store from persisted entries, skipping the ones that cannot be kept.
     ///
     /// Invalid entries and later entries that reuse an identifier already kept are skipped and
-    /// reported with their input position; everything else is kept in order. Use this when one
-    /// bad entry must not disable every macro (field-level loading); the caller decides whether
-    /// to warn the user before writing the reduced list back.
+    /// reported with their input position; everything else is kept in order. Use this to load
+    /// user data, where one bad entry must not disable every macro: entries stored under the
+    /// limits before plan D29 and D30 (a 40-scalar trigger, a replacement beyond one insert)
+    /// are reported as [`EntryError::TriggerTooLong`](crate::EntryError::TriggerTooLong) or
+    /// [`EntryError::ReplacementTooLong`](crate::EntryError::ReplacementTooLong). The skipped
+    /// entries are not kept here; the caller must keep them verbatim, by the reported
+    /// positions, and write them back unchanged instead of dropping them (see the [module
+    /// documentation](self)).
     pub fn from_entries_lenient(
         revision: u64,
         entries: impl IntoIterator<Item = MacroEntry>,
@@ -107,13 +133,17 @@ impl MacroStore {
         let mut kept = Vec::new();
         let mut seen = BTreeSet::new();
         let mut issues = Vec::new();
+        let mut reserved_max = None;
         for (index, entry) in entries.into_iter().enumerate() {
             let id = entry.id;
             match normalize_entry(entry) {
-                Err(reason) => issues.push(EntryIssue {
-                    index,
-                    error: MacroError::InvalidEntry { id, reason },
-                }),
+                Err(reason) => {
+                    reserved_max = reserved_max.max(Some(id.0));
+                    issues.push(EntryIssue {
+                        index,
+                        error: MacroError::InvalidEntry { id, reason },
+                    });
+                }
                 Ok(entry) => {
                     if seen.insert(id) {
                         kept.push(entry);
@@ -126,7 +156,9 @@ impl MacroStore {
                 }
             }
         }
-        (Self::build(revision, kept), issues)
+        let mut store = Self::build(revision, kept);
+        store.reserved_max = reserved_max;
+        (store, issues)
     }
 
     /// Current revision.
@@ -159,9 +191,10 @@ impl MacroStore {
         self.entries.is_empty()
     }
 
-    /// The identifier the next new entry receives: `max(id) + 1`, or `1` when empty.
+    /// The identifier the next new entry receives: `max(id) + 1`, or `1` when empty. The
+    /// maximum also covers entries that [`MacroStore::from_entries_lenient`] skipped.
     pub fn next_id(&self) -> Result<MacroId, MacroError> {
-        match self.max_id {
+        match self.max_id.max(self.reserved_max) {
             None => Ok(MacroId(1)),
             Some(max) => max
                 .checked_add(1)
@@ -287,6 +320,7 @@ impl MacroStore {
         Self {
             revision,
             max_id: max_id(&entries),
+            reserved_max: None,
             entries,
             table: OnceLock::new(),
         }

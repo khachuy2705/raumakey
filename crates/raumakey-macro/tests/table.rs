@@ -369,6 +369,83 @@ fn adaptation_that_would_exceed_the_limit_falls_back_to_the_stored_text() {
     assert_eq!(ws(&t, "T", CaseMode::Adaptive), expansion(3, "SSa"));
 }
 
+/// D30: an adaptation that would not fit one insert with a delimiter in NFD falls back to the
+/// stored text, which does. "ß" becomes "SS", and "ệ" is three units in NFD: the stored text
+/// has 8,191 NFD units, its Title and Upper forms 8,192.
+#[test]
+fn d30_adaptation_that_would_exceed_the_insert_limit_falls_back_to_the_stored_text() {
+    let stored = format!("ß{}", "ệ".repeat(2730));
+    let t = table(vec![entry(1, "t", &stored), entry(2, "tt", &stored)]);
+    assert_eq!(ws(&t, "T", CaseMode::Adaptive), expansion(1, &stored));
+    assert_eq!(ws(&t, "TT", CaseMode::Adaptive), expansion(2, &stored));
+    // One letter shorter, both forms fit and the case adapts.
+    let shorter = format!("ß{}", "ệ".repeat(2729));
+    let t = table(vec![entry(1, "t", &shorter), entry(2, "tt", &shorter)]);
+    assert_eq!(
+        ws(&t, "T", CaseMode::Adaptive),
+        expansion(1, &format!("SS{}", "ệ".repeat(2729)))
+    );
+    assert_eq!(
+        ws(&t, "TT", CaseMode::Adaptive),
+        expansion(2, &format!("SS{}", "Ệ".repeat(2729)))
+    );
+}
+
+/// D28: the table tells the engine whether an enabled trigger can span words (it contains
+/// boundary punctuation) and whether typed text still starts an enabled trigger.
+#[test]
+fn d28_token_triggers_and_trigger_prefixes() {
+    let words = table(vec![entry(1, "ko", "không"), entry(2, "e-mail", "thư")]);
+    assert!(
+        !words.has_token_triggers(),
+        "`-` is no boundary punctuation"
+    );
+    let mut disabled = entry(3, "x.y", "x chấm y");
+    disabled.enabled = false;
+    assert!(!table(vec![disabled.clone()]).has_token_triggers());
+    let mut whitespace_only = entry(4, "đ.c", "địa chỉ");
+    whitespace_only.boundary = BoundaryPolicy::Whitespace;
+    let t = table(vec![
+        entry(1, "v.v", "vân vân"),
+        entry(2, "TP.HCM", "Thành phố Hồ Chí Minh"),
+        disabled,
+        whitespace_only,
+    ]);
+    assert!(t.has_token_triggers());
+    for prefix in ["v", "v.", "v.v", "TP.", "TP.HCM", "đ.", "đ.c"] {
+        assert!(t.is_trigger_prefix(prefix, CaseMode::Exact), "{prefix}");
+        assert!(t.is_trigger_prefix(prefix, CaseMode::Adaptive), "{prefix}");
+    }
+    for prefix in ["v.x", "x.", "v.v.", "x.y", "TP.HCM.", "", "v.v v"] {
+        assert!(
+            !t.is_trigger_prefix(prefix, CaseMode::Adaptive),
+            "{prefix:?}"
+        );
+    }
+    // Only adaptive case matches another case.
+    for prefix in ["tp.", "V.", "Tp.h", "Đ."] {
+        assert!(!t.is_trigger_prefix(prefix, CaseMode::Exact), "{prefix}");
+        assert!(t.is_trigger_prefix(prefix, CaseMode::Adaptive), "{prefix}");
+    }
+    // Typed text is compared in NFC.
+    assert!(t.is_trigger_prefix("\u{0111}.", CaseMode::Exact));
+    let composed = table(vec![entry(1, "ê.v", "e mũ chấm v")]);
+    assert!(composed.is_trigger_prefix("e\u{302}.", CaseMode::Exact));
+    assert!(!MacroTable::default().is_trigger_prefix("v.", CaseMode::Adaptive));
+    assert!(!MacroTable::default().has_token_triggers());
+    assert!(!t.is_trigger_prefix(&"v.".repeat(100_000), CaseMode::Adaptive));
+}
+
+/// The documented limitation of the adaptive prefix check: a capital sigma before the
+/// punctuation that ends the prefix folds to the final `ς`, unlike in the trigger.
+#[test]
+fn d28_the_adaptive_prefix_check_folds_the_prefix_on_its_own() {
+    let t = table(vec![entry(1, "σσ.α", "x")]);
+    assert!(t.is_trigger_prefix("σσ.", CaseMode::Adaptive));
+    assert!(!t.is_trigger_prefix("ΣΣ.", CaseMode::Adaptive));
+    assert_eq!(ws(&t, "ΣΣ.Α", CaseMode::Adaptive), expansion(1, "X"));
+}
+
 #[test]
 fn table_is_a_shareable_lookup_port() {
     let shared: Arc<dyn MacroLookup> = Arc::new(table(vec![entry(1, "ko", "không")]));

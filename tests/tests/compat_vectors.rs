@@ -437,7 +437,8 @@ fn no_two_vectors_share_a_setup() {
             .map(|entry| (entry.trigger.as_str(), entry.replacement.as_str()))
             .collect();
         let setup = format!(
-            "{options}|{}|{}|{}",
+            "{options}|{:?}|{}|{}|{}",
+            vector.secure_field_mode(),
             serde_json::to_string(&macros).unwrap_or_default(),
             vector.initial_text,
             vector.keys

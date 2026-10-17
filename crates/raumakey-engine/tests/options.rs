@@ -40,6 +40,38 @@ fn spell_check_on_and_off() {
     assert_eq!(type_keys(&off, "tieengs{SPACE}"), "tiếng ");
 }
 
+/// D34: with spell checking off, `Circumflex` (VNI `6`, VIQR `^`) applies to the rightmost
+/// `a`, `e`, or `o` of the vowel cluster.
+#[test]
+fn d34_circumflex_without_spell_check_marks_the_rightmost_a_e_or_o() {
+    let mut vni_off = vni();
+    vni_off.spell_check = false;
+    let mut viqr_off = viqr();
+    viqr_off.spell_check = false;
+    for (vni_keys, viqr_keys, expected) in [
+        ("oa6", "oa^", "oâ"),
+        ("ao6", "ao^", "aô"),
+        ("eo6", "eo^", "eô"),
+        ("oe6", "oe^", "oê"),
+        ("eao6", "eao^", "eaô"),
+        ("koa6", "koa^", "koâ"),
+        ("oan6", "oan^", "oân"),
+        ("uoa6", "uoa^", "uoâ"),
+    ] {
+        assert_eq!(type_keys(&vni_off, vni_keys), expected, "vni {vni_keys}");
+        assert_eq!(
+            type_keys(&viqr_off, viqr_keys),
+            expected,
+            "viqr {viqr_keys}"
+        );
+    }
+    // The candidate already marked undoes, wherever it is (plan §3.6).
+    assert_eq!(type_keys(&vni_off, "o6a6"), "oa6");
+    // With spell checking on these clusters are not Vietnamese, so the key stays literal.
+    assert_eq!(type_keys(&vni(), "oa6"), "oa6");
+    assert_eq!(type_keys(&viqr(), "ao^"), "ao^");
+}
+
 #[test]
 fn spelling_follows_qu_and_g_orthography() {
     // `ă` takes a `p` coda and `êu` is a rhyme after `qu` (co quắp, quặp, quều quào).
@@ -157,22 +189,55 @@ fn disabled_mode_tracks_words_only_for_macros() {
     assert_eq!(state.owned_utf16(), utf16::encode("ko").as_slice());
 }
 
+/// D25: the engine no longer passes secure-field keys through (the adapter does that in
+/// `Bypass` mode, before the engine); it processes them as any other key, except that it
+/// never expands a macro, which `Restricted` mode needs.
 #[test]
-fn secure_field_resets_and_passes_through() {
+fn secure_field_keys_are_processed_without_macros() {
     let host = script_host().expect("host");
-    let engine = engine();
+    let engine = engine_with(MacroDouble::new(&[("tiếng", "tiếng Việt")]));
     let prior = state_after(&telex(), "tieeng");
     let mut secure = host.clone();
     secure.is_secure_field = true;
-    for event in [
-        InputEvent::character('s', secure.clone()),
-        InputEvent::backspace(secure.clone()),
-        InputEvent::separator(' ', vk::SPACE, secure.clone()),
+    for (event, expected) in [
+        (
+            InputEvent::character('s', secure.clone()),
+            "Tx(3,\"ếng\",true,None,false)",
+        ),
+        (
+            InputEvent::backspace(secure.clone()),
+            "Tx(1,\"\",true,None,false)",
+        ),
+        (
+            InputEvent::separator(' ', vk::SPACE, secure.clone()),
+            PASS_RESET,
+        ),
     ] {
         let result = engine.process(&event, &telex(), &prior).expect("processed");
-        assert_eq!(format_transaction(&result.transaction), PASS_RESET);
-        assert!(result.next.is_idle());
+        let plain = InputEvent {
+            host: host.clone(),
+            ..event.clone()
+        };
+        let outside = engine.process(&plain, &telex(), &prior).expect("processed");
+        assert_eq!(format_transaction(&result.transaction), expected);
+        if event.kind != InputKind::Separator {
+            assert_eq!(result, outside, "{:?}", event.kind);
+        }
     }
+    let typed_tieengs = state_after(&telex(), "tieengs");
+    let space = InputEvent::separator(' ', vk::SPACE, secure);
+    let result = engine
+        .process(&space, &telex(), &typed_tieengs)
+        .expect("processed");
+    assert_eq!(format_transaction(&result.transaction), PASS_RESET);
+    let outside = InputEvent::separator(' ', vk::SPACE, host);
+    let expanded = engine
+        .process(&outside, &telex(), &typed_tieengs)
+        .expect("processed");
+    assert_eq!(
+        format_transaction(&expanded.transaction),
+        "Tx(5,\"tiếng Việt \",true,None,true)"
+    );
 }
 
 #[test]

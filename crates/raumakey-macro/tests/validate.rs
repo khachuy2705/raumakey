@@ -5,6 +5,7 @@ use raumakey_macro::{
     normalize_replacement, normalize_trigger,
 };
 use raumakey_model::macros::{BoundaryPolicy, CasePolicy, MacroEntry, MacroId};
+use raumakey_model::transaction::MAX_INSERT_UNITS;
 use serde::{Deserialize, Serialize};
 
 /// "ệ" in canonical decomposition: three scalars that compose to one.
@@ -107,7 +108,7 @@ fn trigger_length_limit_counts_nfc_scalars() {
     let over = "a".repeat(MAX_TRIGGER_SCALARS + 1);
     assert_eq!(normalize_trigger(&over), Err(EntryError::TriggerTooLong));
 
-    // 64 decomposed letters are 192 scalars but only 64 after NFC.
+    // 32 decomposed letters are 96 scalars but only 32 after NFC.
     let decomposed = E_NFD.repeat(MAX_TRIGGER_SCALARS);
     assert_eq!(
         normalize_trigger(&decomposed).unwrap(),
@@ -116,6 +117,23 @@ fn trigger_length_limit_counts_nfc_scalars() {
     let decomposed_over = E_NFD.repeat(MAX_TRIGGER_SCALARS + 1);
     assert_eq!(
         normalize_trigger(&decomposed_over),
+        Err(EntryError::TriggerTooLong)
+    );
+}
+
+/// D29: a trigger has at most 32 scalars, the default context limit (plan §3.9), so that a
+/// trigger typed one key per scalar fits the word the engine tracks with the defaults.
+#[test]
+fn d29_a_trigger_has_at_most_32_scalars() {
+    assert_eq!(MAX_TRIGGER_SCALARS, 32);
+    let longest = "b".repeat(32);
+    assert_eq!(normalize_trigger(&longest).as_deref(), Ok(longest.as_str()));
+    assert_eq!(
+        normalize_trigger(&"b".repeat(33)),
+        Err(EntryError::TriggerTooLong)
+    );
+    assert_eq!(
+        normalize_entry(entry(1, &"b".repeat(33), "x")),
         Err(EntryError::TriggerTooLong)
     );
 }
@@ -178,7 +196,9 @@ fn replacement_length_limit_counts_nfc_scalars() {
         normalize_replacement(&over),
         Err(EntryError::ReplacementTooLong)
     );
-    let decomposed = E_NFD.repeat(MAX_REPLACEMENT_SCALARS);
+    // 4,098 scalars as typed, 4,096 after NFC. (Before D30 this was `E_NFD` repeated 4,096
+    // times, which is 12,288 UTF-16 units in NFD and no longer fits one insert.)
+    let decomposed = format!("{}{E_NFD}", "x".repeat(MAX_REPLACEMENT_SCALARS - 1));
     assert_eq!(
         normalize_replacement(&decomposed).unwrap().chars().count(),
         MAX_REPLACEMENT_SCALARS
@@ -186,6 +206,50 @@ fn replacement_length_limit_counts_nfc_scalars() {
     let huge = "x".repeat(2_000_000);
     assert_eq!(
         normalize_replacement(&huge),
+        Err(EntryError::ReplacementTooLong)
+    );
+}
+
+/// D30: a replacement is valid only if its UTF-16 length in NFC and in NFD, plus one
+/// delimiter unit, is at most `MAX_INSERT_UNITS` (8,192), so that every expansion fits one
+/// insert in every output normalization (plan §2.7). The scalar limit still applies.
+#[test]
+fn d30_a_replacement_fits_one_insert_in_nfc_and_in_nfd_with_a_delimiter() {
+    assert_eq!(MAX_INSERT_UNITS, 8192);
+    // NFC: an astral scalar is two units. 4,095 of them and a letter are 8,191 units.
+    let nfc_longest = format!("{}a", "\u{1F600}".repeat(4095));
+    assert_eq!(nfc_longest.encode_utf16().count(), MAX_INSERT_UNITS - 1);
+    assert_eq!(
+        normalize_replacement(&nfc_longest).as_deref(),
+        Ok(nfc_longest.as_str())
+    );
+    let nfc_over = "\u{1F600}".repeat(4096);
+    assert_eq!(nfc_over.chars().count(), MAX_REPLACEMENT_SCALARS);
+    assert_eq!(
+        normalize_replacement(&nfc_over),
+        Err(EntryError::ReplacementTooLong)
+    );
+    // NFD: "ệ" is one unit in NFC and three in NFD. 2,730 of them and a letter are 8,191
+    // NFD units; one more letter, or one more "ệ", is too long.
+    let nfd_longest = format!("{}a", "ệ".repeat(2730));
+    assert_eq!(
+        normalize_replacement(&nfd_longest).as_deref(),
+        Ok(nfd_longest.as_str())
+    );
+    for nfd_over in [format!("{}aa", "ệ".repeat(2730)), "ệ".repeat(2731)] {
+        assert_eq!(
+            normalize_replacement(&nfd_over),
+            Err(EntryError::ReplacementTooLong)
+        );
+    }
+    // Typed decomposed, measured in both forms all the same.
+    let typed_nfd = E_NFD.repeat(2731);
+    assert_eq!(
+        normalize_replacement(&typed_nfd),
+        Err(EntryError::ReplacementTooLong)
+    );
+    assert_eq!(
+        normalize_entry(entry(1, "ko", &nfc_over)),
         Err(EntryError::ReplacementTooLong)
     );
 }

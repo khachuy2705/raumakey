@@ -394,3 +394,60 @@ After merging `raumakey-tsf` and `raumakey-controller` on top of `0bdfbcc` (plan
 No TSF host application has activated the TIP and no tray has been observed on a desktop; the
 manual check lists in `raumakey_tip::server` and in the controller's `desktop` module are not
 run yet.
+
+## Decisions D25, D27, D28–D30, D34
+
+Implemented on 2026-10-17 in two worktrees from `d378f71` after the product owner's decisions
+(plan §15), each reviewed by an independent reviewer and fixed until approved.
+
+### Engine, macros, TIP session core, vectors (D25, D28, D29, D30, D34)
+
+- Red, D29: four tests failed because 33-scalar triggers were accepted
+  (`d29_a_trigger_has_at_most_32_scalars`, `d29_a_trigger_longer_than_32_scalars_is_an_import_issue`,
+  `d29_creating_a_macro_with_a_trigger_longer_than_32_scalars_fails`,
+  `d29_the_longest_trigger_expands_with_the_default_context_and_a_longer_one_is_rejected`).
+- Red, D30: six tests failed, among them
+  `d30_a_replacement_fits_one_insert_in_nfc_and_in_nfd_with_a_delimiter` (4,096 emoji accepted),
+  `d30_adaptation_that_would_exceed_the_insert_limit_falls_back_to_the_stored_text`, and
+  `d47_d53_every_accepted_replacement_expands_at_every_boundary`.
+- Red, D28: compile errors for the missing token queries, then 12 of 15 tests in
+  `crates/raumakey-engine/tests/tokens.rs`, `table::d28_token_triggers_and_trigger_prefixes`,
+  `macro_engine::d47_an_accepted_trigger_with_boundary_punctuation_expands`, and
+  `macros::d28_a_trigger_across_punctuation_expands_as_one_token`.
+- D34: `d34_circumflex_without_spell_check_marks_the_rightmost_a_e_or_o` pins existing behaviour;
+  a temporary reversal of the candidate order made it fail (`vni oa6` gave `ôa`).
+- Red, D25: `matrix::b29_secure_fields_never_expand_macros`,
+  `options::secure_field_keys_are_processed_without_macros`,
+  `config::d25_restricted_mode_transforms_secure_fields_without_macros`,
+  `macro_engine::d25_no_macro_expands_for_a_key_in_a_secure_field`, and the session gate
+  `gates::d25_bypass_never_lets_the_engine_edit_a_secure_field` (a Backspace edited the field).
+- Review: approved with three minor findings. A differential run of 6,000 random scripts over 15
+  option sets with a table without punctuation triggers gave byte-identical traces to the
+  previous engine, and 24,000 scripts with token triggers kept every ownership invariant. The
+  fix round added the tests that three surviving mutations exposed, made a Backspace over a
+  tracked token's punctuation restore the word before it (red:
+  `d28_backspace_over_a_tracked_tokens_punctuation_restores_the_word_before_it` and
+  `macros::d28_a_backspace_over_the_dot_restores_the_word_before_it`), documented lenient
+  loading of data stored under the old limits, and extended the `macro_files` fuzz reference to
+  the token queries. A second re-review approved the Backspace change: an exact-restore oracle
+  over 3,656 cases matched, and four mutations of the restore were caught. Its one new minor
+  finding, that a store loaded leniently could give a new macro the identifier of a skipped
+  entry, was fixed in the main checkout (red: `d29_d30_new_ids_never_reuse_an_entry_skipped_by_lenient_loading`,
+  `next_id` returned 4 instead of 6).
+- Deliberately changed expectations: the three `BUG` tests became passing tests; the engine's
+  own matrix #29 tests now assert "no macros in secure fields" (the bypass moved to the
+  adapters); inputs that D30 makes invalid were shortened.
+
+### Control pipe security (D27)
+
+- Red: the new descriptor tests failed to compile; the process-identity test failed with
+  `E_ACCESSDENIED` from `OpenProcessToken` while impersonating a low-integrity token; the pipe
+  tests failed because low-integrity and AppContainer clients were refused and the descriptor had
+  no AppContainer ACE.
+- Review: not approved at first. The requested low mandatory label gave every low-integrity
+  process of the user full control of the pipe (a probe replaced its DACL and posed as the
+  controller), while AppContainer clients connect without it. The fix removed the label, added a
+  client-side refusal of pipes labeled below medium (red: both squatter tests connected), made a
+  test harness stop the server when the client panics (red: the test hung until killed), and
+  pinned the label parsing with a medium-labeled pipe. D27 in plan §15 records the amendment.
+  The re-review approved it.

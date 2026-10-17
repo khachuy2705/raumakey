@@ -110,6 +110,14 @@ fn no_macros_never_expands() {
     );
 }
 
+/// D28: a lookup that does not implement the token queries has no token triggers, so the
+/// engine never tracks tokens for it.
+#[test]
+fn lookups_have_no_token_triggers_by_default() {
+    assert!(!NoMacros.has_token_triggers());
+    assert!(!NoMacros.is_trigger_prefix("v.", CaseMode::Adaptive));
+}
+
 #[test]
 fn hotkeys_parse_and_display_canonically() {
     let toggle: Hotkey = "Ctrl+Shift".parse().unwrap();

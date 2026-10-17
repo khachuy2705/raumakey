@@ -1,7 +1,9 @@
 use raumakey_model::error::EngineError;
 use raumakey_model::host::{DocumentId, ExeName, ExeNameError, HostContext, SessionId};
 use raumakey_model::identity::RAUMAKEY_INJECTED_TAG;
-use raumakey_model::input::{InputEvent, InputKind, MAX_EVENT_TEXT_UNITS, Modifiers, vk};
+use raumakey_model::input::{
+    InputEvent, InputKind, MAX_EVENT_TEXT_UNITS, Modifiers, is_boundary_punctuation, vk,
+};
 
 fn host() -> HostContext {
     HostContext::new(
@@ -56,6 +58,19 @@ fn host_context_defaults_and_owner() {
         (SessionId::from_u128(1), Some(DocumentId::from_u128(7)))
     );
     assert_eq!(SessionId::from_u128(0x0102).to_u128(), 0x0102);
+}
+
+/// Plan §3.8: the boundary punctuation that ends a word when no action consumes it. The
+/// engine and the macro table share this definition (D28).
+#[test]
+fn boundary_punctuation_is_the_plan_list() {
+    let listed = ".,;:!?\"'()[]{}<>/\\|";
+    for c in listed.chars() {
+        assert!(is_boundary_punctuation(c), "{c}");
+    }
+    for c in "-_+=~`^@#$%&*0aZ ê😀\t".chars() {
+        assert!(!is_boundary_punctuation(c), "{c:?}");
+    }
 }
 
 #[test]

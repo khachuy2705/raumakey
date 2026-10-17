@@ -15,8 +15,18 @@
 //!   lack marks that later keys add (`ưo` → `ươ`, `tieng` → `tiêng`).
 //! - Boundaries expand macros, restore invalid transformed words to their raw keys, and reset
 //!   the state; Shift+Space and VIQR-escaped punctuation commit the word unchanged.
+//! - A whitespace boundary also looks up the token typed since the previous whitespace, so a
+//!   trigger with boundary punctuation (`v.v`) expands (plan D28). The engine tracks such a
+//!   token only while the macro lookup has triggers with boundary punctuation and the text
+//!   committed so far starts one of them; it then owns the whole token's rendered text, so
+//!   the replacement deletes only text the adapter can check.
 //! - Backspace restores up to [`HISTORY_CAPACITY`] snapshots; a word longer than the context
 //!   limit stops being owned until the next boundary.
+//! - A key in a secure field never expands a macro and is otherwise processed like any other
+//!   key (plan D25). Whether a secure field is transformed at all is the adapter's decision,
+//!   taken from the host policy's secure-field mode before the engine: the default `Bypass`
+//!   passes such keys through untouched, `Restricted` lets the engine transform them.
+//!   Ctrl/Alt/Win shortcuts still bypass the engine.
 //!
 //! [`script`] drives the engine from key scripts against the model's `TextSimulator`.
 
@@ -32,6 +42,7 @@ mod process;
 mod render;
 pub mod script;
 mod syllable;
+mod token;
 mod word;
 
 use std::fmt;
@@ -47,6 +58,7 @@ use raumakey_model::transaction::EditTransaction;
 
 use crate::history::History;
 use crate::keymaps::KeymapSet;
+use crate::token::Token;
 use crate::word::Word;
 
 /// Version of [`EngineState`]; a state with another version is rejected.
@@ -97,6 +109,8 @@ pub struct EngineState {
     pub(crate) history: History<Word>,
     pub(crate) overflow: bool,
     pub(crate) tracking: Tracking,
+    /// The token of the current word (plan D28); its committed part starts `owned`.
+    pub(crate) token: Token,
 }
 
 impl EngineState {
@@ -111,6 +125,7 @@ impl EngineState {
             history: History::default(),
             overflow: false,
             tracking: Tracking::default(),
+            token: Token::Start,
         }
     }
 
@@ -129,7 +144,9 @@ impl EngineState {
         self.owned.is_empty()
     }
 
-    /// The rendered current word the engine believes is immediately before the caret.
+    /// The text the engine believes is immediately before the caret and may replace: the
+    /// rendered current word, preceded by the committed part of its token while the engine
+    /// tracks one (plan D28).
     pub fn owned_utf16(&self) -> &[u16] {
         &self.owned
     }

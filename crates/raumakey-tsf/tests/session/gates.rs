@@ -4,6 +4,7 @@
 use raumakey_ipc::message::RuntimeSnapshot;
 use raumakey_model::host::ExeName;
 use raumakey_model::identity::RAUMAKEY_INJECTED_TAG;
+use raumakey_model::input::vk;
 use raumakey_model::policy::{PROBE_VERSION, ProbeRecord, ProbeResult};
 use raumakey_tip::session::{KeyDownOutcome, ServiceCore};
 
@@ -266,6 +267,37 @@ fn matrix_29_a_secure_field_passes_everything_through() {
     let presses = doc.type_text(&mut core, "aas after ");
     assert!(presses.iter().all(|press| !press.claimed));
     assert_eq!(doc.text(), "aas after ");
+    assert_eq!(doc.attempts, 0);
+}
+
+/// D25: in `Bypass`, the default, the core passes every key of a secure field through
+/// before the engine, so the field is never edited. Without that gate the engine, which now
+/// processes secure-field keys, would undo the last key of a word typed just before the field
+/// turned secure: in English mode with `macros_when_disabled` such a word is tracked
+/// literally, and Backspace steps back through its history.
+#[test]
+fn d25_bypass_never_lets_the_engine_edit_a_secure_field() {
+    let mut core = ServiceCore::new();
+    let mut snapshot = RuntimeSnapshot::defaults_v1();
+    snapshot.config_revision = 1;
+    snapshot.options.macros_when_disabled = true;
+    core.apply_runtime_snapshot(&snapshot)
+        .expect("valid snapshot");
+    core.set_vietnamese_mode(false);
+    let mut doc = FakeDocument::new(1);
+    doc.type_text(&mut core, "ko");
+    doc.host.is_secure_field = true;
+    let press = doc.type_key(&mut core, vk::BACK);
+    assert!(press.reached_app());
+    assert_eq!(doc.text(), "k");
+    assert_eq!(
+        doc.attempts, 0,
+        "a secure field is never edited in Bypass mode"
+    );
+    // The word ended: back in a plain field, nothing is left to undo.
+    doc.host.is_secure_field = false;
+    doc.type_key(&mut core, vk::BACK);
+    assert_eq!(doc.text(), "");
     assert_eq!(doc.attempts, 0);
 }
 

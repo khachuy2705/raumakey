@@ -23,7 +23,8 @@ pub enum EntryError {
     EmptyReplacement,
     /// The replacement has more than
     /// [`MAX_REPLACEMENT_SCALARS`](crate::validate::MAX_REPLACEMENT_SCALARS) scalars after NFC
-    /// normalization.
+    /// normalization, or it does not fit one engine insert with a delimiter in NFC or NFD
+    /// ([`fits_one_insert`](crate::validate::fits_one_insert), plan D30).
     ReplacementTooLong,
     /// The replacement contains NUL.
     ReplacementNul,

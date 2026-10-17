@@ -61,30 +61,8 @@ enum Outcome {
     NotApplicable,
 }
 
-/// Boundary punctuation (plan §3.8).
-pub(crate) fn is_boundary_punctuation(c: char) -> bool {
-    matches!(
-        c,
-        '.' | ','
-            | ';'
-            | ':'
-            | '!'
-            | '?'
-            | '"'
-            | '\''
-            | '('
-            | ')'
-            | '['
-            | ']'
-            | '{'
-            | '}'
-            | '<'
-            | '>'
-            | '/'
-            | '\\'
-            | '|'
-    )
-}
+/// Boundary punctuation (plan §3.8), shared with the macro table (plan D28).
+pub(crate) use raumakey_model::input::is_boundary_punctuation;
 
 impl Word {
     /// True when the word has no items.

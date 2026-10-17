@@ -5,9 +5,11 @@ use raumakey_macro::{
     LegacyIssueReason, MAX_LEGACY_MACRO_LINES, MAX_REPLACEMENT_SCALARS, MacroTable, adapt_case,
     case_pattern, export_text_checked, is_legacy_exportable, normalize_entry, parse_legacy_text,
 };
+use raumakey_model::input::is_boundary_punctuation;
 use raumakey_model::macros::{
     Boundary, BoundaryPolicy, CaseMode, CasePolicy, MacroEntry, MacroExpansion, MacroLookup,
 };
+use raumakey_model::transaction::MAX_INSERT_UNITS;
 use unicode_normalization::{UnicodeNormalization, is_nfc};
 
 /// Largest input in bytes.
@@ -28,12 +30,20 @@ fn fold(text: &str) -> String {
     nfc(&nfc(text).to_lowercase())
 }
 
+/// D30: the text and one delimiter unit fit one insert in NFC and in NFD.
+fn fits_one_insert(text: &str) -> bool {
+    let nfc_units = text.nfc().map(char::len_utf16).sum::<usize>();
+    let nfd_units = text.nfd().map(char::len_utf16).sum::<usize>();
+    nfc_units.max(nfd_units) < MAX_INSERT_UNITS
+}
+
 /// The lookup rules `MacroTable` documents, over the imported entries, with each folded
 /// trigger computed once: the plan §4 order (the exact trigger first, then, adaptive only, the
 /// case-insensitive one; the lowest identifier wins), plus the table's rule 5, a code decision
 /// of design §20.9 that the plan does not record yet and that departs from the plan §4
 /// wording: only a case-insensitive match of an `Adapt` entry follows the typed case (an exact
-/// match never does), and only within the replacement limit. The adaptation itself reuses
+/// match never does), and only within the replacement limit and one insert with a delimiter
+/// in NFC and NFD (D30). The adaptation itself reuses
 /// `adapt_case` and `case_pattern` of the crate under test, whose rules its unit tests pin;
 /// this reference decides which entry wins and whether the replacement is adapted.
 struct Reference<'a> {
@@ -47,6 +57,30 @@ impl<'a> Reference<'a> {
             entries,
             folded: entries.iter().map(|entry| fold(&entry.trigger)).collect(),
         }
+    }
+
+    /// `MacroLookup::has_token_triggers` (D28): an enabled trigger contains boundary
+    /// punctuation.
+    fn has_token_triggers(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.enabled && entry.trigger.chars().any(is_boundary_punctuation))
+    }
+
+    /// `MacroLookup::is_trigger_prefix` (D28): some enabled trigger starts with the NFC
+    /// prefix, or, in adaptive mode, its fold starts with the prefix's fold. An empty prefix
+    /// starts nothing.
+    fn is_trigger_prefix(&self, prefix: &str, mode: CaseMode) -> bool {
+        if prefix.is_empty() {
+            return false;
+        }
+        let prefix = nfc(prefix);
+        let folded = fold(&prefix);
+        self.entries.iter().zip(&self.folded).any(|(entry, key)| {
+            entry.enabled
+                && (entry.trigger.starts_with(&prefix)
+                    || (mode == CaseMode::Adaptive && key.starts_with(&folded)))
+        })
     }
 
     fn lookup(&self, typed: &str, boundary: Boundary, mode: CaseMode) -> Option<MacroExpansion> {
@@ -78,7 +112,7 @@ impl<'a> Reference<'a> {
             .min_by_key(|(entry, _)| entry.id)?;
         let replacement = if entry.case_policy == CasePolicy::Adapt {
             let adapted = adapt_case(&entry.replacement, case_pattern(&typed));
-            if adapted.chars().count() > MAX_REPLACEMENT_SCALARS {
+            if adapted.chars().count() > MAX_REPLACEMENT_SCALARS || !fits_one_insert(&adapted) {
                 entry.replacement.clone()
             } else {
                 adapted
@@ -111,7 +145,33 @@ fn check_lookup(table: &MacroTable, reference: &Reference<'_>, typed: &str) {
                     expansion.replacement.chars().count() <= MAX_REPLACEMENT_SCALARS,
                     "an expansion exceeds the replacement limit"
                 );
+                assert!(
+                    fits_one_insert(&expansion.replacement),
+                    "an expansion does not fit one insert with a delimiter (D30)"
+                );
             }
+        }
+    }
+}
+
+/// The token queries for `typed` at every place the engine asks them: after each boundary
+/// punctuation character, and for the whole text.
+fn check_prefixes(table: &MacroTable, reference: &Reference<'_>, typed: &str) {
+    if typed.chars().count() > MAX_WORD_CHARS {
+        return;
+    }
+    let ends = typed
+        .char_indices()
+        .filter(|&(_, c)| is_boundary_punctuation(c))
+        .map(|(index, c)| index + c.len_utf8())
+        .chain([typed.len()]);
+    for end in ends {
+        let prefix = typed.get(..end).unwrap_or_default();
+        for mode in [CaseMode::Exact, CaseMode::Adaptive] {
+            assert!(
+                table.is_trigger_prefix(prefix, mode) == reference.is_trigger_prefix(prefix, mode),
+                "is_trigger_prefix ({mode:?}) differs from the documented rule"
+            );
         }
     }
 }
@@ -205,12 +265,18 @@ pub(crate) fn run(data: &[u8]) {
         "the table lost an entry"
     );
     let reference = Reference::new(&import.entries);
+    assert!(
+        table.has_token_triggers() == reference.has_token_triggers(),
+        "has_token_triggers differs from the documented rule"
+    );
     for entry in import.entries.iter().take(LOOKED_UP_ENTRIES) {
         for variant in case_variants(&entry.trigger) {
             check_lookup(&table, &reference, &variant);
+            check_prefixes(&table, &reference, &variant);
         }
         let decomposed: String = entry.trigger.nfd().collect();
         check_lookup(&table, &reference, &decomposed);
+        check_prefixes(&table, &reference, &decomposed);
     }
     let text = String::from_utf8_lossy(bytes);
     for word in text
@@ -219,6 +285,7 @@ pub(crate) fn run(data: &[u8]) {
         .take(TYPED_WORDS)
     {
         check_lookup(&table, &reference, word);
+        check_prefixes(&table, &reference, word);
     }
 
     // Export writes every representable entry and reports the others (`is_legacy_exportable`

@@ -6,8 +6,10 @@
 //! `tests/fixtures/compat/*.toml` hold vectors for every engine-level row of
 //! `docs/reference/evkey_compatibility_test_matrix.md` (A1–A18, B21–B23, B29, D47–D54) and for
 //! the golden vectors of plan §3.10. Their expectations are transcribed from the engine's own
-//! tests (`crates/raumakey-engine/tests/matrix.rs` and `golden.rs`, named in each vector's
-//! `source`), never invented:
+//! tests (`crates/raumakey-engine/tests/matrix.rs`, `golden.rs`, and, for tokens across
+//! punctuation (D28), `tokens.rs`) or, for the secure-field behaviour that the adapter's policy
+//! decides (D25), from this executor's tests (`tests/src/vectors/tests.rs`), named in each
+//! vector's `source`, never invented:
 //!
 //! - A vector asserts a transaction only where its source test asserts that transaction.
 //! - `text` is always present. Where the source asserts only transactions, it is the text those
@@ -48,7 +50,7 @@
 //! | `decisions` | with `raumakey-decision` only | The decisions the expected value rests on: `D<n>`, `plan §<section>`, or `design §<section>` |
 //! | `source` | yes | `<file>::<test>`: the Rust test the expectations were transcribed from, relative to the workspace root |
 //! | `method` | yes | `telex`, `vni`, or `viqr` |
-//! | `options` | no | Overrides of [`EngineOptions::defaults_v1`] (plan D4): `enabled`, `normalization` (`nfc`, `nfd`, `preserve`), `modern_tone`, `free_marking`, `spell_check`, `auto_restore_invalid`, `macros_enabled`, `macros_when_disabled`, `auto_case_macro`, `context_limit_codepoints`. An override may repeat a default to state a precondition of the matrix row |
+//! | `options` | no | Overrides of [`EngineOptions::defaults_v1`] (plan D4): `enabled`, `normalization` (`nfc`, `nfd`, `preserve`), `modern_tone`, `free_marking`, `spell_check`, `auto_restore_invalid`, `macros_enabled`, `macros_when_disabled`, `auto_case_macro`, `context_limit_codepoints`; and the policy's `secure_field_mode` (`bypass`, the default, or `restricted`; D25), which is not an engine option. An override may repeat a default to state a precondition of the matrix row |
 //! | `macros` | no | `{ trigger, replacement }` entries of a real `raumakey_macro::MacroTable`, with identifiers 1, 2, … in order, enabled, and the default boundary and case policies |
 //! | `initial_text` | no | Document text before the first key; empty by default |
 //! | `keys` | yes | A non-empty key script in the grammar of `raumakey_engine::script::parse_keys` |
@@ -95,10 +97,16 @@
 //! # Execution
 //!
 //! [`run_vector`] runs one vector in-process with the real `VietnameseEngine` and a real
-//! `MacroTable`, through `raumakey_engine::script::run_script_with` against the model's
-//! `TextSimulator`, and returns a [`VectorResult`] with the fields of design §15.3. Besides the
-//! expectations it requires every transaction to apply and the engine's word to stay the
-//! document's suffix.
+//! `MacroTable` against the model's `TextSimulator`, and returns a [`VectorResult`] with the
+//! fields of design §15.3. It drives the engine as the TIP's session core does (D25): the
+//! compatibility policy of defaults v1, with the vector's `secure_field_mode`, is resolved for
+//! every key. A `{SECURE}` key whose policy does not allow Vietnamese (`bypass`, the default)
+//! never reaches the engine and passes through with `Tx(0,"",false,None,true)`, ending the
+//! word; every other key reaches the engine with Vietnamese and macros turned off where the
+//! policy says so (`restricted` keeps Vietnamese in a secure field and turns macros off). As in
+//! `raumakey_engine::script::run_script_from`, a state is committed only after its transaction
+//! applied. Besides the expectations it requires every transaction to apply and the engine's
+//! word to stay the document's suffix.
 //!
 //! The types that hold key scripts, texts, or macros redact them in `Debug`; their content
 //! leaves the crate only through `Serialize`, in the runner's report.
@@ -120,6 +128,7 @@ use raumakey_macro::{MacroError, MacroTable};
 use raumakey_model::diag::VectorId;
 use raumakey_model::macros::{BoundaryPolicy, CasePolicy, MacroEntry, MacroId};
 use raumakey_model::options::{EngineOptions, InputMethod, Normalization, OptionsError};
+use raumakey_model::policy::{CompatibilityConfig, SecureFieldMode};
 use serde::{Deserialize, Serialize};
 
 /// Schema version of the fixture files this loader reads.
@@ -215,10 +224,16 @@ pub struct OptionOverrides {
     /// [`EngineOptions::context_limit_codepoints`].
     #[serde(default)]
     pub context_limit_codepoints: Option<u32>,
+    /// The secure-field mode of the compatibility policy (D25): not an engine option, but
+    /// the setting that decides how the executor treats `{SECURE}` keys. `None` keeps the
+    /// mode of `CompatibilityConfig::defaults_v1`, `bypass`.
+    #[serde(default)]
+    pub secure_field_mode: Option<SecureFieldMode>,
 }
 
 impl OptionOverrides {
-    /// Writes every override into `options`.
+    /// Writes every engine-option override into `options` (the secure-field mode is a policy
+    /// setting; see [`Vector::secure_field_mode`]).
     pub fn apply(&self, options: &mut EngineOptions) {
         let Self {
             enabled,
@@ -231,6 +246,7 @@ impl OptionOverrides {
             macros_when_disabled,
             auto_case_macro,
             context_limit_codepoints,
+            secure_field_mode: _,
         } = *self;
         set(&mut options.enabled, enabled);
         set(&mut options.normalization, normalization);
@@ -522,6 +538,23 @@ impl Vector {
     /// The real macro table of the vector.
     pub fn macro_table(&self) -> Result<MacroTable, VectorError> {
         MacroTable::new(self.macro_entries()).map_err(VectorError::InvalidMacros)
+    }
+
+    /// The secure-field mode the executor's policy uses: the override, else that of
+    /// `CompatibilityConfig::defaults_v1` (`Bypass`, D25).
+    pub fn secure_field_mode(&self) -> SecureFieldMode {
+        self.options
+            .secure_field_mode
+            .unwrap_or(CompatibilityConfig::defaults_v1().secure_field_mode)
+    }
+
+    /// The compatibility configuration of the run: defaults v1 with
+    /// [`Vector::secure_field_mode`].
+    pub fn compatibility(&self) -> CompatibilityConfig {
+        CompatibilityConfig {
+            secure_field_mode: self.secure_field_mode(),
+            ..CompatibilityConfig::defaults_v1()
+        }
     }
 }
 

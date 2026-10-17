@@ -87,8 +87,10 @@
 //!   forgets the answer read before, so that a field whose scope changed meanwhile counts as
 //!   unread until the new read has run, also when the host makes that read wait. A password
 //!   or PIN scope makes the context a secure field, and so does a scope that was not read
-//!   yet: keys there bypass every transformation (matrix #29). A scope that changes while the
-//!   field keeps the focus is seen at the next focus change only.
+//!   yet: keys there follow the policy's secure-field mode (D25, matrix #29), and in the
+//!   default `Bypass` mode, the only one until the TIP receives snapshots, they bypass every
+//!   transformation. A scope that changes while the field keeps the focus is seen at the next
+//!   focus change only.
 //! - **Mode.** The keyboard open/close compartment shows the core's Vietnamese mode
 //!   ([`adapter::mode`](crate::adapter::mode)): activation writes it, and so does every key
 //!   call after which the mode changed (a local Ctrl+Shift toggle, D24). A change of the

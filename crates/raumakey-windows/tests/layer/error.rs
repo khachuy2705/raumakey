@@ -48,6 +48,8 @@ fn kinds_classify_common_failures() {
         (50, WinErrorKind::NotSupported),
         (109, WinErrorKind::BrokenPipe),
         (233, WinErrorKind::BrokenPipe),
+        // ERROR_INVALID_LABEL: a pipe server below medium integrity.
+        (1299, WinErrorKind::UntrustedPeer),
         (1, WinErrorKind::Other),
     ];
     for (code, kind) in cases {

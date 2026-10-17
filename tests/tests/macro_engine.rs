@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use raumakey_engine::script::{self, KeyToken};
 use raumakey_engine::{EngineState, VietnameseEngine};
-use raumakey_macro::MacroTable;
+use raumakey_macro::{EntryError, MacroError, MacroTable};
 use raumakey_model::macros::{BoundaryPolicy, CasePolicy, MacroEntry, MacroId};
 use raumakey_model::options::{EngineOptions, InputMethod, Normalization};
 use raumakey_model::transaction::{MAX_INSERT_UNITS, TextSimulator};
@@ -182,6 +182,22 @@ fn d49_shift_space_escapes_shortcuts_and_secure_fields_commit_the_trigger() {
     assert_eq!(typed(&engine, &options(InputMethod::Viqr), "ko\\."), "ko.");
     assert_eq!(typed(&engine, &telex(), "ko{CTRL+SPACE}"), "ko ");
     assert_eq!(typed(&engine, &telex(), "{SECURE}ko{SPACE}"), "ko ");
+}
+
+/// D25 with the real table: the engine never expands a macro, word or token, for a key in a
+/// secure field; whether the field is transformed at all is the adapter's call (the policy's
+/// secure-field mode, `Bypass` by default).
+#[test]
+fn d25_no_macro_expands_for_a_key_in_a_secure_field() {
+    let engine = engine(vec![entry(1, "ko", "không"), entry(2, "v.v", "vân vân")]);
+    assert_eq!(
+        typed(
+            &engine,
+            &telex(),
+            "{SECURE}vieetj ko v.v{SPACE}{/SECURE}ko v.v{SPACE}"
+        ),
+        "việt ko v.v không vân vân "
+    );
 }
 
 #[test]
@@ -381,37 +397,39 @@ fn the_lowest_identifier_wins_among_equal_triggers() {
     assert_eq!(typed(&engine, &telex(), "KO{SPACE}"), "KHONG ");
 }
 
-/// 4096 astral scalars: the longest valid replacement (plan §4), exactly `MAX_INSERT_UNITS`
-/// UTF-16 units.
-fn astral_at_the_limit() -> String {
-    "😀".repeat(4096)
+/// The longest replacement in NFC output (D30): 4,095 astral scalars and a letter, 8,191
+/// UTF-16 units, so that a printable delimiter still fits one insert of `MAX_INSERT_UNITS`.
+fn nfc_longest() -> String {
+    format!("{}a", "😀".repeat(4095))
 }
 
-/// 2731 letters of 3 NFD units each: 2731 units in NFC, 8193 in NFD.
-fn decomposing_replacement() -> String {
-    "ế".repeat(2731)
+/// The longest replacement in NFD output (D30): 2,730 × "ế" (one unit in NFC, three in NFD)
+/// and a letter, 2,731 units in NFC and 8,191 in NFD.
+fn nfd_longest() -> String {
+    format!("{}a", "ế".repeat(2730))
 }
 
+/// Changed for D30: the longest replacement used to be 4,096 astral scalars, exactly
+/// `MAX_INSERT_UNITS` units, which fit only before a replayed Enter. D30 rejects it, so the
+/// longest is now one unit shorter and fits before every delimiter.
 #[test]
 fn replacements_at_the_insert_limit_expand() {
-    let at_limit = astral_at_the_limit();
-    let just_below = format!("{}a", "😀".repeat(4095));
-    let decomposing = decomposing_replacement();
+    let longest = nfc_longest();
+    let decomposing = nfd_longest();
     let engine = engine(vec![
-        entry(1, "big", &at_limit),
-        entry(2, "fit", &just_below),
+        entry(2, "fit", &longest),
         entry(3, "nfd", &decomposing),
     ]);
-    assert_eq!(utf16::encode(&at_limit).len(), MAX_INSERT_UNITS);
-    // Enter is replayed, so the insert holds the replacement only: exactly at the limit.
-    let enter = run(&engine, &telex(), "big{ENTER}");
-    assert_eq!(enter.text, format!("{at_limit}\r"));
+    assert_eq!(utf16::encode(&longest).len(), MAX_INSERT_UNITS - 1);
+    // Enter is replayed, so the insert holds the replacement only.
+    let enter = run(&engine, &telex(), "fit{ENTER}");
+    assert_eq!(enter.text, format!("{longest}\r"));
     assert!(enter.txs[3].starts_with("Tx(3,"));
     assert!(enter.txs[3].ends_with(",true,Some(RETURN),true)"));
     // 8191 units plus the space: exactly at the limit.
     assert_eq!(
         typed(&engine, &telex(), "fit{SPACE}"),
-        format!("{just_below} ")
+        format!("{longest} ")
     );
     // In NFC the decomposing replacement is 2731 units, far below the limit.
     assert_eq!(
@@ -423,7 +441,7 @@ fn replacements_at_the_insert_limit_expand() {
 /// Expects matrix #47 (and #53 for NFD output) for a macro that `MacroTable` accepts: typing
 /// `keys` gives `expected`, or with NFD output an NFD text canonically equivalent to it. A
 /// table that rejected the entry would also satisfy the contract, because the user could then
-/// not create a macro that never works.
+/// not create a macro that never works; callers that need the entry accepted check it first.
 fn assert_accepted_macro_expands(
     candidate: MacroEntry,
     options: &EngineOptions,
@@ -444,31 +462,56 @@ fn assert_accepted_macro_expands(
     );
 }
 
-/// Plan §4 accepts replacements of up to 4096 scalars, but an insert holds at most
-/// `MAX_INSERT_UNITS` UTF-16 units (plan §2.7): the replacement in the output normalization
-/// plus a printable delimiter. Beyond that the engine commits the trigger as typed, without
-/// expansion and without a signal (the "Silent fallback" of design §20.7, plan §14.4 item 4).
-/// Either fix passes this test: the table rejects such entries, or the engine expands them.
+/// D30 (resolves plan §14.4 item 4; formerly the ignored `BUG` test
+/// `d47_d53_accepted_replacements_beyond_the_insert_limit_expand`): a replacement is valid
+/// only if it fits one insert with a delimiter in NFC and in NFD, so every replacement the
+/// table accepts expands, in NFC and NFD output, before a printable delimiter, Enter, and
+/// Tab, also when the typed case would adapt it (the table then inserts the stored text). The
+/// "Silent fallback" of design §20.7 cannot be reached with valid macros, and one unit more
+/// is rejected when the macro is created.
 #[test]
-#[ignore = "BUG: accepted replacements whose insert exceeds MAX_INSERT_UNITS never expand (matrix #47, #53; plan §4 vs §2.7)"]
-fn d47_d53_accepted_replacements_beyond_the_insert_limit_expand() {
-    // 8192 units plus the space.
-    let at_limit = astral_at_the_limit();
-    assert_accepted_macro_expands(
-        entry(1, "big", &at_limit),
-        &telex(),
-        "big{SPACE}",
-        &format!("{at_limit} "),
-    );
-    // 8193 units in NFD: over the limit at every boundary, Enter included.
-    let decomposing = decomposing_replacement();
-    for (keys, delimiter) in [("nfd{SPACE}", " "), ("nfd,", ","), ("nfd{ENTER}", "\r")] {
-        assert_accepted_macro_expands(
-            entry(1, "nfd", &decomposing),
-            &nfd(telex()),
-            keys,
-            &format!("{decomposing}{delimiter}"),
+fn d47_d53_every_accepted_replacement_expands_at_every_boundary() {
+    // "ß" becomes "SS": the Title and Upper forms would be 8,192 units in NFD.
+    let growing = format!("ß{}", "ệ".repeat(2730));
+    let cases = [
+        ("big", nfc_longest(), "big"),
+        ("nfd", nfd_longest(), "nfd"),
+        ("ss", growing.clone(), "Ss"),
+        ("ss", growing, "SS"),
+    ];
+    for (trigger, replacement, typed_trigger) in cases {
+        assert!(
+            MacroTable::new(vec![entry(1, trigger, &replacement)]).is_ok(),
+            "{trigger}: the longest replacements are valid"
         );
+        for options in [telex(), nfd(telex())] {
+            for (boundary, delimiter) in [
+                ("{SPACE}", " "),
+                (",", ","),
+                ("{ENTER}", "\r"),
+                ("{TAB}", "\t"),
+            ] {
+                assert_accepted_macro_expands(
+                    entry(1, trigger, &replacement),
+                    &options,
+                    &format!("{typed_trigger}{boundary}"),
+                    &format!("{replacement}{delimiter}"),
+                );
+            }
+        }
+    }
+    for over in [
+        "😀".repeat(4096),
+        "ế".repeat(2731),
+        format!("{}aa", "ế".repeat(2730)),
+    ] {
+        assert!(matches!(
+            MacroTable::new(vec![entry(1, "big", &over)]),
+            Err(MacroError::InvalidEntry {
+                reason: EntryError::ReplacementTooLong,
+                ..
+            })
+        ));
     }
 }
 
@@ -499,15 +542,75 @@ fn assert_accepted_trigger_expands(trigger: &str, keys: &str) {
     }
 }
 
+/// D28 (resolves plan §14.4 item 1; this test was ignored as a `BUG`): a whitespace boundary
+/// also looks up the token typed since the previous whitespace, so a trigger with boundary
+/// punctuation expands in every input method.
 #[test]
-#[ignore = "BUG: MacroTable accepts triggers with boundary punctuation (v.v) that the engine splits into words (plan §4 vs §3.8)"]
 fn d47_an_accepted_trigger_with_boundary_punctuation_expands() {
+    assert!(MacroTable::new(vec![entry(1, "v.v", "mở rộng")]).is_ok());
     assert_accepted_trigger_expands("v.v", "v.v{SPACE}");
 }
 
+/// D28 with the real table: the token is replaced as a whole at Space, Enter, and Tab, its
+/// case adapts, it works while Vietnamese is off, and only a whole token matches (matrix #48).
 #[test]
-#[ignore = "BUG: triggers of 33–64 scalars are valid (plan §4) but overflow the default 32-key context (plan §3.9) and never expand"]
-fn d47_an_accepted_trigger_longer_than_the_default_context_expands() {
-    let trigger = "b".repeat(40);
-    assert_accepted_trigger_expands(&trigger, &format!("{trigger}{{SPACE}}"));
+fn d28_token_triggers_expand_with_the_real_table() {
+    let engine = engine(vec![
+        entry(1, "v.v", "vân vân"),
+        entry(2, "tp.hcm", "Thành phố Hồ Chí Minh"),
+        entry(3, "ko", "không"),
+    ]);
+    let outcome = run(&engine, &telex(), "v.v{SPACE}");
+    assert_eq!(outcome.txs, [PASS, PASS, PASS, &expansion(3, "vân vân ")]);
+    assert!(outcome.state.is_idle());
+    for method in [InputMethod::Vni, InputMethod::Viqr] {
+        assert_eq!(typed(&engine, &options(method), "v.v{SPACE}"), "vân vân ");
+    }
+    assert_eq!(
+        run(&engine, &telex(), "v.v{ENTER}").txs[3],
+        "Tx(3,\"vân vân\",true,Some(RETURN),true)"
+    );
+    assert_eq!(typed(&engine, &telex(), "v.v{TAB}"), "vân vân\t");
+    assert_eq!(
+        typed(&engine, &telex(), "ko v.v tp.hcm{SPACE}"),
+        "không vân vân Thành phố Hồ Chí Minh "
+    );
+    assert_eq!(typed(&engine, &telex(), "V.V{SPACE}"), "VÂN VÂN ");
+    assert_eq!(
+        typed(&engine, &telex(), "TP.HCM{SPACE}"),
+        "THÀNH PHỐ HỒ CHÍ MINH "
+    );
+    for keys in ["x.v.v{SPACE}", "v.v.v{SPACE}", "v.v,", "v.ko{SPACE}"] {
+        let text = typed(&engine, &telex(), keys);
+        assert!(!text.contains("vân"), "{keys}: {text}");
+    }
+    assert_eq!(typed(&engine, &telex(), "v.ko{SPACE}"), "v.không ");
+    let mut off = telex();
+    off.enabled = false;
+    off.macros_when_disabled = true;
+    assert_eq!(typed(&engine, &off, "v.v{SPACE}"), "vân vân ");
+    let nfd_text = typed(&engine, &nfd(telex()), "tp.hcm{SPACE}");
+    assert!(is_nfd(&nfd_text));
+    assert_eq!(nfd_text.nfc().collect::<String>(), "Thành phố Hồ Chí Minh ");
+}
+
+/// D29 (resolves plan §14.4 item 2): a trigger has at most 32 scalars, the default context
+/// limit, so the longest trigger typed one key per scalar expands with defaults v1, and a
+/// longer one is rejected when the macro is created.
+#[test]
+fn d29_the_longest_trigger_expands_with_the_default_context_and_a_longer_one_is_rejected() {
+    assert!(matches!(
+        MacroTable::new(vec![entry(1, &"b".repeat(33), "mở rộng")]),
+        Err(MacroError::InvalidEntry {
+            reason: EntryError::TriggerTooLong,
+            ..
+        })
+    ));
+    let longest = "b".repeat(32);
+    assert_eq!(
+        EngineOptions::defaults_v1().context_limit_codepoints,
+        u32::try_from(longest.chars().count()).expect("small")
+    );
+    assert!(MacroTable::new(vec![entry(1, &longest, "mở rộng")]).is_ok());
+    assert_accepted_trigger_expands(&longest, &format!("{longest}{{SPACE}}"));
 }

@@ -8,8 +8,13 @@
 //!
 //! The SID hash is FNV-1a-64 of the canonical SID string (as returned by
 //! `ConvertSidToStringSidW`), written as 16 lowercase hex digits. It only partitions names; it is
-//! not a secret. Security comes from the user-only DACL of each object (`security`) and from peer
-//! verification (`pipe`).
+//! not a secret. Security comes from the descriptors of `security` (user-only for every kernel
+//! object; the control pipe also admits AppContainer clients of the user, plan D27) and from
+//! peer verification (`pipe`).
+//!
+//! An AppContainer process's `Local\` is its own namespace, so it cannot open these kernel
+//! objects by name. That is why the IPC path uses the pipe only: `\\.\pipe\` names are the same
+//! for every process.
 
 use core::fmt;
 

@@ -3,6 +3,7 @@
 //! `raumakey_engine::script` does): the next state is committed only after the transaction
 //! applied, and a failure resets the engine (plan §3, design §5.2, matrix A–B, #47–#54).
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use raumakey_engine::script::{self, KeyToken};
@@ -15,7 +16,10 @@ use raumakey_model::input::{InputEvent, InputKind, vk};
 use raumakey_model::keymap::{
     BaseVowel, KEYMAP_SCHEMA_VERSION, KeyAction, KeyBinding, KeyMap, Tone,
 };
-use raumakey_model::macros::{BoundaryPolicy, CasePolicy, MacroEntry, MacroId};
+use raumakey_model::macros::{
+    Boundary, BoundaryPolicy, CaseMode, CasePolicy, MacroEntry, MacroExpansion, MacroId,
+    MacroLookup,
+};
 use raumakey_model::options::{EngineOptions, InputMethod, Normalization};
 use raumakey_model::transaction::{EditTransaction, TextSimulator, TransactionError};
 
@@ -134,7 +138,8 @@ fn entry(
 }
 
 /// The fixed macro table: one entry per lookup rule, including an NFD trigger, a disabled
-/// entry, a duplicate trigger, and a replacement of exactly `MAX_INSERT_UNITS` units.
+/// entry, a duplicate trigger, token triggers with boundary punctuation (D28), and the
+/// longest valid replacement (D30: `MAX_INSERT_UNITS` units with a delimiter).
 fn base_table() -> &'static (Vec<MacroEntry>, Arc<MacroTable>) {
     static BASE: OnceLock<(Vec<MacroEntry>, Arc<MacroTable>)> = OnceLock::new();
     BASE.get_or_init(|| {
@@ -154,7 +159,13 @@ fn base_table() -> &'static (Vec<MacroEntry>, Arc<MacroTable>) {
             entry(9, "after", "sau đó".to_owned(), Delimiter, Adapt),
             entry(10, "nl", "dòng 1\r\ndòng 2".to_owned(), Delimiter, Adapt),
             disabled,
-            entry(12, "big", "😀".repeat(4096), Delimiter, Adapt),
+            entry(
+                12,
+                "big",
+                format!("{}a", "😀".repeat(4095)),
+                Delimiter,
+                Adapt,
+            ),
             entry(
                 13,
                 "vie\u{302}\u{323}t",
@@ -163,6 +174,10 @@ fn base_table() -> &'static (Vec<MacroEntry>, Arc<MacroTable>) {
                 Adapt,
             ),
             entry(14, "ko", "khong".to_owned(), Delimiter, Adapt),
+            // Token triggers (D28): punctuation inside, at the start, and a raw-key form.
+            entry(15, "v.v", "vân vân".to_owned(), Delimiter, Adapt),
+            entry(16, "...", "…".to_owned(), Whitespace, Adapt),
+            entry(17, "aa.ko", "â.không".to_owned(), Delimiter, Exact),
         ];
         let table = MacroTable::new(entries.clone()).expect("the fixed macro table is valid");
         (entries, Arc::new(table))
@@ -355,10 +370,38 @@ fn alphabet_char(reader: &mut Reader<'_>) -> char {
     }
 }
 
+/// The macro table, counting the lookups and trigger-prefix queries the engine makes.
+struct Watched {
+    table: Arc<MacroTable>,
+    queries: AtomicUsize,
+}
+
+impl MacroLookup for Watched {
+    fn lookup(
+        &self,
+        typed: &str,
+        boundary: Boundary,
+        case_mode: CaseMode,
+    ) -> Option<MacroExpansion> {
+        self.queries.fetch_add(1, Ordering::Relaxed);
+        self.table.lookup(typed, boundary, case_mode)
+    }
+
+    fn has_token_triggers(&self) -> bool {
+        self.table.has_token_triggers()
+    }
+
+    fn is_trigger_prefix(&self, prefix: &str, case_mode: CaseMode) -> bool {
+        self.queries.fetch_add(1, Ordering::Relaxed);
+        self.table.is_trigger_prefix(prefix, case_mode)
+    }
+}
+
 /// An adapter over two documents of one TSF session, applying every transaction the way the
 /// TSF path does (design §5.2).
 struct Session {
     engine: VietnameseEngine,
+    macros: Arc<Watched>,
     entries: Vec<MacroEntry>,
     options: EngineOptions,
     /// The user key map passes validation (so the engine registered it).
@@ -396,8 +439,13 @@ impl Session {
             host.document_id = Some(DocumentId::from_u128(document));
             host
         };
+        let macros = Arc::new(Watched {
+            table,
+            queries: AtomicUsize::new(0),
+        });
         Self {
-            engine: VietnameseEngine::new(vec![user_map], table),
+            engine: VietnameseEngine::new(vec![user_map], Arc::clone(&macros) as _),
+            macros,
             entries,
             options,
             user_map_valid,
@@ -443,10 +491,15 @@ impl Session {
         self.events += 1;
         self.clock += 1;
         event.monotonic_time_ms = self.clock;
+        let queries = self.macros.queries.load(Ordering::Relaxed);
         let outcome = self.engine.process(&event, &self.options, &self.state);
         assert!(
             self.engine.process(&event, &self.options, &self.state) == outcome,
             "processing is not deterministic"
+        );
+        assert!(
+            !event.host.is_secure_field || self.macros.queries.load(Ordering::Relaxed) == queries,
+            "a macro was looked up for a secure field (D25, matrix #29)"
         );
         match outcome {
             Ok(result) => self.commit(&event, result),
@@ -482,10 +535,10 @@ impl Session {
             self.state.is_idle() || self.state_document == self.active,
             "a word of another document was continued (matrix #20)"
         );
-        if event.host.is_secure_field || event.is_shortcut() {
+        if event.is_shortcut() {
             assert!(
                 tx.is_pass_through() && tx.reset_context && next.is_idle(),
-                "a secure field or shortcut reached the engine (matrix #21, #29)"
+                "a shortcut reached the engine (matrix #21)"
             );
         }
         if tx.reset_context {

@@ -296,6 +296,8 @@ pub enum CasePattern { Lower, Title, Upper, Mixed }
 pub struct MacroExpansion { pub id: MacroId, pub replacement: String }   // NFC, case-adapted
 pub trait MacroLookup: Send + Sync {
     fn lookup(&self, typed: &str, boundary: Boundary, case_mode: CaseMode) -> Option<MacroExpansion>;
+    fn has_token_triggers(&self) -> bool { false }                              // D28
+    fn is_trigger_prefix(&self, prefix: &str, case_mode: CaseMode) -> bool { false } // D28
 }
 pub struct NoMacros;
 ```
@@ -344,7 +346,10 @@ impl EngineState {
     pub fn version(&self) -> u32;
     pub fn generation(&self) -> u64;
     pub fn is_idle(&self) -> bool;             // no owned text
-    pub fn owned_utf16(&self) -> &[u16];       // rendered current word believed before the caret
+    pub fn owned_utf16(&self) -> &[u16];       // text before the caret the engine may replace:
+                                               // the rendered current word, preceded by the
+                                               // committed part of its token while one is
+                                               // tracked (D28)
     pub fn word_form(&self) -> WordForm;
 }
 pub struct EngineResult { pub transaction: EditTransaction, pub next: EngineState }
@@ -467,8 +472,10 @@ Processing a `Character` that is a single ASCII scalar in Vietnamese mode:
 - **CircumflexOn(v):** target = last cluster vowel with base `v`. Already circumflex → `Undo`;
   breve/none → set circumflex.
 - **Circumflex:** candidates = cluster vowels with base a/e/o, last to first; a cluster vowel that
-  already has a circumflex → `Undo`; otherwise the first candidate whose result is a valid prefix,
-  or (spell check off) the last candidate.
+  already has a circumflex → `Undo`; otherwise the first candidate, from the right, whose result
+  is a valid prefix, else the rightmost candidate (rule 4 rejects that one when spell checking is
+  on). With spell checking off, Circumflex therefore applies to the rightmost `a`, `e`, or `o` of
+  the cluster (D34).
 - **Breve:** target = last cluster `a`; already breve → `Undo`; otherwise set breve.
 - **Horn:** if the cluster contains `u` immediately followed by `o` (outside a `qu` onset): if both
   already horned (or `o` horned with nothing after) → `Undo`; else horn the pair: both `u` and `o`
@@ -509,7 +516,7 @@ horn (`huow` → `huơ`; `huow`+`ng` → `hương`; `nguo7i` → `ngươi`).
 | Event | Behavior |
 |---|---|
 | `injected_tag == RAUMAKEY_INJECTED_TAG` | pass-through, state unchanged |
-| `host.is_secure_field` | pass-through with `reset_context`, state reset (matrix #29) |
+| `host.is_secure_field` | processed like any other event, except that no macro (word or token) is looked up or expanded (D25). Whether a secure field is transformed at all is the adapter's decision from the host policy (§6): in `Bypass` the adapter passes the key through before the engine and ends the word; in `Restricted` it runs the engine with macros off |
 | `Character` with `is_shortcut()` | pass-through with `reset_context`, state reset (matrix #21) |
 | `Character` with `alt_gr` | processed as a normal character (matrix #22) |
 | `Character` boundary punctuation (`. , ; : ! ? " ' ( ) [ ] { } < > / \ |`), when not consumed by an action | word boundary with `Boundary::Punctuation` |
@@ -522,16 +529,41 @@ horn (`huow` → `huơ`; `huow`+`ng` → `hương`; `nguo7i` → `ngươi`).
 **Word boundary:**
 
 1. Shift+Space (separator `' '` with `shift`) commits the word unchanged: no macro, no restore (D7).
-2. Macros are active when `macros_enabled && (enabled || macros_when_disabled)`. Lookup the
-   rendered NFC word, then the raw-key text if different, with `CaseMode::Adaptive` when
-   `auto_case_macro`, else `Exact`.
+2. Macros are active when `macros_enabled && (enabled || macros_when_disabled)` and the event is
+   not in a secure field. At whitespace, look up the tracked token first (D28, below): its
+   rendered NFC text, then its raw keys if different; then the rendered NFC word, then the
+   raw-key text if different, with `CaseMode::Adaptive` when `auto_case_macro`, else `Exact`. At
+   punctuation only the word is looked up.
 3. Otherwise, if `enabled && spell_check && auto_restore_invalid && word.transformed` and the
    rendered word is not a complete valid syllable (including the tone/coda rule) → replace it with
    the raw keys (matrix #15). With `auto_restore_invalid = false`, commit as rendered (matrix #16).
-4. A replacement is emitted as `Tx(owned_len, text + delimiter, consume = true)` for printable
-   delimiters; for Enter/Tab it is `Tx(owned_len, text, consume = true, replay_key = <vk>)`.
-   Without a replacement the delimiter passes through. The state resets; `reset_context = true`
-   whenever a non-empty word is committed.
+4. A replacement deletes the units it replaces: the whole owned token for a token macro, the
+   current word's units otherwise. It is emitted as `Tx(delete, text + delimiter, consume = true)`
+   for printable delimiters; for Enter/Tab it is `Tx(delete, text, consume = true, replay_key =
+   <vk>)`. Without a replacement the delimiter passes through. Whitespace resets the state;
+   `reset_context = true` whenever the engine owned text (a word or a token). Punctuation that
+   continues a token passes through with `reset_context = false`.
+
+**Tokens (D28).** A token is the text typed since the previous whitespace. Token triggers take
+part when macros are active and the macro lookup has an enabled trigger that contains boundary
+punctuation (`MacroLookup::has_token_triggers`); otherwise punctuation commits words exactly as
+above. When boundary punctuation commits a word without a replacement, the engine keeps the token
+if the committed text (rendered NFC or as raw keys, including this punctuation) starts an enabled
+trigger (`MacroLookup::is_trigger_prefix`, exact or, adaptive only, case-insensitive). It then owns
+the token's rendered text, the committed part followed by the current word, so an adapter can
+check every unit a token replacement deletes; ownership is bounded by the longest trigger
+(32 scalars, D29) plus one word, and the adapter's `max_delete_before` check still applies.
+Backspace inside the current word keeps the token; with an empty word it deletes the punctuation
+that ended the committed part and returns to the state before it (the word before the
+punctuation, with its history). The token ends, and no new token starts before the next
+whitespace or reset, when the committed text starts no trigger, a word macro or auto-restore
+replaces a word at punctuation, VIQR-escaped punctuation commits a word (matrix #49), a word
+overflows the context limit, or text that is not a word is typed. Reset events, shortcuts,
+secure-field keys, an option change that turns token triggers off, and whitespace end it too;
+after a reset the next word starts a new token. Only a whole token matches (matrix #48):
+`x.v.v` never expands `v.v`. Limitation: punctuation that ended a token which could no longer
+match was never owned, so a Backspace over it restores nothing (`v,` Backspace `.v` Space gives
+`v.v `, unexpanded, with nothing edited).
 
 **Disabled mode:** characters pass through. When macros are active while disabled, the engine still
 tracks the typed word literally so that a boundary can expand a macro.
@@ -542,8 +574,10 @@ tracks the typed word literally so that a boundary can expand a macro.
   `HISTORY_CAPACITY` (32) entries; the oldest is evicted.
 - **Backspace:** idle → pass-through. Snapshot available → restore it and emit the diff (`a a BS` →
   `a`, matrix #17). No snapshot left but owned text → pass-through and reset (matrix #18 fallback).
+  A tracked token follows the D28 rules of §3.8.
 - **Overflow:** when a word would exceed `context_limit_codepoints` keys, the word is dropped from
-  ownership and further characters pass through until the next boundary (no OOB, deterministic).
+  ownership, a tracked token is dropped too, and further characters pass through until the next
+  boundary (no OOB, deterministic).
 - **Errors:** ill-formed text → `InvalidUtf16`; `prior.version() != STATE_VERSION` →
   `InvalidStateVersion`; non-idle state owned by another `(session_id, document_id)` →
   `ContextMismatch`; `UserDefined` with an unknown or missing keymap → `UnsupportedInputMethod`;
@@ -574,9 +608,22 @@ VIQR: tie^'ng→tiếng  vie^.t→việt  ngu+o+`i→người  \'→'  dd→đ
 - Case adaptation (Adaptive and `CasePolicy::Adapt`): pattern of the typed trigger — all lowercase →
   replacement as stored; first letter upper and the rest lower (or a single upper letter) → Title
   (uppercase first letter of the replacement); every cased letter upper and more than one letter →
-  Upper; anything else → as stored.
-- Validation: trigger 1..=64 scalars without whitespace or control characters; replacement
-  1..=4096 scalars without NUL; both stored NFC.
+  Upper; anything else → as stored. If the adapted text would exceed 4,096 scalars or no longer
+  fit one insert with a delimiter in NFC or NFD (`ß` becomes `SS`), the stored text is used.
+- Validation: trigger 1..=32 scalars (D29) without whitespace or control characters; replacement
+  1..=4096 scalars without NUL whose UTF-16 length in NFC and in NFD, plus one delimiter unit, is
+  at most `MAX_INSERT_UNITS` (8,192) (D30, `fits_one_insert`); both stored NFC. Violations are
+  `EntryError::TriggerTooLong` / `ReplacementTooLong` on creation and `trigger-too-long` /
+  `replacement-too-long` issues in `parse_legacy_text`.
+- `MacroTable` implements the token queries of `MacroLookup` (D28): `has_token_triggers()` (an
+  enabled trigger contains boundary punctuation, `raumakey_model::input::is_boundary_punctuation`)
+  and `is_trigger_prefix(prefix, case_mode)` (the NFC prefix starts an enabled trigger exactly, or
+  its lowercase form a lowercase trigger in adaptive mode). The adaptive check folds the prefix on
+  its own, so a Greek trigger with a final sigma expands only when typed as stored.
+- User data is loaded with `MacroStore::from_entries_lenient`, which reports entries that violate
+  D29 or D30 by position while the valid entries keep working. The caller must keep the reported
+  entries verbatim and write them back unchanged (the controller's configuration lifecycle; no
+  API for this yet).
 - `MacroStore { revision, entries }`: `upsert(expected_revision, entry) -> Result<u64, MacroError>`,
   `remove(expected_revision, id)`, `list()`, `snapshot() -> Arc<MacroTable>`; stale revision →
   `MacroError::Conflict`. New IDs are `max(id) + 1`.
@@ -699,7 +746,11 @@ tsf_range_edit = false
   `window_class` beats one without) → capability: `!host.supports_tsf_range_edit` or a failed probe
   with the current `PROBE_VERSION` forces `SyntheticKey` unless a rule explicitly selected a
   transport → `Clipboard` is downgraded to `SyntheticKey` unless `clipboard_enabled` → secure field:
-  `macro_allowed = false`, never `Clipboard`, `vietnamese_allowed = false` in `Bypass` mode.
+  `macro_allowed = false`, never `Clipboard`; `vietnamese_allowed = false` in `Bypass` mode (the
+  default), unchanged in `Restricted` mode (D25). Adapters act on it before the engine: a
+  secure-field key whose policy does not allow Vietnamese passes through and ends the word without
+  reaching the engine; any other key runs the engine with `enabled &= vietnamese_allowed` and
+  `macros_enabled &= macro_allowed`.
 - **D13 default named sets** (data in `CompatibilityConfig::defaults_v1()`):
   `chromium-family` = msedge.exe, chrome.exe, brave.exe, vivaldi.exe, opera.exe, ms-teams.exe,
   teams.exe, slack.exe, discord.exe → `reset_on_mouse = true`; `terminals` = windowsterminal.exe,
@@ -815,8 +866,12 @@ fakes. Activation fails closed when an EVKey object already exists.
 `error` (HRESULT/Win32 mapping), `panic` (`guard_hresult`, `guard_lresult`, `guard_bool`, quiet
 panic hook that records only `file:line`), `strings`, `sid` (current user SID, SID hash, session id),
 `names` (`Local\Raumakey.<sidhash>.<name>`, pipe name `\\.\pipe\Raumakey.<session>.<sidhash>.control`),
-`security` (DACL granting only the current user SID), `pipe` (server with
-`PIPE_REJECT_REMOTE_CLIENTS`, client-process session/user verification, client connect with timeout),
+`security` (user-only descriptor `O:<user>D:P(A;;GA;;;<user>)` for every named kernel object; the
+control pipe's AppContainer-client descriptor `O:<user>D:P(A;;GA;;;<user>)(A;;0x12008b;;;AC)`
+without a mandatory label, D27), `pipe` (server with `FILE_FLAG_FIRST_PIPE_INSTANCE`,
+`PIPE_REJECT_REMOTE_CLIENTS`, and the AppContainer-client descriptor; client connect with timeout
+requesting `FILE_GENERIC_READ | FILE_WRITE_DATA` only and refusing a pipe labeled below medium
+integrity; peer verification of user and session),
 `registry` (views Default/64/32, read-only open for foreign roots, write guard that only allows
 paths under `Software\Raumakey` or the Raumakey CLSID/TIP keys), `known_folder`, `file_replace`
 (`ReplaceFileW` implementation of `raumakey_config::FileReplacer`), `clipboard` (implements
@@ -1012,7 +1067,8 @@ behavior was verified in a Windows host application (§0 rule 6).
 - **Not done:** the TIP has no IPC client and runs on defaults v1 with its own mode, and the
   controller has no IPC hub, hook thread, fallback transport, or panel. Nothing has been observed
   in a Windows host application yet: the TIP can be registered and tried, but its manual check
-  list has not been run. The decisions of §15 are recorded but not yet implemented. The `fuzz/`
+  list has not been run. Of the decisions of §15, D25, D27 (pipe side), D28–D30, and D34 are
+  implemented; D26 waits for the hook thread and D31 for `migrate`. The `fuzz/`
   workspace, the runner's `live` mode, and `tests/windows/` do not exist.
 - **Gates:** `cargo xtask ci`, `cross`, `inspect` (debug and release), `package`, and the
   installer dry runs pass (§14.6). Neither "cross-build verified" nor "runtime x86_64 verified"
@@ -1023,12 +1079,12 @@ behavior was verified in a Windows host application (§0 rule 6).
 | Stage | Status | Done | Not done |
 |---|---|---|---|
 | 1 | Done | Workspace, toolchain pin (Rust 1.99.1, three MSVC targets), `LICENSE`, `THIRD_PARTY.md`, `deny.toml`, `raumakey-model` | `THIRD_PARTY.md` corrections (design §20.6 item 9); §1.1 and §1.3 do not match the manifests |
-| 2 | Done (library) | `raumakey-engine` with every §3.10 golden vector; `raumakey-macro`; the engine runs with the real `MacroTable` in `tests/tests/macro_engine.rs` | A test for D34; D28–D30 (§15), which resolve §14.4 items 1, 2, and 4, are not implemented |
+| 2 | Done (library) | `raumakey-engine` with every §3.10 golden vector; `raumakey-macro`; the engine runs with the real `MacroTable` in `tests/tests/macro_engine.rs` | D28–D30 and D34 are implemented and tested; §14.4 item 7 is open |
 | 3 | Mostly done (library) | `raumakey-config`, `raumakey-converter`, `raumakey-migrate` (sources, parsing, commit with rollback, idempotence) | Commit durability (design §20.7); a Windows `LegacyRegistry` adapter; default EVKey folder discovery; the `migrate` command (D31) |
-| 4 | Done (library) | `raumakey-policy`; `raumakey-ipc` with frames, messages, client and server sessions, backoff, and the `evkey-compat` codec | The controller's server hub and snapshot builder; D25 (`Restricted` secure fields) and D27 (sandboxed hosts) are not implemented |
+| 4 | Done (library) | `raumakey-policy`; `raumakey-ipc` with frames, messages, client and server sessions, backoff, and the `evkey-compat` codec | The controller's server hub and snapshot builder, and its handling of AppContainer clients; D25 is implemented in the engine, the TIP session core, and the vector executor, and the controller's hook path must apply the same gate; D27 is implemented in `raumakey-windows` (pipe descriptor, client access, medium-label check) |
 | 5 | Partial | `raumakey.exe`: GUI subsystem with resources, the command line (`install` and `uninstall` with dry runs and rollback, `startup`, `convert`, `update`, `--version`; `migrate` reports that it is not available yet), and a minimal tray run mode (single instance, V/E icon, menu, `TaskbarCreated`); `raumakey-resources`; `raumakey-windows` wrappers for errors, panic guards, strings, handles, SIDs, object names, security, pipes, registry, known folders, file replacement, clipboard, input (including `GetMessageExtraInfo`), hooks, foreground, keyboard, processes, shell, task scheduler, COM apartments, single instance, legacy objects, hidden and message-only windows with the message loop and `PostMessageW`, popup menus, icons, modules, COM server support (class factory, object and lock counts), and message boxes | The IPC hub, hook thread, fallback transport, panel, worker thread, and configuration lifecycle (§14.5 step 5); dialogs and controls, and the building blocks of §14.5 step 6 |
 | 6 | Partial | TSF registration planner, executor, and verification in `raumakey-windows`, tested with fakes; the TIP's platform-independent session core (`raumakey_tip::session`), tested with fakes; the COM layer of `raumakey_tip.dll`: the four exports, class factory, `DllRegisterServer`, `TextService` with its activation lifecycle and sinks, the key path through synchronous edit sessions, input scopes, the `WH_MOUSE` hook, and the open/close compartment, tested in-process with the real TSF thread manager | The IPC client, the probe edit, diagnostics, and the `evkey-compat` path (§14.5 step 4); verification does not enumerate the profile (D21); §14.4 item 5 |
-| 7 | Partial | `xtask` commands `ci`, `cross`, `inspect`, `package`, `audit`, `notices`, and `release-gate`; `raumakey-tests`: eight fuzz targets run by `fuzz_smoke` (the seven of §12 plus configuration concurrency, matrix #46), the macro/engine suite, 202 compatibility vectors in `tests/fixtures/compat/` for the engine-level matrix rows and the §3.10 golden vectors, and `raumakey-test-runner vectors [--json]` | The other contract suites of §12 (policy rows, migration fixtures, IPC frames, legacy codec rows, converter round trips); the runner's `live` mode; `fuzz/`; PowerShell suite; manual checklist; the `xtask` items of design §20.6 item 7 that the follow-up left open (§14.5 item 7); documentation (§14.5 item 8) |
+| 7 | Partial | `xtask` commands `ci`, `cross`, `inspect`, `package`, `audit`, `notices`, and `release-gate`; `raumakey-tests`: eight fuzz targets run by `fuzz_smoke` (the seven of §12 plus configuration concurrency, matrix #46), the macro/engine suite, 211 compatibility vectors in `tests/fixtures/compat/` for the engine-level matrix rows and the §3.10 golden vectors, and `raumakey-test-runner vectors [--json]` | The other contract suites of §12 (policy rows, migration fixtures, IPC frames, legacy codec rows, converter round trips); the runner's `live` mode; `fuzz/`; PowerShell suite; manual checklist; the `xtask` items of design §20.6 item 7 that the follow-up left open (§14.5 item 7); documentation (§14.5 item 8) |
 | 8 | Not started | `xtask audit` passed in the design §20 snapshot (design §20.2; not rerun) | Hardening (design §20.7), whole-branch review, release-gate evidence |
 
 Design §20.6 item 8 is half done: the implementation is in Git (`24ba7a6` and later revisions).
@@ -1048,21 +1104,23 @@ None. The work started on 2026-10-17 in local worktrees is reviewed and merged;
 
 The 2026-10-17 work found these defects; item 4 shows that the "Silent fallback" risk of design
 §20.7 is reachable with valid input. Items 1–4 were confirmed against the code of `4507b1b`.
-Item 3 is fixed; items 1, 2, and 4 are decided (D28–D30, §15) but not implemented; items 5 and
-6 are open.
+Items 1–4 are fixed; items 5, 6, and 7 are open.
 
 1. `MacroTable` accepts triggers that contain boundary punctuation, such as `v.v`. When no
    input-method action consumes the punctuation key, the engine commits the word at it (§3.8),
    so the macro never expands (matrix #47): `v.v` never expands in Telex, VNI, or VIQR. VIQR
    binds `'`, `?`, `.`, `(`, and `\` as actions, and a user key map can bind any punctuation, so
-   a VIQR trigger such as `a.` still matches through its raw keys. Decide whether validation
-   rejects such triggers or matching continues across punctuation. Ignored `BUG` tests in
-   `tests/tests/macro_engine.rs` reproduce items 1, 2, and 4.
+   a VIQR trigger such as `a.` still matches through its raw keys. Fixed on 2026-10-17 by D28
+   (token lookup at whitespace; `crates/raumakey-engine/tests/tokens.rs`, and
+   `tests/tests/macro_engine.rs::d47_an_accepted_trigger_with_boundary_punctuation_expands`, no
+   longer ignored).
 2. A trigger may have up to 64 scalars (§4), but a word that takes more keys than
    `context_limit_codepoints` (default 32, range 8..=128) overflows (§3.9) and never expands.
    With the defaults no trigger of 33–64 scalars expands. Marks and tones can add up to four
    keys (Telex `dduwowngf` types the five-scalar `đường` in nine keys), so some triggers of
-   29–32 scalars fail too, and a lower limit fails shorter triggers.
+   29–32 scalars fail too, and a lower limit fails shorter triggers. Fixed on 2026-10-17 by D29
+   (`MAX_TRIGGER_SCALARS` = 32;
+   `d29_the_longest_trigger_expands_with_the_default_context_and_a_longer_one_is_rejected`).
 3. Fixed on 2026-10-17. `RuntimeSnapshot::validate` accepted `UserDefined` with a
    `user_keymap_id` that was not among the snapshot's key maps, and the engine then returned
    `UnsupportedInputMethod` for every character. `validate` now rejects such a snapshot with
@@ -1071,7 +1129,9 @@ Item 3 is fixed; items 1, 2, and 4 are decided (D28–D30, §15) but not impleme
    insert limit (§2.7). The insert is the replacement in the configured normalization plus a
    printable delimiter, so 4,096 astral scalars, or more than 2,730 letters such as `ệ` with NFD
    (three units each), exceed it. The engine then commits the word as rendered, with no
-   expansion, no auto-restore, and no signal (design §20.7, "Silent fallback").
+   expansion, no auto-restore, and no signal (design §20.7, "Silent fallback"). Fixed on
+   2026-10-17 by D30 (`fits_one_insert` in validation and case adaptation;
+   `d47_d53_every_accepted_replacement_expands_at_every_boundary`).
 5. Reported by the TIP work and not yet checked on Windows: `tsf_registration` registers the
    profile without a substitute keyboard layout (`RegisterProfile` with a null `HKL`). If Windows
    then runs the profile on the Vietnamese language's default layout, the number row and the
@@ -1080,6 +1140,10 @@ Item 3 is fixed; items 1, 2, and 4 are decided (D28–D30, §15) but not impleme
 6. Open question from the controller work: `install` registers the TIPs where the package was
    extracted, usually a folder the user can write, and prints a warning. Decide whether
    installation requires Program Files or copies the package there.
+7. Open question from D28: a word macro on a token's first word wins at the punctuation. With
+   `v` → `với` and `v.v` → `vân vân`, typing `v.v ` gives `với.với `, so `v.v` can never
+   expand. Deferring word macros at punctuation would change existing punctuation behaviour.
+   Decide which macro wins.
 
 ### 14.5 Remaining work, in order
 
@@ -1089,11 +1153,10 @@ steps 3–5 (§13). Every step records its failing test runs and its independent
 
 1. Done: the Phase 1 work is reviewed and merged (§14.3).
 2. Done: the open questions of design §20.8 and §14.4 items 1, 2, and 4 are decided (§15).
-3. Implement the decisions of §15 that change behavior: D25 in the engine (§3.8) and the session
-   core; D27 in the pipe and named-object security; D28–D30 in the engine and in macro
-   validation, which turns the `BUG` tests of §14.4 into passing tests; a test for D34. Align
-   design §9 (D31), design §14 and matrix #29 (D25), and plan §3.6, §3.8, §4, §6, and §10.4 with
-   §15. Decide §14.4 items 5 and 6.
+3. Mostly done: D25, D27 (pipe side), D28–D30, and D34 are implemented, reviewed, and merged, and
+   plan §2.9, §3, §4, §6, §10.1, and design §10, §14, §20.7 are aligned. Remaining: align design
+   §9 with D31; decide §14.4 items 5, 6, and 7; give the D30 limit its own error code if the
+   configuration UI needs to tell it from the scalar cap.
 4. Finish the TIP (§10.3): the IPC snapshot client thread, the range-edit probe edit and its
    `ReportProbe` (sent again after a reconnect while the session core still holds the result),
    opt-in `Diagnostic` events (only while `RuntimeSnapshot.diagnostics_enabled` is set), the
@@ -1114,10 +1177,10 @@ steps 3–5 (§13). Every step records its failing test runs and its independent
    manual `#[ignore]`d tests, on a Windows host, and keep the results as evidence.
 8. Finish `xtask` and the documentation: ship notices and license texts; check the manifest's
    Common Controls v6, PerMonitorV2, and supportedOS entries in `inspect`; run the i686 tests
-   under WOW64 in CI; compile the WiX source in CI; stop `package` from shipping artifacts that
-   fail `inspect`; correct `THIRD_PARTY.md`; add a decision index; record the code-level
-   decisions of design §20.9 and those listed in `2026-10-17-phase1-task-notes.md`; align §1.1,
-   §1.3, and §7 with the code.
+   under WOW64 in CI and fix their doctest link; compile the WiX source in CI; stop `package`
+   from shipping artifacts that fail `inspect`; correct `THIRD_PARTY.md`; add a decision index;
+   record the code-level decisions of design §20.9 and those listed in
+   `2026-10-17-phase1-task-notes.md`; align §1.1, §1.3, and §7 with the code.
 9. Fix the risks of design §20.7 that break a design requirement, starting with commit
    durability. Then run a whole-branch review, the release gate, and Windows acceptance.
 
@@ -1129,20 +1192,20 @@ Run on 2026-10-17 on the Windows 11 x86_64 development host (Rust 1.99.1, `rust-
 |---|---|
 | `cargo fmt --all --check` | Pass |
 | `cargo xtask ci`: Clippy with `-D warnings`, default features and all five `evkey-compat` features | Pass |
-| `cargo xtask ci`: `cargo test --locked --workspace` | 1,887 passed, 0 failed, 20 ignored |
-| The same tests with all five `evkey-compat` features | 1,961 passed, 0 failed, 20 ignored |
+| `cargo xtask ci`: `cargo test --locked --workspace` | 1,954 passed, 0 failed, 17 ignored |
+| The same tests with all five `evkey-compat` features | 2,028 passed, 0 failed, 17 ignored |
 | `cargo xtask ci`: the fuzz smoke step | 10 passed |
-| `cargo test --locked -p raumakey-tsf -p raumakey-controller -p raumakey-windows --target i686-pc-windows-msvc` (WOW64) | 697 passed, 0 failed, 17 ignored |
-| `cargo xtask cross` and `cargo xtask cross --release` (x86_64, i686, aarch64) | Pass |
-| `cargo xtask inspect` and `cargo xtask inspect --release` | All 57 and all 66 checks pass |
-| `cargo xtask package` (debug) | Pass |
-| The packaged `raumakey.exe`: `install --dry-run` in both option orders, `uninstall --dry-run`, `--version`, `update` | Exit 0; the plans name the Raumakey CLSID and profile GUID |
+| `cargo test --locked -p raumakey-engine -p raumakey-macro -p raumakey-tsf -p raumakey-windows -p raumakey-tests --target i686-pc-windows-msvc --lib --bins --tests` (WOW64) | 929 passed, 0 failed, 11 ignored |
+| `cargo xtask cross` (debug: x86_64, i686, aarch64) | Pass |
+| `cargo xtask inspect` | All 57 checks pass |
+| `raumakey-test-runner vectors` (debug, x86_64) | 211 of 211 vectors passed |
 
-The ignored tests are manual Windows tests (design §15.1) and the 3 `BUG` tests of §14.4. The
-i686 run of `raumakey-tests` (93 passed, 3 ignored) and the runner's 202 of 202 vectors are from
-`0bdfbcc`; that package has not changed since. The audit was not rerun for this revision; design
-§20.2 has its last result. None of this is evidence of runtime behavior in Windows host
-applications.
+The ignored tests are manual Windows tests (design §15.1). The i686 run leaves out doctests:
+their link picks up the x64 `msvcrt.lib` in this environment, for unchanged crates too (§14.5
+step 8). The release cross-build, release inspection, packaging, and the installer dry runs are
+from `d378f71`, where all passed; this revision changes neither the controller's command line nor
+the resources. The audit was not rerun; design §20.2 has its last result. None of this is
+evidence of runtime behavior in Windows host applications.
 
 ---
 
@@ -1166,18 +1229,30 @@ may still follow the earlier text.
   through untransformed, with no macros and no clipboard (design §14, matrix #29). `Restricted`
   (`secure_field_mode = "restricted"` in `app_rules.toml`) keeps Vietnamese transformation in
   secure fields but never expands macros and never uses the clipboard. The policy decides
-  (§6); adapters pass a key through before the engine when the resolved policy does not allow
-  Vietnamese; the engine never expands a macro in a secure field. This replaces the §3.8 row
-  that made the engine bypass every secure field.
+  (§6); adapters pass a secure-field key through before the engine when the resolved policy does
+  not allow Vietnamese; the engine never expands a macro in a secure field. This replaces the
+  §3.8 row that made the engine bypass every secure field. A non-secure host whose rule turns
+  Vietnamese off still runs the engine in English mode, so `macros_when_disabled` keeps working
+  there.
 - **D26 — Privacy of the controller's keyboard hook (amends D24).** The global low-level
   keyboard hook stays the single hotkey owner while a TIP is connected. Its handler classifies
   hotkeys from the virtual key and the modifier state only, stores no keys, logs nothing, and
   runs the engine only for hosts whose resolved transport is `SyntheticKey` or `Clipboard`.
-- **D27 — Sandboxed hosts.** The control pipe and the named objects also grant access to
-  `ALL APPLICATION PACKAGES` and carry the low mandatory label, so a TIP in an AppContainer or
-  low-integrity host connects and receives the same runtime and macro snapshots as any other
-  TIP. Accepted risk: any sandboxed process of the same user can read the configuration and the
-  macros.
+- **D27 — Sandboxed hosts (amended on 2026-10-17 after review).** The control pipe's descriptor is
+  `O:<user>D:P(A;;GA;;;<user>)(A;;0x12008b;;;AC)`: besides the user's full access,
+  `ALL APPLICATION PACKAGES` gets client access only (`FILE_GENERIC_READ | FILE_WRITE_DATA`; no
+  instance creation, `WRITE_DAC`, `WRITE_OWNER`, or `DELETE`), and clients open the pipe with
+  exactly that access. A TIP in an AppContainer host of the user connects and receives the same
+  runtime and macro snapshots as any other TIP. The pipe carries no mandatory label: the decision
+  first asked for a low label, but review showed that it gives every low-integrity process of the
+  user full control of the pipe (it could change its DACL or pose as the controller and feed
+  forged macros to medium and elevated TIPs), while AppContainers connect without it. A
+  low-integrity host that is not an AppContainer therefore cannot connect and its TIP stays on
+  defaults v1. Every client refuses a pipe whose mandatory label is below medium, so a
+  low-integrity process that takes the pipe name first cannot pose as the controller. Named kernel
+  objects stay user-only: the IPC path uses none, the single-instance mutex is the controller's
+  alone, and the `evkey-compat` legacy objects carry per-key text. Accepted risk: any AppContainer
+  process of the same user can read the configuration and the macros and send client commands.
 - **D28 — Macro triggers across punctuation.** When macros are active, a whitespace boundary
   (and Enter or Tab) also looks up the token typed since the previous whitespace, including
   boundary punctuation that committed words inside it, and replaces the whole token. `v.v`

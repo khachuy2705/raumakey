@@ -1,8 +1,10 @@
 //! Immutable macro lookup table (plan §4; matrix D47, D48, D50, D52).
 
 use core::fmt;
+use core::ops::Bound;
 use std::collections::BTreeMap;
 
+use raumakey_model::input::is_boundary_punctuation;
 use raumakey_model::macros::{
     Boundary, BoundaryPolicy, CaseMode, CasePolicy, MacroEntry, MacroExpansion, MacroId,
     MacroLookup,
@@ -10,14 +12,16 @@ use raumakey_model::macros::{
 
 use crate::case::{adapt_case, case_pattern};
 use crate::error::MacroError;
-use crate::validate::{MAX_REPLACEMENT_SCALARS, exceeds_scalars, normalize_entry, to_nfc};
+use crate::validate::{
+    MAX_REPLACEMENT_SCALARS, exceeds_scalars, fits_one_insert, normalize_entry, to_nfc,
+};
 
 /// Typed text with more scalars than this is never looked up.
 ///
-/// Text that can match a valid trigger has at most 2048 scalars: a trigger has at most
-/// [`MAX_TRIGGER_SCALARS`](crate::validate::MAX_TRIGGER_SCALARS) scalars, lowercasing expands a
-/// scalar into at most 2, and canonical decomposition into at most 4. The limit therefore never
-/// hides a match; it only bounds the work spent on unexpected input.
+/// Text that can match a valid trigger has far fewer scalars: a trigger has at most
+/// [`MAX_TRIGGER_SCALARS`](crate::validate::MAX_TRIGGER_SCALARS) (32) scalars, lowercasing
+/// expands a scalar into at most 2, and canonical decomposition into at most 4. The limit
+/// therefore never hides a match; it only bounds the work spent on unexpected input.
 pub const MAX_LOOKUP_INPUT_SCALARS: usize = 4096;
 
 #[cfg(test)]
@@ -60,8 +64,16 @@ struct Slot {
 ///    A case-insensitive match (step 3, [`CaseMode::Adaptive`] only) of a [`CasePolicy::Adapt`]
 ///    entry adapts the replacement to the [`case_pattern`] of the typed text (see
 ///    [`adapt_case`]); a [`CasePolicy::Exact`] entry is inserted as stored. If adaptation would
-///    exceed [`MAX_REPLACEMENT_SCALARS`], the stored text is used, so an expansion never exceeds
-///    that limit.
+///    exceed [`MAX_REPLACEMENT_SCALARS`] or no longer fit one insert with a delimiter
+///    ([`fits_one_insert`](crate::fits_one_insert), plan D30; `ß` becomes `SS`), the stored
+///    text is used, so an expansion never exceeds either limit.
+///
+/// A trigger that contains boundary punctuation (`v.v`, `TP.HCM`) spans several of the
+/// engine's words. The engine looks such a trigger up as a whole token at whitespace (plan
+/// D28), tracking the token only while the table has such triggers
+/// ([`MacroLookup::has_token_triggers`]) and the text committed so far starts one of them
+/// ([`MacroLookup::is_trigger_prefix`], exact or, adaptive only, case-insensitive; disabled
+/// entries never count).
 ///
 /// Rule 5 is a Raumakey decision: adaptation reacts to a case *difference* between the typed
 /// text and the stored trigger. A trigger stored as `UBND` therefore inserts `Ủy ban nhân dân`
@@ -98,13 +110,18 @@ pub struct MacroTable {
     exact: BTreeMap<String, Vec<usize>>,
     /// Lowercase NFC trigger → slot indices, ascending id.
     folded: BTreeMap<String, Vec<usize>>,
+    /// Some enabled trigger contains boundary punctuation (plan D28).
+    token_triggers: bool,
 }
 
 impl MacroTable {
     /// Validates and normalizes every entry (enabled or not) and builds a table.
     ///
     /// Fails with [`MacroError::InvalidEntry`] for the first invalid entry, or with
-    /// [`MacroError::DuplicateId`] when two entries share an identifier.
+    /// [`MacroError::DuplicateId`] when two entries share an identifier. Build tables of user
+    /// data through [`MacroStore::from_entries_lenient`](crate::MacroStore::from_entries_lenient)
+    /// and [`MacroStore::snapshot`](crate::MacroStore::snapshot) instead: data stored before
+    /// plan D29 and D30 can hold entries that are invalid now.
     pub fn new(entries: impl IntoIterator<Item = MacroEntry>) -> Result<Self, MacroError> {
         let mut normalized = Vec::new();
         for entry in entries {
@@ -144,6 +161,7 @@ impl MacroTable {
                 boundary: entry.boundary,
                 case_policy: entry.case_policy,
             });
+            table.token_triggers |= entry.trigger.chars().any(is_boundary_punctuation);
         }
         table
     }
@@ -194,7 +212,7 @@ impl MacroLookup for MacroTable {
         };
         let replacement = if folded && slot.case_policy == CasePolicy::Adapt {
             let adapted = adapt_case(&slot.replacement, case_pattern(&typed));
-            if exceeds_scalars(&adapted, MAX_REPLACEMENT_SCALARS) {
+            if exceeds_scalars(&adapted, MAX_REPLACEMENT_SCALARS) || !fits_one_insert(&adapted) {
                 slot.replacement.clone()
             } else {
                 adapted
@@ -207,6 +225,39 @@ impl MacroLookup for MacroTable {
             replacement,
         })
     }
+
+    /// True when an enabled trigger contains boundary punctuation (plan D28).
+    fn has_token_triggers(&self) -> bool {
+        self.token_triggers
+    }
+
+    /// True when the NFC form of `prefix` starts an enabled trigger, or (adaptive case only)
+    /// its lowercase form starts a lowercase trigger. An empty prefix starts nothing.
+    ///
+    /// The prefix is case-folded on its own, so a context-dependent lowercase mapping can
+    /// differ from the trigger's. A Greek capital sigma that ends a word of the prefix (before
+    /// the punctuation that ends it) folds to the final form `ς`, while in the trigger, where
+    /// more letters follow, it folds to `σ`: typed `ΣΣ.` does not start the trigger `σσ.α`
+    /// case-insensitively, although the whole token `ΣΣ.Α` would match it. The engine then
+    /// does not track the token, so such a trigger expands only when typed as stored.
+    /// Vietnamese and ASCII text is not affected.
+    fn is_trigger_prefix(&self, prefix: &str, case_mode: CaseMode) -> bool {
+        if prefix.is_empty() || exceeds_scalars(prefix, MAX_LOOKUP_INPUT_SCALARS) {
+            return false;
+        }
+        let prefix = to_nfc(prefix);
+        starts_a_key(&self.exact, &prefix)
+            || (case_mode == CaseMode::Adaptive && starts_a_key(&self.folded, &fold_case(&prefix)))
+    }
+}
+
+/// True when some key of `index` starts with `prefix`. Keys that start with `prefix` sort
+/// right after it, so the first key not below `prefix` is one of them if any is.
+fn starts_a_key(index: &BTreeMap<String, Vec<usize>>, prefix: &str) -> bool {
+    index
+        .range::<str, _>((Bound::Included(prefix), Bound::Unbounded))
+        .next()
+        .is_some_and(|(key, _)| key.starts_with(prefix))
 }
 
 impl fmt::Debug for MacroTable {

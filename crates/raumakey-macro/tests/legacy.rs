@@ -208,6 +208,37 @@ fn invalid_lines_become_issues_with_line_numbers_and_reason_codes() {
     );
 }
 
+/// D29: the import rejects a trigger of more than 32 scalars as an issue.
+#[test]
+fn d29_a_trigger_longer_than_32_scalars_is_an_import_issue() {
+    let longest = "b".repeat(32);
+    let text = format!("{longest}:x\n{}:y\n", "b".repeat(33));
+    let import = parse_legacy_text(text.as_bytes());
+    assert_eq!(import.entries, [entry(1, &longest, "x")]);
+    assert_eq!(import.issues, [issue(2, LegacyIssueReason::TriggerTooLong)]);
+}
+
+/// D30: the import rejects, as an issue, a replacement that does not fit one insert with a
+/// delimiter in NFC (8,192 units here) or in NFD (2,731 × "ệ", 8,193 units).
+#[test]
+fn d30_a_replacement_beyond_the_insert_limit_is_an_import_issue() {
+    let nfc_longest = format!("{}a", "\u{1F600}".repeat(4095));
+    let text = format!(
+        "a:{nfc_longest}\nb:{}\nc:{}\n",
+        "\u{1F600}".repeat(4096),
+        "ệ".repeat(2731)
+    );
+    let import = parse_legacy_text(text.as_bytes());
+    assert_eq!(import.entries, [entry(1, "a", &nfc_longest)]);
+    assert_eq!(
+        import.issues,
+        [
+            issue(2, LegacyIssueReason::ReplacementTooLong),
+            issue(3, LegacyIssueReason::ReplacementTooLong),
+        ]
+    );
+}
+
 #[test]
 fn issues_carry_no_line_content() {
     let import = parse_legacy_text("bimat matkhau\nbi mat:noidung\n".as_bytes());

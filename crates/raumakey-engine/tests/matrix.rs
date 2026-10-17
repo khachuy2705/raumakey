@@ -430,22 +430,61 @@ fn b23_case_comes_from_the_typed_text() {
     assert_eq!(sim.as_string(), "Ấ");
 }
 
+/// Matrix #29 under D25: whether a secure field is transformed at all is the adapter's call
+/// (the policy's secure-field mode; the default `Bypass` passes every key through before the
+/// engine). The engine itself never expands a macro, and never looks one up, for an event in
+/// a secure field; otherwise it processes the event normally, as `Restricted` mode needs.
 #[test]
-fn b29_secure_fields_bypass_everything() {
-    let macros = MacroDouble::new(&[("ko", "không")]);
+fn b29_secure_fields_never_expand_macros() {
+    let macros = MacroDouble::new(&[("ko", "không"), ("v.v", "vân vân")]);
     let outcome = run(
         &engine_with(macros.clone()),
         &telex(),
-        "{SECURE}aas ko{SPACE}{BS}{/SECURE}aa",
+        "{SECURE}vieetj ko{SPACE}v.v{SPACE}{BS}{/SECURE}aa",
     );
-    assert_eq!(outcome.final_text, "aas koâ");
-    for step in &outcome.steps[..9] {
-        assert_eq!(format_transaction(&step.transaction), PASS_RESET);
-        assert!(step.event.host.is_secure_field || step.token == KeyToken::SecureOn);
-    }
+    assert_eq!(outcome.final_text, "việt ko v.vâ");
+    let shown: Vec<String> = outcome
+        .steps
+        .iter()
+        .map(|step| format_transaction(&step.transaction))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            PASS_RESET,
+            PASS,
+            PASS,
+            PASS,
+            "Tx(1,\"ê\",true,None,false)",
+            PASS,
+            "Tx(2,\"ệt\",true,None,false)",
+            PASS_RESET,
+            PASS,
+            PASS,
+            PASS_RESET,
+            PASS,
+            PASS_RESET,
+            PASS,
+            PASS_RESET,
+            PASS,
+            PASS_RESET,
+            PASS,
+            "Tx(1,\"â\",true,None,false)",
+        ]
+    );
     assert!(
-        macros.calls().is_empty(),
+        outcome.steps[..16]
+            .iter()
+            .all(|step| step.event.host.is_secure_field || step.token == KeyToken::SecureOn)
+    );
+    assert!(
+        macros.calls().is_empty() && macros.prefix_calls().is_empty(),
         "no macro lookup in a secure field"
+    );
+    // The same keys outside a secure field expand both macros.
+    assert_eq!(
+        typed(&engine_with(macros), &telex(), "vieetj ko{SPACE}v.v{SPACE}"),
+        "việt không vân vân "
     );
 }
 

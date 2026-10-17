@@ -37,6 +37,8 @@
 //! | Disconnected, and the hotkey classifier reports a hotkey (D24) | yes | runs the action (toggle the mode, or reset every document); eaten when the hotkey consumes its key, which key hotkeys do |
 //! | Disconnected, and the classifier swallows the key (auto-repeat of a consumed hotkey key) | yes | eaten |
 //! | No document, a modifier, or a lock key | no | not eaten |
+//! | A secure field whose policy does not allow Vietnamese (`Bypass`, D25) while its document has a word state | yes | ends the word, without the engine; not eaten |
+//! | The same without a word state | no | (not called) |
 //! | The engine transaction edits, consumes, or replays | yes | one edit through the port; on success the next state is committed, the key is eaten when the transaction consumes it, and its replay key is returned |
 //! | The engine lets the key through but changes the state: a letter extends the word, a boundary or navigation key ends it | yes | commits the state; not eaten |
 //! | The engine lets the key through and the state stays as it is | no | (not called) |
@@ -119,9 +121,20 @@
 //!
 //! Per key, the engine runs with the snapshot's options, except that `enabled` is the live
 //! Vietnamese mode and the host policy (`raumakey_policy::CompatibilityPolicy`) can turn
-//! Vietnamese and macros off for the host. Secure fields pass through and end the word in
-//! both secure-field modes, as design §14 and matrix #29 require: the engine bypasses them
-//! whatever the policy's `Restricted` mode would allow (design §20.8, item 1, is open).
+//! Vietnamese and macros off for the host.
+//!
+//! # Secure fields (D25, matrix #29)
+//!
+//! The policy's secure-field mode decides, and the core acts on it before the engine. In a
+//! secure field the policy never allows macros, and in `Bypass` mode, the default, it does
+//! not allow Vietnamese either: every key of such a field passes through untouched and ends
+//! the word of its document, without reaching the engine, so nothing there is transformed,
+//! expanded, edited, or tracked. In `Restricted` mode (`secure_field_mode = "restricted"` in
+//! `app_rules.toml`) the engine transforms the keys of a secure field as usual, with macros
+//! off; the engine itself never expands a macro, word or token, for a secure-field key
+//! either. A rule that turns Vietnamese off for the host stays in force in both modes, and
+//! the field then passes its keys through as in `Bypass`. The clipboard transport is never
+//! selected for a secure field, and the core never asks for a range-edit probe in one.
 //!
 //! # Hotkeys (D24)
 //!

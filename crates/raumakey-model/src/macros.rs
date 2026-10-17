@@ -95,13 +95,31 @@ pub struct MacroExpansion {
 
 /// Immutable macro lookup used by the engine for one request.
 pub trait MacroLookup: Send + Sync {
-    /// Looks up the typed word (NFC) at a boundary.
+    /// Looks up the typed word or token (NFC) at a boundary.
     fn lookup(
         &self,
         typed: &str,
         boundary: Boundary,
         case_mode: CaseMode,
     ) -> Option<MacroExpansion>;
+
+    /// True when the trigger of an enabled entry contains boundary punctuation
+    /// ([`is_boundary_punctuation`](crate::input::is_boundary_punctuation)) and can therefore
+    /// span several words: a token trigger (plan D28). The engine tracks tokens across
+    /// punctuation only for a lookup that has such triggers. The default has none.
+    fn has_token_triggers(&self) -> bool {
+        false
+    }
+
+    /// True when `prefix` (NFC, not empty) starts, or equals, the trigger of an enabled
+    /// entry: exactly, or with [`CaseMode::Adaptive`] also case-insensitively. Every entry
+    /// counts, whatever its [`BoundaryPolicy`], because tokens are looked up at whitespace
+    /// only. The engine keeps a token while this holds for the text committed so far
+    /// (plan D28). The default says no.
+    fn is_trigger_prefix(&self, prefix: &str, case_mode: CaseMode) -> bool {
+        let _ = (prefix, case_mode);
+        false
+    }
 }
 
 /// A lookup with no entries.

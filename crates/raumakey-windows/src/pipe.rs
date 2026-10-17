@@ -3,9 +3,66 @@
 //! [`PipeServer::bind`] creates the first instance with `FILE_FLAG_FIRST_PIPE_INSTANCE`, so the
 //! bind fails when any other process already owns the name (squatting defence). Every instance
 //! is duplex, byte-mode, blocking-mode with overlapped I/O, rejects remote clients, and carries
-//! the user-only security descriptor of [`crate::security`]. [`connect_client`] opens the pipe
-//! with identification-level impersonation only and verifies that the server belongs to the same
-//! user and session before returning.
+//! the AppContainer-client descriptor of [`crate::security`] (plan D27): full access for the
+//! user, client access for `ALL APPLICATION PACKAGES`, and no mandatory label.
+//! [`connect_client`] opens the pipe with [`PIPE_CLIENT_ACCESS`] (not `GENERIC_WRITE`, whose
+//! `FILE_WRITE_ATTRIBUTES` and `FILE_WRITE_EA` an AppContainer is not granted) and
+//! identification-level impersonation only, and verifies before returning that the pipe was not
+//! created below medium integrity and that the server belongs to the same user and session.
+//!
+//! # Sandboxed clients (D27)
+//!
+//! A TIP loaded in an AppContainer host of the user connects like any other TIP:
+//!
+//! - **Reaching the pipe.** `\\.\pipe\…` names are not redirected for AppContainers, so such a
+//!   client opens the controller's pipe by its usual name, and the DACL alone decides. `Local\`
+//!   is different: an AppContainer's `Local\` resolves to its own `AppContainerNamedObjects`
+//!   directory, so a named kernel object the controller creates under `Local\` cannot be found
+//!   under that name from an AppContainer. The IPC path uses no named kernel object;
+//!   everything travels over the pipe.
+//! - **The server's check of the client.** The user of an AppContainer token is the user's own
+//!   SID and its session is the user's session, so
+//!   [`PipeConnection::verify_peer_same_user_and_session`] accepts such a client and still
+//!   rejects other users (whom the DACL already refuses) and other sessions.
+//! - **The client's check of the server.** An AppContainer cannot open the controller's process
+//!   and falls back to the pipe owner ([`PeerUserCheck::PipeOwner`]).
+//! - **Accepted risk.** Any AppContainer process of the user can connect, read the snapshots,
+//!   and send commands. It cannot add server instances or change the pipe's security.
+//!
+//! A TIP in a low-integrity host that is not an AppContainer cannot connect, by design: the
+//! pipe has no label, so it counts as medium with `NO_WRITE_UP`, and such a process gets no
+//! write-class right, so it can neither open the pipe for writing, nor add instances, nor
+//! change the DACL or owner. That TIP stays on defaults v1. (A low label would have let it do
+//! all of that and pose as the controller.)
+//!
+//! # Refusing a pipe created below medium integrity
+//!
+//! A low-integrity process can still create a *new* pipe, for example under the controller's
+//! name before the controller starts (the controller's bind then fails). Such a pipe always
+//! carries its creator's low label, and no process can label an object above its own level, so
+//! every client refuses a pipe whose label is below medium with
+//! [`WinErrorKind::UntrustedPeer`]; the controller's pipe has no label (medium). An
+//! AppContainer cannot create such a pipe at all. A medium-integrity process of the same user
+//! can still create or join the pipe; it has the user's full rights anyway.
+//!
+//! The layer tests check all of this in-process: a thread impersonates a low-integrity copy of
+//! the process token or an AppContainer (lowbox) token, connects or is refused, exchanges data,
+//! is verified on both ends, is refused the rights it must not have, and creates squatting
+//! pipes that clients refuse; the anonymous logon checks that a token the DACL does not list is
+//! refused. What needs real processes or other logons is checked by hand on a test machine:
+//!
+//! 1. A pipe client in a real low-integrity process (an executable labeled low with
+//!    `icacls <exe> /setintegritylevel low`) is refused with `AccessDenied` when it opens the
+//!    pipe.
+//! 2. The TIP in a real AppContainer host (for example a Store app's text box) connects and
+//!    follows the controller's mode, settings, and macros; the controller verifies it through
+//!    its process token or, if the token cannot be opened, through impersonation.
+//! 3. A client started as another user (`runas /user:…`) is refused with `AccessDenied` when
+//!    it opens the pipe.
+//! 4. A client of the same user in another session that opens this session's pipe name is
+//!    rejected by the controller's peer check (session mismatch).
+//! 5. A real low-integrity process that creates the pipe name before the controller starts
+//!    makes the controller's bind fail, and TIPs refuse that pipe (`UntrustedPeer`).
 //!
 //! [`PipeConnection`] implements [`Read`] and [`Write`] for the `raumakey-ipc` sessions:
 //!
@@ -24,9 +81,7 @@ use std::os::windows::io::OwnedHandle;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{
-    GENERIC_READ, GENERIC_WRITE, HANDLE, WAIT_EVENT, WAIT_OBJECT_0, WAIT_TIMEOUT,
-};
+use windows::Win32::Foundation::{HANDLE, WAIT_EVENT, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Security::{RevertToSelf, TOKEN_QUERY};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FILE_FLAGS_AND_ATTRIBUTES,
@@ -50,7 +105,10 @@ use crate::error::{
     win32,
 };
 use crate::handle;
-use crate::security::{UserOnlySecurity, file_object_owner_sid};
+use crate::security::{
+    AppContainerClientSecurity, PIPE_CLIENT_ACCESS, file_object_label_rid, file_object_owner_sid,
+    file_object_sddl, is_label_at_least_medium,
+};
 use crate::sid::{
     current_session_id, current_user_sid_string, process_user_sid_string, token_user_sid_string,
 };
@@ -86,8 +144,11 @@ pub enum PeerUserCheck {
     /// process cannot be opened, for example because it runs elevated).
     Impersonation,
     /// From the owner of the pipe object (client side; used when the server process cannot be
-    /// opened). The server sets the owner explicitly to its user SID, and an owner can only be
-    /// set to a SID the creator holds, so another account cannot forge it.
+    /// opened, for example from an AppContainer). The server sets the owner explicitly to its
+    /// user SID, and an owner can only be set to a SID the creator holds, so another account
+    /// cannot forge it. The owner belongs to the pipe, not to one instance, so this check does
+    /// not tell the controller's instances from instances another medium-integrity process of
+    /// the same user added; AppContainer and low-integrity processes cannot add instances.
     PipeOwner,
 }
 
@@ -107,7 +168,7 @@ pub struct PeerIdentity {
 /// Server end: owns the pipe name and hands out connected instances.
 pub struct PipeServer {
     name: WideString,
-    security: UserOnlySecurity,
+    security: AppContainerClientSecurity,
     pending: Option<OwnedHandle>,
     connect_event: OwnedHandle,
     stop: Arc<OwnedHandle>,
@@ -161,7 +222,7 @@ impl PipeServer {
     /// name is already owned by any process, including another Raumakey instance.
     pub fn bind(name: &str) -> WinResult<Self> {
         let name = validate_pipe_name(name)?;
-        let security = UserOnlySecurity::for_current_user()?;
+        let security = AppContainerClientSecurity::for_current_user()?;
         let first = create_instance(&name, &security, true)?;
         Ok(Self {
             name,
@@ -291,7 +352,7 @@ pub fn connect_client(name: &str, timeout: Duration) -> WinResult<PipeConnection
         let opened = unsafe {
             CreateFileW(
                 name.as_pcwstr(),
-                (GENERIC_READ | GENERIC_WRITE).0,
+                PIPE_CLIENT_ACCESS,
                 FILE_SHARE_NONE,
                 None,
                 OPEN_EXISTING,
@@ -463,11 +524,20 @@ impl PipeConnection {
 
     /// Verifies that the other end runs in this session as this user.
     ///
+    /// On the client side it first refuses a pipe whose mandatory label is below medium
+    /// ([`WinErrorKind::UntrustedPeer`]): a lower-integrity process created that pipe (see the
+    /// module documentation).
+    ///
     /// The user comes from the peer's process token; when that token cannot be opened (an
-    /// elevated peer seen from a non-elevated process) the server side impersonates the client
-    /// at identification level and the client side checks the pipe owner instead (see
-    /// [`PeerUserCheck`]). A mismatch fails with `AccessDenied`.
+    /// elevated peer seen from a non-elevated process, or the controller seen from an
+    /// AppContainer) the server side impersonates the client at identification level and the
+    /// client side checks the pipe owner instead (see [`PeerUserCheck`]). A mismatch fails with
+    /// `AccessDenied`. An AppContainer peer of this user and session passes: its token's user
+    /// is the user's own SID.
     pub fn verify_peer_same_user_and_session(&self) -> WinResult<PeerIdentity> {
+        if self.role == PipeRole::Client {
+            self.verify_pipe_label()?;
+        }
         let session_id = self.peer_session_id()?;
         if session_id != current_session_id()? {
             return Err(WinError::new(E_ACCESSDENIED, "pipe peer session"));
@@ -493,6 +563,20 @@ impl PipeConnection {
             user_sid,
             method,
         })
+    }
+
+    /// Refuses a pipe whose mandatory label is below medium with
+    /// [`WinErrorKind::UntrustedPeer`] (`ERROR_INVALID_LABEL`).
+    fn verify_pipe_label(&self) -> WinResult<()> {
+        let label = file_object_label_rid(self.raw())?;
+        if is_label_at_least_medium(label) {
+            Ok(())
+        } else {
+            Err(WinError::from_win32(
+                win32::ERROR_INVALID_LABEL,
+                "pipe server integrity",
+            ))
+        }
     }
 
     /// Server side: the client's user SID, read from its token while impersonating it at
@@ -522,6 +606,12 @@ impl PipeConnection {
     /// [`PeerUserCheck::PipeOwner`]).
     pub fn server_pipe_owner_sid(&self) -> WinResult<String> {
         file_object_owner_sid(self.raw())
+    }
+
+    /// Owner, DACL, and mandatory label of the pipe object in SDDL form (both ends see the
+    /// same pipe security).
+    pub fn security_sddl(&self) -> WinResult<String> {
+        file_object_sddl(self.raw())
     }
 
     fn raw(&self) -> HANDLE {
@@ -699,7 +789,7 @@ fn validate_pipe_name(name: &str) -> WinResult<WideString> {
 
 fn create_instance(
     name: &WideString,
-    security: &UserOnlySecurity,
+    security: &AppContainerClientSecurity,
     first: bool,
 ) -> WinResult<OwnedHandle> {
     let mut open_mode: FILE_FLAGS_AND_ATTRIBUTES = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;

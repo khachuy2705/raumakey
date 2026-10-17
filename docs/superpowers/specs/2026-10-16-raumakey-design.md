@@ -169,7 +169,7 @@ Migration is idempotent. It never deletes, renames, rewrites, unregisters, or ch
 
 ## 10. IPC and process boundaries
 
-The normal control channel is a same-user, same-session named pipe with an ACL restricted to the user's SID. Frames contain protocol version, message kind, payload length, client identity, request ID, and checksum. Lengths are validated before allocation. The normal channel carries configuration, macro snapshots, control commands, and opt-in diagnostics; it does not carry raw user keystrokes or document text.
+The normal control channel is a same-user, same-session named pipe whose ACL grants the user's SID full access and, under plan D27, grants AppContainer processes of that user client access only; clients refuse a pipe whose mandatory label is below medium. Frames contain protocol version, message kind, payload length, client identity, request ID, and checksum. Lengths are validated before allocation. The normal channel carries configuration, macro snapshots, control commands, and opt-in diagnostics; it does not carry raw user keystrokes or document text.
 
 The EVKey legacy wire codec is an optional Cargo feature named `evkey-compat`, disabled in release builds by default. It preserves the documented field widths, offsets, sequence matching, timeouts, and validation rules. Activation fails closed if a conflicting EVKey named object already exists. A legacy transaction is never retried after an ambiguous timeout because replay could double-apply text.
 
@@ -199,8 +199,8 @@ The first release does not imitate the unknown EVKey updater protocol. Update lo
 
 ## 14. Security and privacy
 
-- Secure/password fields bypass transformation, macros, clipboard transport, and content diagnostics.
-- Named objects and pipes are restricted to the current user/session.
+- Secure/password fields bypass transformation, macros, clipboard transport, and content diagnostics. The opt-in `Restricted` mode keeps Vietnamese transformation in secure fields but still never expands macros or uses the clipboard (plan D25).
+- Named objects and pipes are restricted to the current user/session; the control pipe also admits AppContainer clients of the same user with client access only, and clients refuse a pipe created below medium integrity (plan D27).
 - Every external length, offset, sequence, UTF-16 value, and config field is validated before use.
 - No default telemetry exists.
 - Opt-in logs may contain timestamps, component, error code, revision, host executable basename, and test vector ID; they must not contain raw keys, document text, clipboard data, macro trigger/replacement, or full paths containing user content.
@@ -433,7 +433,7 @@ Group A blocks every runtime claim; within it, item 3 is a prerequisite of items
 Each item was confirmed against the code. Items marked *(Windows)* still need confirmation on a real system.
 
 - **Commit durability.** `AtomicStore` flushes the temporary file but not the swap. `ReplaceFileW` runs without write-through, and no directory flush follows, so a committed revision may not survive a power loss.
-- **AppContainer and low-integrity hosts (Windows).** The control pipe and the named objects grant access only to the user SID, with no AppContainer ACE and no low mandatory label, yet the TIP declares immersive support. A TIP loaded in such a host cannot connect and stays on defaults v1. Under D24, both the controller hook and that TIP then classify the modifier-only toggle.
+- **Sandboxed hosts (Windows, plan D27).** The control pipe grants `ALL APPLICATION PACKAGES` client access and carries no mandatory label, so TIPs in AppContainer hosts connect; in-process tests confirm it with an impersonated AppContainer token, but no real AppContainer host has been tried. Any AppContainer process of the user can read the configuration and macros and send client commands. TIPs in low-integrity hosts that are not AppContainers cannot connect and stay on defaults v1; under D24 both the controller hook and such a TIP then classify the modifier-only toggle. Clients refuse a pipe labeled below medium, so a low-integrity process that takes the pipe name first cannot pose as the controller. Less-privileged AppContainers and restricted tokens are not admitted.
 - **TSF registration verification (Windows).** Verification checks TSF-internal keys under `HKLM\SOFTWARE\Microsoft\CTF\TIP` instead of enumerating profiles through TSF, and it has never run against a real registration. If that key is shared between the 32-bit and 64-bit registry views, unregistering one TIP removes the profile the other relies on. Rollback leaves a profile that existed before registration with the new parameters.
 - **Secure fields in fallback hosts.** Outside TSF, the only password signal is the `ES_PASSWORD` style on Edit and RichEdit controls. No UI Automation check exists, and no IPC message carries a secure state detected by the TIP to the controller.
 - **Privacy by convention.** Several types that hold typed text, document text, macro text, or key codes derive `Debug`, among them `InputEvent`, `EditTransaction`, `MacroEntry`, `EngineState`, `ClipboardText`, `MacroDocument`, and `KeyboardEvent`. Nothing logs them today, but a single `{:?}` in a log or panic message would break §14.

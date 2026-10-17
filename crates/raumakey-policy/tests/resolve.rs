@@ -732,6 +732,51 @@ fn b29_secure_field_in_restricted_mode_allows_transformation_only() {
     );
 }
 
+/// D25: the secure-field mode decides for secure fields only. `Bypass`, the default, allows
+/// neither Vietnamese nor macros there; `Restricted` keeps Vietnamese and still never allows
+/// macros; neither ever selects the clipboard. Outside secure fields both modes resolve alike.
+#[test]
+fn d25_the_secure_field_mode_decides_vietnamese_in_secure_fields_only() {
+    assert_eq!(
+        CompatibilityConfig::defaults_v1().secure_field_mode,
+        SecureFieldMode::Bypass
+    );
+    for mode in [SecureFieldMode::Bypass, SecureFieldMode::Restricted] {
+        let mut config = CompatibilityConfig::defaults_v1();
+        config.secure_field_mode = mode;
+        config.clipboard_enabled = true;
+        config.rules.push(rule(
+            "paste.exe",
+            None,
+            RuleAction {
+                transport: Some(Transport::Clipboard),
+                macros: Some(true),
+                vietnamese: Some(true),
+                ..RuleAction::default()
+            },
+        ));
+        let p = policy(config);
+        assert_eq!(
+            p.resolve(&host("notepad.exe")),
+            HostPolicy {
+                secure_field_mode: mode,
+                ..HostPolicy::default_tsf()
+            },
+            "{mode:?}"
+        );
+        for exe in ["notepad.exe", "paste.exe"] {
+            let resolved = p.resolve(&secure(host(exe)));
+            assert_eq!(
+                resolved.vietnamese_allowed,
+                mode == SecureFieldMode::Restricted,
+                "{mode:?} {exe}"
+            );
+            assert!(!resolved.macro_allowed, "{mode:?} {exe}");
+            assert_ne!(resolved.transport, Transport::Clipboard, "{mode:?} {exe}");
+        }
+    }
+}
+
 #[test]
 fn secure_field_overrides_explicit_macro_and_vietnamese_rules() {
     let mut config = CompatibilityConfig::defaults_v1();

@@ -1,6 +1,6 @@
 # Matrix rows D47–D54 (macros and Unicode) of docs/reference/evkey_compatibility_test_matrix.md,
-# transcribed from crates/raumakey-engine/tests/matrix.rs. Schema and evidence rules:
-# raumakey_tests::vectors.
+# transcribed from crates/raumakey-engine/tests/matrix.rs and, for tokens (D28), from
+# crates/raumakey-engine/tests/tokens.rs. Schema and evidence rules: raumakey_tests::vectors.
 #
 # The source runs these rows with a macro lookup double; here they run with the real
 # raumakey_macro::MacroTable. Its checks of the double's recorded lookups are not transcribed.
@@ -90,6 +90,127 @@ method = "telex"
 macros = [{ trigger = "ko", replacement = "không" }]
 keys = "kok"
 text = "kok"
+
+# D47, D48, D50, and D51 for a trigger with boundary punctuation (D28): whitespace looks up the
+# token typed since the previous whitespace and replaces it whole. Transcribed from
+# crates/raumakey-engine/tests/tokens.rs. In VIQR the dot is bound to the dot tone, which does
+# not apply after `v`, so the dot commits the word there too.
+
+[[vector]]
+id = "d47-d28-token-telex"
+rows = ["D47"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["D28"]
+source = "crates/raumakey-engine/tests/tokens.rs::d28_a_trigger_with_punctuation_expands_at_whitespace_in_every_method"
+method = "telex"
+macros = [{ trigger = "v.v", replacement = "vân vân" }]
+keys = "v.v{SPACE}"
+transactions = [
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(3,"vân vân ",true,None,true)',
+]
+text = "vân vân "
+idle = true
+
+[[vector]]
+id = "d47-d28-token-vni"
+rows = ["D47"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["D28"]
+source = "crates/raumakey-engine/tests/tokens.rs::d28_a_trigger_with_punctuation_expands_at_whitespace_in_every_method"
+method = "vni"
+macros = [{ trigger = "v.v", replacement = "vân vân" }]
+keys = "v.v{SPACE}"
+transactions = [
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(3,"vân vân ",true,None,true)',
+]
+text = "vân vân "
+
+[[vector]]
+id = "d47-d28-token-viqr"
+rows = ["D47"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["D28"]
+source = "crates/raumakey-engine/tests/tokens.rs::d28_a_trigger_with_punctuation_expands_at_whitespace_in_every_method"
+method = "viqr"
+macros = [{ trigger = "v.v", replacement = "vân vân" }]
+keys = "v.v{SPACE}"
+transactions = [
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(3,"vân vân ",true,None,true)',
+]
+text = "vân vân "
+
+[[vector]]
+id = "d47-d28-token-enter"
+rows = ["D47"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["D28"]
+source = "crates/raumakey-engine/tests/tokens.rs::d28_a_trigger_with_punctuation_expands_at_whitespace_in_every_method"
+method = "telex"
+macros = [{ trigger = "v.v", replacement = "vân vân" }]
+keys = "v.v{ENTER}"
+steps = [{ index = 3, transaction = 'Tx(3,"vân vân",true,Some(RETURN),true)' }]
+text = "vân vân\r"
+
+[[vector]]
+id = "d47-d28-token-owned"
+rows = ["D47"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["D28"]
+source = "crates/raumakey-engine/tests/tokens.rs::d28_a_trigger_with_punctuation_expands_at_whitespace_in_every_method"
+method = "telex"
+macros = [{ trigger = "v.v", replacement = "vân vân" }]
+keys = "v.v"
+text = "v.v"
+owned = "v.v"
+
+[[vector]]
+id = "d48-d28-trigger-inside-a-token"
+rows = ["D48"]
+evidence = ["baseline", "proposed", "raumakey-decision"]
+decisions = ["D28"]
+source = "crates/raumakey-engine/tests/tokens.rs::d28_only_a_whole_token_matches"
+method = "telex"
+macros = [{ trigger = "v.v", replacement = "vân vân" }]
+keys = "x.v.v{SPACE}"
+text = "x.v.v "
+
+[[vector]]
+id = "d50-d28-token-upper-case"
+rows = ["D50"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["D28"]
+source = "crates/raumakey-engine/tests/tokens.rs::d28_the_replacement_follows_the_case_of_the_typed_token"
+method = "telex"
+macros = [{ trigger = "v.v", replacement = "vân vân" }]
+keys = "V.V{SPACE}"
+text = "VÂN VÂN "
+
+[[vector]]
+id = "d51-d28-token-off-with-macros"
+rows = ["D47", "D51"]
+evidence = ["baseline", "raumakey-decision"]
+decisions = ["D28"]
+source = "crates/raumakey-engine/tests/tokens.rs::d28_tokens_expand_while_vietnamese_is_off_when_macros_are_on"
+method = "telex"
+options = { enabled = false, macros_when_disabled = true }
+macros = [{ trigger = "v.v", replacement = "vân vân" }]
+keys = "v.v{SPACE}"
+transactions = [
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(0,"",false,None,false)',
+    'Tx(3,"vân vân ",true,None,true)',
+]
+text = "vân vân "
 
 # D49: Shift+Space commits the word unchanged (D7); a VIQR-escaped boundary commits it
 # literally (design §20.9).

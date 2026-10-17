@@ -434,21 +434,68 @@ fn a_deletion_beyond_the_host_bound_is_never_applied() {
     assert_eq!(doc.text(), "aa");
 }
 
+/// D25 (this test asserted the opposite before D25 was decided): `Restricted` keeps
+/// Vietnamese transformation in secure fields but never expands a macro there, neither a
+/// word nor a token. The same core expands both outside the secure field.
 #[test]
-fn matrix_29_restricted_mode_still_bypasses_secure_fields() {
-    // Design §14 and matrix #29; plan §6 lets `Restricted` keep transformation, an open
-    // question (design §20.8 item 1). The TIP bypasses secure fields in every mode.
+fn d25_restricted_mode_transforms_secure_fields_without_macros() {
     let mut core = ServiceCore::new();
     core.apply_runtime_snapshot(&snapshot(1, |s| {
         s.compatibility.secure_field_mode = SecureFieldMode::Restricted;
     }))
     .expect("valid snapshot");
-    core.apply_macro_snapshot(&macros(1, &[(1, "ko", "không")]))
+    core.apply_macro_snapshot(&macros(1, &[(1, "ko", "không"), (2, "v.v", "vân vân")]))
         .expect("valid macros");
     let mut secure = host(1);
     secure.is_secure_field = true;
     let mut doc = FakeDocument::with_host(secure);
-    let presses = doc.type_text(&mut core, "aas ko ");
+    doc.type_text(&mut core, "vieetj ko v.v ");
+    assert_eq!(doc.text(), "việt ko v.v ");
+    assert_eq!(doc.edits, [edit(1, "ê"), edit(2, "ệt")]);
+    // A secure field is never probed: the probe edits the document.
+    assert!(!core.needs_probe(&doc.host));
+    let mut plain = FakeDocument::new(2);
+    plain.type_text(&mut core, "vieetj ko v.v ");
+    assert_eq!(plain.text(), "việt không vân vân ");
+}
+
+/// D25: in the default `Bypass` mode, set explicitly here, every key of a secure field
+/// passes through untouched: no transformation, no macro, no edit, and nothing is claimed.
+#[test]
+fn d25_bypass_mode_passes_secure_fields_through_untouched() {
+    let mut core = ServiceCore::new();
+    core.apply_runtime_snapshot(&snapshot(1, |s| {
+        s.compatibility.secure_field_mode = SecureFieldMode::Bypass;
+    }))
+    .expect("valid snapshot");
+    core.apply_macro_snapshot(&macros(1, &[(1, "ko", "không"), (2, "v.v", "vân vân")]))
+        .expect("valid macros");
+    let mut secure = host(1);
+    secure.is_secure_field = true;
+    let mut doc = FakeDocument::with_host(secure);
+    let presses = doc.type_text(&mut core, "vieetj ko v.v ");
     assert!(presses.iter().all(|press| !press.claimed));
-    assert_eq!(doc.text(), "aas ko ");
+    assert_eq!(doc.text(), "vieetj ko v.v ");
+    assert_eq!(doc.attempts, 0);
+}
+
+/// D25: a host rule that turns Vietnamese off stays in force in a `Restricted` secure field,
+/// which then passes its keys through as `Bypass` does.
+#[test]
+fn d25_restricted_mode_keeps_a_rule_that_turns_vietnamese_off() {
+    let mut core = ServiceCore::new();
+    core.apply_runtime_snapshot(&snapshot(1, |s| {
+        s.compatibility.secure_field_mode = SecureFieldMode::Restricted;
+        s.compatibility.rules.push(notepad_rule(RuleAction {
+            vietnamese: Some(false),
+            ..RuleAction::default()
+        }));
+    }))
+    .expect("valid snapshot");
+    let mut secure = host(1);
+    secure.is_secure_field = true;
+    let mut doc = FakeDocument::with_host(secure);
+    let presses = doc.type_text(&mut core, "aas ");
+    assert!(presses.iter().all(|press| !press.claimed));
+    assert_eq!(doc.text(), "aas ");
 }

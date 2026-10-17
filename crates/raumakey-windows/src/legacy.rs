@@ -15,6 +15,14 @@
 //! - every object it creates carries the user-only security descriptor of
 //!   [`crate::security`].
 //!
+//! The objects stay user-only under plan D27, which opens only the control pipe, and only to
+//! AppContainer hosts. The shared block carries per-key text (the code unit of a request and the
+//! replacement), which D27's accepted risk does not cover, and the names are fixed and
+//! well known. A TIP in an AppContainer host could not find them anyway: its `Local\` is its own
+//! namespace, so opening the controller objects reports them missing. A TIP in a low-integrity
+//! host finds them but is refused write access, because an object without a label counts as
+//! medium with `NO_WRITE_UP`. Either way that TIP's legacy bridge stays down.
+//!
 //! Activation fails closed: creating the controller objects fails with
 //! [`LegacyError::ConflictingObject`] when any of them already exists, including objects that
 //! another process (such as EVKey itself) holds, objects of another user that cannot be

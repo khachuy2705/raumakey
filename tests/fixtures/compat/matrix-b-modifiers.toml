@@ -1,6 +1,7 @@
 # Matrix rows B21–B23 and B29 (modifiers and secure fields) of
 # docs/reference/evkey_compatibility_test_matrix.md, transcribed from
-# crates/raumakey-engine/tests/matrix.rs. Schema and evidence rules: raumakey_tests::vectors.
+# crates/raumakey-engine/tests/matrix.rs and, for B29, which the adapter's policy decides (D25),
+# from tests/src/vectors/tests.rs. Schema and evidence rules: raumakey_tests::vectors.
 #
 # Not transcribed, because no key script expresses them: shortcuts with Alt or Win and the
 # Alt+Enter and hard-reset separators of B21, Caps Lock in B23, and the source's checks that a
@@ -188,14 +189,17 @@ method = "telex"
 keys = "DDaay"
 text = "Đây"
 
-# B29: in a secure field every key passes through with a reset (transform, macros, and
-# backspace history are bypassed); after the field Telex works again.
+# B29 (D25): the policy's secure-field mode decides, and the executor applies it before the
+# engine as the TIP does. In the default `bypass` mode every key of a secure field passes
+# through with a reset (transform, macros, and backspace history are bypassed); after the field
+# Telex works again. Transcribed from tests/src/vectors/tests.rs, the executor's tests.
 
 [[vector]]
 id = "b29-secure-field-bypasses-all"
 rows = ["B29"]
-evidence = ["proposed"]
-source = "crates/raumakey-engine/tests/matrix.rs::b29_secure_fields_bypass_everything"
+evidence = ["proposed", "raumakey-decision"]
+decisions = ["D25"]
+source = "tests/src/vectors/tests.rs::b29_secure_fields_bypass_everything"
 method = "telex"
 macros = [{ trigger = "ko", replacement = "không" }]
 keys = "{SECURE}aas ko{SPACE}{BS}{/SECURE}aa"
@@ -211,3 +215,23 @@ steps = [
     { index = 8, transaction = 'Tx(0,"",false,None,true)' },
 ]
 text = "aas koâ"
+
+# B29 in `restricted` mode (D25, an option override): a secure field keeps Vietnamese
+# transformation but never expands a macro; after the field the macro expands again.
+
+[[vector]]
+id = "b29-d25-restricted-no-macros"
+rows = ["B29"]
+evidence = ["proposed", "raumakey-decision"]
+decisions = ["D25"]
+source = "tests/src/vectors/tests.rs::b29_restricted_secure_fields_transform_without_macros"
+method = "telex"
+options = { secure_field_mode = "restricted" }
+macros = [{ trigger = "ko", replacement = "không" }]
+keys = "{SECURE}vieetj ko{SPACE}{/SECURE}ko{SPACE}"
+steps = [
+    { index = 6, transaction = 'Tx(2,"ệt",true,None,false)' },
+    { index = 10, transaction = 'Tx(0,"",false,None,true)' },
+    { index = 14, transaction = 'Tx(2,"không ",true,None,true)' },
+]
+text = "việt ko không "

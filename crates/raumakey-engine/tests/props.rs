@@ -162,13 +162,20 @@ fn macros() -> Arc<MacroDouble> {
         ("vn", "Việt Nam"),
         ("đc", "được"),
         ("a1", "😀"),
+        // Token triggers (D28).
+        ("v.v", "vân vân"),
+        ("...", "…"),
     ])
 }
 
-fn engine() -> VietnameseEngine {
+fn engine_with_macros(macros: Arc<MacroDouble>) -> VietnameseEngine {
     let map = user_map();
     assert!(map.validate().is_ok(), "the test key map is valid");
-    VietnameseEngine::new(vec![map], macros())
+    VietnameseEngine::new(vec![map], macros)
+}
+
+fn engine() -> VietnameseEngine {
+    engine_with_macros(macros())
 }
 
 /// 512 cases by default; `PROPTEST_CASES` overrides it for stress runs.
@@ -188,7 +195,8 @@ proptest! {
         options in options(),
         prefill in prop::sample::select(vec!["", "x", "😀", "e\u{302}"]),
     ) {
-        let engine = engine();
+        let macros = macros();
+        let engine = engine_with_macros(Arc::clone(&macros));
         let mut sim = TextSimulator::with_text(prefill);
         let mut state = EngineState::new();
         let mut secure = false;
@@ -199,6 +207,7 @@ proptest! {
                 _ => secure,
             };
             let event = event(token, *held, secure);
+            let queries = (macros.calls().len(), macros.prefix_calls().len());
             let result = engine.process(&event, &options, &state);
             prop_assert!(result.is_ok(), "{:?}", result);
             let result = result.expect("checked");
@@ -207,9 +216,19 @@ proptest! {
             prop_assert!(tx.validate(available, u32::MAX).is_ok());
             prop_assert!(tx.delete_before as usize <= state.owned_utf16().len());
             prop_assert!(utf16::is_well_formed(&tx.insert_utf16));
-            if event.is_shortcut() || event.host.is_secure_field {
-                // Shortcuts and secure fields bypass the engine (matrix #21, #29).
+            if event.is_shortcut() {
+                // Shortcuts bypass the engine (matrix #21).
                 prop_assert!(tx.is_pass_through() && tx.reset_context, "{:?}", tx);
+                prop_assert!(result.next.is_idle());
+            }
+            if event.host.is_secure_field {
+                // The engine never looks up a macro in a secure field (D25, matrix #29).
+                prop_assert_eq!(
+                    (macros.calls().len(), macros.prefix_calls().len()),
+                    queries
+                );
+            }
+            if tx.reset_context {
                 prop_assert!(result.next.is_idle());
             }
             prop_assert!(sim.apply(&event, tx).is_ok());

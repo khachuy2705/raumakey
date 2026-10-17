@@ -6,6 +6,7 @@
 
 use raumakey_ipc::frame::{Frame, HEADER_LEN, MAX_CONTROL_PAYLOAD, MAX_PAYLOAD, encode_frame};
 use raumakey_ipc::message::{Arch, ClientKind, Command, MacroSnapshot, Message, RuntimeSnapshot};
+use raumakey_macro::MAX_TRIGGER_SCALARS;
 use raumakey_model::diag::{Component, DiagCode, DiagEvent};
 use raumakey_model::host::ExeName;
 use raumakey_model::macros::{BoundaryPolicy, CasePolicy, MacroEntry, MacroId};
@@ -333,8 +334,35 @@ pub fn macro_files() -> Vec<Vec<u8>> {
     let mut lone = vec![0xFF, 0xFE];
     lone.extend(units_le(&[0x61, 0x3A, 0xD800, 0x0A, 0x62, 0x3A, 0x63]));
     corpus.push(lone);
-    corpus.push(format!("{}:x\n{}:y\n", "t".repeat(64), "u".repeat(65)).into_bytes());
+    // The longest trigger (D29) and one scalar more.
+    corpus.push(
+        format!(
+            "{}:x\n{}:y\n",
+            "t".repeat(MAX_TRIGGER_SCALARS),
+            "u".repeat(MAX_TRIGGER_SCALARS + 1)
+        )
+        .into_bytes(),
+    );
     corpus.push(format!("a:{}\nb:{}\n", "r".repeat(4096), "s".repeat(4097)).into_bytes());
+    // D28: token triggers, in several cases, with the Greek final sigma before punctuation.
+    corpus.push(
+        "v.v:vân vân\nTP.HCM:Thành phố Hồ Chí Minh\n...:…\nσσ.α:x\nΣΣ.Α V.V tp.hcm\n"
+            .as_bytes()
+            .to_vec(),
+    );
+    // D30: the longest replacement in NFC and in NFD, one unit more of each, and a
+    // replacement whose Title and Upper forms ("ß" becomes "SS") would not fit an insert.
+    corpus.push(
+        format!(
+            "a:{}a\nb:{}\nc:{}a\nd:{}\nt:ß{}\n",
+            "😀".repeat(4095),
+            "😀".repeat(4096),
+            "ệ".repeat(2730),
+            "ệ".repeat(2731),
+            "ệ".repeat(2730)
+        )
+        .into_bytes(),
+    );
     corpus
 }
 

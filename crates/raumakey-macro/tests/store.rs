@@ -48,6 +48,41 @@ fn upsert_of_an_unknown_id_inserts_with_an_allocated_id() {
     assert_eq!(store.revision(), 2);
 }
 
+/// D29: creating a macro whose trigger has more than 32 scalars fails with a typed error and
+/// changes nothing.
+#[test]
+fn d29_creating_a_macro_with_a_trigger_longer_than_32_scalars_fails() {
+    let mut store = MacroStore::new();
+    assert_eq!(
+        store.upsert(0, entry(0, &"b".repeat(33), "x")),
+        Err(MacroError::InvalidEntry {
+            id: MacroId(0),
+            reason: EntryError::TriggerTooLong,
+        })
+    );
+    assert!(store.is_empty());
+    assert_eq!(store.revision(), 0);
+    assert_eq!(store.upsert(0, entry(0, &"b".repeat(32), "x")), Ok(1));
+}
+
+/// D30: creating a macro whose replacement does not fit one insert fails with a typed error.
+#[test]
+fn d30_creating_a_macro_with_a_replacement_beyond_the_insert_limit_fails() {
+    let mut store = MacroStore::new();
+    assert_eq!(
+        store.upsert(0, entry(0, "ko", &"ệ".repeat(2731))),
+        Err(MacroError::InvalidEntry {
+            id: MacroId(0),
+            reason: EntryError::ReplacementTooLong,
+        })
+    );
+    assert!(store.is_empty());
+    assert_eq!(
+        store.upsert(0, entry(0, "ko", &format!("{}a", "ệ".repeat(2730)))),
+        Ok(1)
+    );
+}
+
 #[test]
 fn upsert_of_a_known_id_replaces_the_entry_in_place() {
     let mut store = store_with(
@@ -429,6 +464,59 @@ fn from_entries_rejects_invalid_entries_and_duplicate_ids() {
     );
 }
 
+/// D29 and D30 tightened the limits, so data stored before them can hold entries that are
+/// invalid now: a 40-scalar trigger, or a replacement that no longer fits one insert. Loading
+/// user data therefore goes through `from_entries_lenient`, which reports them by input
+/// position while every valid entry keeps working; `from_entries` refuses the whole list.
+#[test]
+fn d29_d30_entries_stored_under_the_old_limits_load_leniently_as_issues() {
+    let stored = vec![
+        entry(1, "ko", "không"),
+        entry(2, &"b".repeat(40), "x"),
+        entry(3, "big", &"\u{1F600}".repeat(4096)),
+        entry(4, "vn", "Việt Nam"),
+    ];
+    assert_eq!(
+        MacroStore::from_entries(7, stored.clone()).err(),
+        Some(MacroError::InvalidEntry {
+            id: MacroId(2),
+            reason: EntryError::TriggerTooLong,
+        })
+    );
+    let (store, issues) = MacroStore::from_entries_lenient(7, stored);
+    assert_eq!(
+        issues,
+        [
+            EntryIssue {
+                index: 1,
+                error: MacroError::InvalidEntry {
+                    id: MacroId(2),
+                    reason: EntryError::TriggerTooLong,
+                },
+            },
+            EntryIssue {
+                index: 2,
+                error: MacroError::InvalidEntry {
+                    id: MacroId(3),
+                    reason: EntryError::ReplacementTooLong,
+                },
+            },
+        ]
+    );
+    assert_eq!(store.revision(), 7);
+    assert_eq!(ids(&store), [1, 4]);
+    let table = store.snapshot();
+    for (typed, replacement) in [("ko", "không"), ("vn", "Việt Nam")] {
+        assert_eq!(
+            table
+                .lookup(typed, Boundary::Whitespace, CaseMode::Exact)
+                .map(|expansion| expansion.replacement),
+            Some(replacement.to_owned()),
+            "{typed}"
+        );
+    }
+}
+
 #[test]
 fn lenient_loading_skips_bad_entries_and_reports_their_positions() {
     let (store, issues) = MacroStore::from_entries_lenient(
@@ -552,4 +640,30 @@ fn debug_output_does_not_reveal_macro_text() {
     assert!(!text.contains("bimat"), "{text}");
     assert!(!text.contains("noidung"), "{text}");
     assert!(text.contains('3'), "{text}");
+}
+
+#[test]
+fn d29_d30_new_ids_never_reuse_an_entry_skipped_by_lenient_loading() {
+    // The caller writes skipped entries back verbatim, so their identifiers stay taken.
+    let stored = vec![
+        entry(1, "ko", "không"),
+        entry(5, &"b".repeat(40), "x"),
+        entry(3, "vn", "Việt Nam"),
+    ];
+    let (mut store, issues) = MacroStore::from_entries_lenient(2, stored);
+    assert_eq!(issues.len(), 1);
+    assert_eq!(ids(&store), [1, 3]);
+    assert_eq!(store.next_id(), Ok(MacroId(6)));
+
+    let revision = store.upsert(2, entry(0, "hn", "Hà Nội")).unwrap();
+    assert_eq!(ids(&store), [1, 3, 6]);
+    let revision = store.remove(revision, MacroId(6)).unwrap();
+    let revision = store.remove(revision, MacroId(3)).unwrap();
+    assert_eq!(
+        store.next_id(),
+        Ok(MacroId(6)),
+        "removing kept entries never frees id 5"
+    );
+    let (_, id) = store.insert(revision, entry(0, "sg", "Sài Gòn")).unwrap();
+    assert_eq!(id, MacroId(6));
 }

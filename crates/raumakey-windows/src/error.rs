@@ -115,6 +115,9 @@ pub mod win32 {
     pub const ERROR_UNABLE_TO_MOVE_REPLACEMENT_2: u32 = 1177;
     /// `ERROR_CANCELLED`.
     pub const ERROR_CANCELLED: u32 = 1223;
+    /// `ERROR_INVALID_LABEL`; this crate also reports a pipe server whose mandatory label is
+    /// below medium with it.
+    pub const ERROR_INVALID_LABEL: u32 = 1299;
     /// `ERROR_PRIVILEGE_NOT_HELD`.
     pub const ERROR_PRIVILEGE_NOT_HELD: u32 = 1314;
     /// `ERROR_CANNOT_IMPERSONATE`.
@@ -156,6 +159,11 @@ pub enum WinErrorKind {
     NotSupported,
     /// The peer of a pipe went away.
     BrokenPipe,
+    /// `ERROR_INVALID_LABEL`, from any API. Every error with that code maps to this kind,
+    /// including one from an API that rejected a mandatory label it was given. This crate's
+    /// pipe client also reports it when the pipe carries a mandatory label below medium, so a
+    /// lower-integrity process created it.
+    UntrustedPeer,
     /// Any other failure.
     Other,
 }
@@ -260,6 +268,7 @@ impl WinError {
                 win32::ERROR_BROKEN_PIPE
                 | win32::ERROR_PIPE_NOT_CONNECTED
                 | win32::ERROR_NO_DATA => WinErrorKind::BrokenPipe,
+                win32::ERROR_INVALID_LABEL => WinErrorKind::UntrustedPeer,
                 _ => WinErrorKind::Other,
             };
         }

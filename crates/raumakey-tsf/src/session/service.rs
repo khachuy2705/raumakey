@@ -508,9 +508,10 @@ impl ServiceCore {
     /// that is not a secure field, its executable has no result of the current probe version
     /// yet, and a result could be stored.
     ///
-    /// The probe edits the document, and secure fields bypass every transformation (design
-    /// §14, matrix #29), so a secure field is never probed, nor a context without a
-    /// document; the next ordinary document of the same executable is.
+    /// The probe edits the document, and a secure field must not be edited for anything but
+    /// the typing its secure-field mode allows (D25, matrix #29), so a secure field is never
+    /// probed, nor a context without a document; the next ordinary document of the same
+    /// executable is.
     pub fn needs_probe(&self, host: &HostContext) -> bool {
         !host.is_secure_field && host.document_id.is_some() && self.policy.needs_probe(host)
     }
@@ -726,6 +727,10 @@ impl ServiceCore {
     }
 
     /// Runs the engine for `key` in `document` without committing anything.
+    ///
+    /// A key of a secure field whose policy does not allow Vietnamese (`Bypass`, D25) never
+    /// reaches the engine: it passes through untouched and ends the word, so nothing in such
+    /// a field is transformed, expanded, edited, or tracked.
     fn engine_decision(
         &mut self,
         key: &KeyStroke,
@@ -735,10 +740,17 @@ impl ServiceCore {
         let Some(event) = key.input_event() else {
             return Decision::Pass;
         };
-        let options = effective_options(&self.config, &policy);
         let Some(prior) = self.states.get(document) else {
             return Decision::Pass;
         };
+        if event.host.is_secure_field && !policy.vietnamese_allowed {
+            return if is_fresh(&self.engine, prior) {
+                Decision::Pass
+            } else {
+                Decision::Reset { document }
+            };
+        }
+        let options = effective_options(&self.config, &policy);
         let arrival = Arrival::of(&event);
         match self.engine.process(&event, &options, prior) {
             Ok(result) if needs_key_down(&result, prior) => Decision::Apply {

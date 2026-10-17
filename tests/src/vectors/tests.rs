@@ -8,6 +8,7 @@ use raumakey_macro::MacroError;
 use raumakey_model::diag::VectorId;
 use raumakey_model::macros::{MacroId, NoMacros};
 use raumakey_model::options::{EngineOptions, InputMethod, Normalization, OptionsError};
+use raumakey_model::policy::SecureFieldMode;
 
 use super::run::{check, run_vector_with};
 use super::*;
@@ -359,6 +360,8 @@ fn options_override_defaults_v1() {
         macros_when_disabled: Some(true),
         auto_case_macro: Some(false),
         context_limit_codepoints: Some(8),
+        // A policy setting: it changes no engine option.
+        secure_field_mode: Some(SecureFieldMode::Restricted),
     }
     .apply(&mut all);
     assert_eq!(
@@ -634,6 +637,58 @@ fn vectors_run_with_the_real_macro_table_and_the_initial_text() {
     let result = run_vector(&emoji);
     assert_eq!(result.status, Status::Pass, "{:?}", result.failures);
     assert_eq!(result.transactions.len(), 5);
+}
+
+fn ko_macro() -> Vec<VectorMacro> {
+    vec![VectorMacro {
+        trigger: "ko".to_owned(),
+        replacement: "không".to_owned(),
+    }]
+}
+
+/// Matrix #29 under D25: `{SECURE}` keys follow the compatibility policy of defaults v1,
+/// whose secure-field mode is `Bypass`. As the TIP does, the executor passes every key of a
+/// secure field through before the engine and ends the word (`Tx(0,"",false,None,true)`), so
+/// neither transformation, nor macros, nor backspace history apply there; after the field,
+/// Telex works again.
+#[test]
+fn b29_secure_fields_bypass_everything() {
+    let mut bypass = vector("{SECURE}aas ko{SPACE}{BS}{/SECURE}aa", "aas koâ");
+    bypass.macros = ko_macro();
+    assert_eq!(bypass.secure_field_mode(), SecureFieldMode::Bypass);
+    let result = run_vector(&bypass);
+    assert_eq!(result.status, Status::Pass, "{:?}", result.failures);
+    assert_eq!(result.transactions[..9], ["Tx(0,\"\",false,None,true)"; 9]);
+    assert_eq!(result.transactions[11], "Tx(1,\"â\",true,None,false)");
+}
+
+/// D25 `Restricted` (an option override of the vector): secure fields keep Vietnamese
+/// transformation, but no macro expands there (the policy turns macros off for the key, and
+/// the engine never looks one up in a secure field).
+#[test]
+fn b29_restricted_secure_fields_transform_without_macros() {
+    let mut restricted = vector(
+        "{SECURE}vieetj ko{SPACE}{/SECURE}ko{SPACE}",
+        "việt ko không ",
+    );
+    restricted.macros = ko_macro();
+    restricted.options.secure_field_mode = Some(SecureFieldMode::Restricted);
+    assert_eq!(restricted.secure_field_mode(), SecureFieldMode::Restricted);
+    let result = run_vector(&restricted);
+    assert_eq!(result.status, Status::Pass, "{:?}", result.failures);
+    assert_eq!(result.transactions[6], "Tx(2,\"ệt\",true,None,false)");
+    assert_eq!(result.transactions[10], "Tx(0,\"\",false,None,true)");
+    assert_eq!(result.transactions[14], "Tx(2,\"không \",true,None,true)");
+    // The mode is a policy setting, not an engine option.
+    let toml = parsed(&base_with(
+        "options = { secure_field_mode = \"restricted\" }",
+    ));
+    assert_eq!(toml.secure_field_mode(), SecureFieldMode::Restricted);
+    assert_eq!(toml.effective_options(), Ok(EngineOptions::defaults_v1()));
+    assert_eq!(
+        parsed(&base_with("options = { secure_field_mode = \"bypass\" }")).secure_field_mode(),
+        SecureFieldMode::Bypass
+    );
 }
 
 #[test]

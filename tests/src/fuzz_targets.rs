@@ -45,7 +45,8 @@ mod utf16;
 ///
 /// The fixed table has an entry for every lookup rule: adaptive and exact case, a
 /// whitespace-only boundary, an NFD trigger, a disabled entry, a duplicate trigger, raw-key
-/// triggers, and a replacement of exactly `MAX_INSERT_UNITS` units.
+/// triggers, token triggers with boundary punctuation (D28), and the longest valid replacement
+/// (D30: `MAX_INSERT_UNITS` units with a delimiter).
 ///
 /// Checks: processing is deterministic; every transaction validates on its own (a well-formed
 /// insert within `MAX_INSERT_UNITS`, a replay only of a consumed key) and deletes only text the
@@ -53,8 +54,9 @@ mod utf16;
 /// validates against the document, never splits a surrogate pair, and applies, and after such
 /// an edit it may fail only because its deletion no longer fits (beyond the document or inside
 /// a surrogate pair), after which the adapter resets; the document stays well-formed,
-/// and the owned text stays its suffix until a host edit; secure fields and
-/// shortcuts pass through with a reset (matrix #21, #29); `reset_context` always ends the
+/// and the owned text stays its suffix until a host edit; shortcuts pass through with a reset
+/// (matrix #21), and no macro is looked up for an event in a secure field, whose transformation
+/// the adapter's policy decides (D25, matrix #29); `reset_context` always ends the
 /// word; only Enter and Tab are replayed; the generation advances with every state change;
 /// Raumakey's own injected input changes nothing; a word is never continued in another
 /// document (matrix #20); errors are typed and match their cause (malformed event,
@@ -143,7 +145,12 @@ pub fn config_concurrency(data: &[u8]) {
 /// with the table's rule 5, which departs from the plan §4 wording. Rule 5 is a code decision
 /// that design §20.9 lists and the plan does not record yet: only a case-insensitive match is
 /// case-adapted (a trigger typed exactly as stored never is), and an adaptation that would
-/// exceed the replacement limit keeps the stored text. Export
+/// exceed the replacement limit, or not fit one insert with a delimiter in NFC or NFD (D30),
+/// keeps the stored text; every expansion fits one such insert. The token queries of D28
+/// agree with the same entries: `has_token_triggers` (an enabled trigger contains boundary
+/// punctuation) and `is_trigger_prefix` after each boundary punctuation of those texts (an
+/// enabled trigger starts with the NFC prefix, or, in adaptive mode, its fold with the
+/// prefix's fold). Export
 /// reports exactly the entries it cannot hold, and re-importing the export yields the written
 /// entries unchanged and exports to the same text.
 pub fn macro_files(data: &[u8]) {

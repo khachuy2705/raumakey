@@ -158,6 +158,33 @@ impl InputEvent {
     }
 }
 
+/// Boundary punctuation (plan §3.8): `. , ; : ! ? " ' ( ) [ ] { } < > / \ |`. Typed when no
+/// input-method action consumes it, such a key ends the current word. A macro trigger that
+/// contains it spans several words, a token (plan D28).
+pub const fn is_boundary_punctuation(c: char) -> bool {
+    matches!(
+        c,
+        '.' | ','
+            | ';'
+            | ':'
+            | '!'
+            | '?'
+            | '"'
+            | '\''
+            | '('
+            | ')'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '<'
+            | '>'
+            | '/'
+            | '\\'
+            | '|'
+    )
+}
+
 /// Modifiers to hold while replaying a key.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ModifierSet {

@@ -878,15 +878,19 @@ fn a_maximal_record_still_commits() {
 /// written, including the migration record.
 #[test]
 fn an_oversized_document_aborts_before_anything_is_written() {
-    let replacement = "\u{1F600}".repeat(4096);
+    // The longest valid replacement (D30: 8,191 UTF-16 units, 16,381 UTF-8 bytes). Before D30
+    // this used 4,096 emoji, which no longer fit one insert with a delimiter. 1,023 lines keep
+    // the legacy text under its 16 MiB limit while `macros.toml` exceeds the store's.
+    const ENTRIES: usize = 1_023;
+    let replacement = format!("{}a", "\u{1F600}".repeat(4095));
     let mut text = String::new();
-    for index in 0..1_020 {
+    for index in 0..ENTRIES {
         text.push_str(&format!("m{index:04}:{replacement}\n"));
     }
     let mut fs = FakeFs::new();
     fs.add_file(format!("{FOLDER}/evkmacro.txt"), text.into_bytes());
     let parsed = parse(&discover(&FakeRegistry::new(), &fs, [FOLDER]).unwrap());
-    assert_eq!(parsed.macros().len(), 1_020);
+    assert_eq!(parsed.macros().len(), ENTRIES);
     let dir = tempfile::tempdir().unwrap();
     let stores = Stores::open(dir.path());
     assert_eq!(
