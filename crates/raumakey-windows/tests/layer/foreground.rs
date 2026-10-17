@@ -17,7 +17,8 @@ fn password_detection_needs_an_edit_class_and_the_password_style() {
 mod win {
     use raumakey_windows::error::WinErrorKind;
     use raumakey_windows::foreground::{
-        current_process_is_elevated, foreground_info, process_image_basename, window_class_name,
+        current_process_is_elevated, foreground_info, foreground_window, process_image_basename,
+        window_class_name,
     };
     use windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow;
 
@@ -50,6 +51,27 @@ mod win {
             assert_ne!(info.thread_id, 0);
             // Debug output shows no window title (titles are never read).
             let _ = format!("{info:?}");
+        }
+    }
+
+    #[test]
+    fn the_foreground_window_names_its_focus_without_querying_the_process() {
+        // Read-only; the desktop of a test run may have no foreground window at all.
+        if let Some(window) = foreground_window() {
+            assert_ne!(window.hwnd, 0);
+            assert_ne!(window.thread_id, 0);
+            assert_ne!(window.process_id, 0);
+            if window.focus_hwnd == 0 {
+                assert_eq!(window.focus_window_class, None);
+                assert!(!window.focus_is_password);
+            }
+            let _ = format!("{window:?}");
+            if let Some(info) = foreground_info()
+                && info.hwnd == window.hwnd
+            {
+                assert_eq!(info.process_id, window.process_id);
+                assert_eq!(info.thread_id, window.thread_id);
+            }
         }
     }
 }

@@ -87,7 +87,8 @@ fn sign_extended_handles_are_truncated_to_32_bits() {
 #[cfg(windows)]
 mod win {
     use raumakey_windows::keyboard::{
-        KeyboardSnapshot, is_altgr_layout, layout_for_thread, layout_name, translate_key,
+        KeyboardSnapshot, is_altgr_layout, key_is_down, layout_for_thread, layout_name,
+        translate_key,
     };
 
     #[test]
@@ -125,5 +126,17 @@ mod win {
     #[test]
     fn capturing_the_snapshot_is_read_only() {
         let _ = KeyboardSnapshot::capture();
+    }
+
+    #[test]
+    fn the_physical_state_of_a_key_is_read_without_changing_it() {
+        // Nobody holds the unassigned key 0xE8, and codes outside 1..=0xFE are never down.
+        assert!(!key_is_down(0xE8));
+        for virtual_key in [0, 0xFF, 0x100, u32::MAX] {
+            assert!(!key_is_down(virtual_key), "{virtual_key:#x}");
+        }
+        // Read-only: whatever the desktop holds (Caps Lock may be on, a modifier may be held
+        // by the person running the tests).
+        let _ = key_is_down(0x10);
     }
 }

@@ -397,6 +397,7 @@ dependencies = [
  "raumakey-model",
  "raumakey-policy",
  "raumakey-resources",
+ "raumakey-session",
  "raumakey-windows",
  "tempfile",
  "windows",

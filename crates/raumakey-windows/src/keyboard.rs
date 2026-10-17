@@ -141,12 +141,12 @@ pub struct Translation {
 }
 
 #[cfg(windows)]
-pub use win::{is_altgr_layout, layout_for_thread, layout_name, translate_key};
+pub use win::{is_altgr_layout, key_is_down, layout_for_thread, layout_name, translate_key};
 
 #[cfg(windows)]
 mod win {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetKeyboardLayout, GetKeyboardLayoutNameW, HKL, ToUnicodeEx, VkKeyScanExW,
+        GetAsyncKeyState, GetKeyboardLayout, GetKeyboardLayoutNameW, HKL, ToUnicodeEx, VkKeyScanExW,
     };
 
     use super::{KeyboardSnapshot, KlidSource, Translation, klid_from_hkl};
@@ -191,6 +191,21 @@ mod win {
             units: buffer.get(..len.min(buffer.len())).unwrap_or(&[]).to_vec(),
             dead_key,
         }
+    }
+
+    /// Whether `vk` is physically down now (`GetAsyncKeyState`, current on any thread, a
+    /// low-level hook thread included). Inside a low-level hook the state does not include
+    /// the key being processed yet. Codes outside `1..=0xFE` are never down. Read-only.
+    pub fn key_is_down(vk: u32) -> bool {
+        let Some(code) = u8::try_from(vk)
+            .ok()
+            .filter(|code| (1..=0xFE).contains(code))
+        else {
+            return false;
+        };
+        // SAFETY: no preconditions; the high bit reports the key as down.
+        let state = unsafe { GetAsyncKeyState(i32::from(code)) };
+        state < 0
     }
 
     /// Keyboard layout (`HKL` value) of thread `thread_id` (0 = the calling thread).

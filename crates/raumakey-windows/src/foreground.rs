@@ -15,7 +15,10 @@ pub fn is_password_edit(class: &str, style: u32) -> bool {
 }
 
 #[cfg(windows)]
-pub use win::{ForegroundInfo, foreground_info, process_image_basename, window_class_name};
+pub use win::{
+    ForegroundInfo, ForegroundWindow, foreground_info, foreground_window, process_image_basename,
+    window_class_name,
+};
 
 #[cfg(windows)]
 pub use crate::sid::{current_process_is_elevated, process_is_elevated};
@@ -65,9 +68,32 @@ mod win {
         pub is_elevated: Option<bool>,
     }
 
-    /// Describes the foreground window; `None` when there is none (secure desktop, lock
-    /// screen, or a window that is being destroyed).
-    pub fn foreground_info() -> Option<ForegroundInfo> {
+    /// The foreground window and the window with keyboard focus in its thread, without the
+    /// process queries of [`ForegroundInfo`]: a few window-manager reads, cheap enough for
+    /// every key of a low-level keyboard hook.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct ForegroundWindow {
+        /// Foreground window handle value.
+        pub hwnd: isize,
+        /// Handle value of the window with keyboard focus in the foreground thread
+        /// (`GetGUIThreadInfo`), 0 when there is none or it cannot be read.
+        pub focus_hwnd: isize,
+        /// Owning process id.
+        pub process_id: u32,
+        /// Owning (GUI) thread id.
+        pub thread_id: u32,
+        /// Class of the foreground window.
+        pub window_class: Option<String>,
+        /// Class of the window with keyboard focus.
+        pub focus_window_class: Option<String>,
+        /// The focused control is a password Edit control (see
+        /// [`super::is_password_edit`]).
+        pub focus_is_password: bool,
+    }
+
+    /// Describes the foreground window and its focus; `None` when there is no foreground
+    /// window (secure desktop, lock screen, or a window that is being destroyed).
+    pub fn foreground_window() -> Option<ForegroundWindow> {
         // SAFETY: no preconditions.
         let hwnd = unsafe { GetForegroundWindow() };
         if hwnd.is_invalid() {
@@ -93,15 +119,30 @@ mod win {
             (Some(focus), Some(class)) => is_password_edit(class, window_style(focus)),
             _ => false,
         };
-        Some(ForegroundInfo {
+        Some(ForegroundWindow {
             hwnd: hwnd.0 as isize,
+            focus_hwnd: focus.map_or(0, |focus| focus.0 as isize),
             process_id,
             thread_id,
-            exe: process_image_basename(process_id).ok(),
             window_class: window_class_name(hwnd.0 as isize),
             focus_window_class,
             focus_is_password,
-            is_elevated: process_is_elevated(process_id).ok(),
+        })
+    }
+
+    /// Describes the foreground window; `None` when there is none (secure desktop, lock
+    /// screen, or a window that is being destroyed).
+    pub fn foreground_info() -> Option<ForegroundInfo> {
+        let window = foreground_window()?;
+        Some(ForegroundInfo {
+            hwnd: window.hwnd,
+            process_id: window.process_id,
+            thread_id: window.thread_id,
+            exe: process_image_basename(window.process_id).ok(),
+            window_class: window.window_class,
+            focus_window_class: window.focus_window_class,
+            focus_is_password: window.focus_is_password,
+            is_elevated: process_is_elevated(window.process_id).ok(),
         })
     }
 

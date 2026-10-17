@@ -17,7 +17,11 @@ path = "src/main.rs"
 
 [features]
 default = []
-evkey-compat = ["raumakey-ipc/evkey-compat", "raumakey-windows/evkey-compat"]
+evkey-compat = [
+    "raumakey-ipc/evkey-compat",
+    "raumakey-session/evkey-compat",
+    "raumakey-windows/evkey-compat",
+]
 
 [dependencies]
 raumakey-model.workspace = true
@@ -28,6 +32,7 @@ raumakey-policy.workspace = true
 raumakey-ipc.workspace = true
 raumakey-converter.workspace = true
 raumakey-migrate.workspace = true
+raumakey-session.workspace = true
 raumakey-windows.workspace = true
 
 [target.'cfg(windows)'.dependencies]

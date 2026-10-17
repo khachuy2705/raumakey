@@ -12,6 +12,9 @@
 //!   [`run::Desktop`] port;
 //! - [`tray`]: the tray as a pure state machine (mode, icon, tooltip, menu, and the answer to
 //!   each window message, including `TaskbarCreated`, matrix #58);
+//! - [`typing`]: typing through the global keyboard hook and `SendInput` (plan D39): the pure
+//!   handler over a platform port, and on Windows `typing::TypingHook`, which the run mode
+//!   starts (not wired into the run mode yet), with its manual check list;
 //! - `desktop` (Windows): the desktop of the run mode and the thin tray glue (hidden window,
 //!   notification icon, popup menu, message loop), with its manual check list;
 //! - [`install`]: `install` and `uninstall`, with dry runs, verification, the installation
@@ -69,6 +72,7 @@ pub mod settings;
 pub mod startup;
 pub mod system;
 pub mod tray;
+pub mod typing;
 
 use std::ffi::OsString;
 use std::io;

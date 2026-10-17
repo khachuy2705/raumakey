@@ -58,6 +58,19 @@ pub fn build_macro_table(snapshot: &MacroSnapshot) -> Result<Arc<MacroTable>, Sn
     Ok(Arc::new(table))
 }
 
+/// Checks a runtime snapshot the way
+/// [`ServiceCore::apply_runtime_snapshot`](crate::ServiceCore::apply_runtime_snapshot) does
+/// before it installs one, without a core: a front end that hands snapshots to the thread of
+/// its core runs it on its own thread, so that it can report a refused snapshot to the
+/// caller at once.
+///
+/// # Errors
+///
+/// [`SnapshotError::Runtime`] when the core would refuse the snapshot.
+pub fn check_runtime_snapshot(snapshot: &RuntimeSnapshot) -> Result<(), SnapshotError> {
+    check_runtime(snapshot)
+}
+
 /// Checks a runtime snapshot before the core installs it:
 /// [`RuntimeSnapshot::validate`], then that a user-defined input method names one of the
 /// snapshot's key maps. `validate` only checks that an id is present.

@@ -215,6 +215,27 @@ pub fn replay_inputs(key: &ReplayKey) -> Result<Vec<SyntheticKey>, InputError> {
     Ok(events)
 }
 
+/// The key-down alone of a key that a low-level keyboard hook blocked and sends again after
+/// an edit (`SendInput` appends to the input stream, so the edit and this key-down reach the
+/// application in that order). The physical key-up follows on its own, and the modifiers the
+/// user holds are already down in the system's key state, so none is pressed or released
+/// here: [`replay_inputs`] would release a modifier the user still holds.
+///
+/// `extended` is the `LLKHF_EXTENDED` flag of the blocked key (numeric-pad Enter, the right
+/// Ctrl and Alt keys, the navigation block).
+pub fn key_down_input(
+    virtual_key: u32,
+    scan_code: u32,
+    extended: bool,
+) -> Result<SyntheticKey, InputError> {
+    let virtual_key = u16::try_from(virtual_key)
+        .ok()
+        .filter(|code| (1..=0xFE).contains(code))
+        .ok_or(InputError::InvalidVirtualKey)?;
+    let scan_code = u16::try_from(scan_code).map_err(|_| InputError::InvalidScanCode)?;
+    Ok(SyntheticKey::key(virtual_key, scan_code, extended, false))
+}
+
 /// Keys whose scan code carries the `E0` prefix on every keyboard: the navigation block,
 /// Print Screen, the right Ctrl/Alt, the Windows and Applications keys, numeric-pad divide,
 /// Num Lock, and the browser/media/launch keys.

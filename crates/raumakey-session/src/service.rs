@@ -54,6 +54,24 @@ impl fmt::Debug for KeyDownOutcome {
     }
 }
 
+/// The front end that drives a [`ServiceCore`], which decides who else may handle a key.
+///
+/// The roles differ in three rules only (the [crate documentation](crate#roles) has them);
+/// everything else, from the engine to the secure-field policy, is shared.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Role {
+    /// The TSF text input processor (`raumakey_tip.dll`). It handles only hosts whose policy
+    /// selects the TSF transport, leaving the others to the controller's hook, and it
+    /// classifies hotkeys only while disconnected from the controller (D24).
+    #[default]
+    TextService,
+    /// The global keyboard hook of the portable controller (plan D39, design §21.2). It is
+    /// the only transport and the only hotkey classifier: it handles every host whatever
+    /// transport its policy selects, classifies hotkeys whatever
+    /// [`set_connected`](ServiceCore::set_connected) says, and never asks for a TSF probe.
+    KeyboardHook,
+}
+
 /// Most probe results the core keeps for snapshots that carry no record of their executable
 /// yet. A text service runs in one host process and probes its executable; the bound only
 /// keeps a misbehaving caller from growing the list.
@@ -211,17 +229,19 @@ impl Tested {
 /// A transaction the core will not apply.
 struct Rejected;
 
-/// The platform-independent core of the TSF text service.
+/// The platform-independent core of the TSF text service and of the controller's keyboard
+/// hook ([`Role`]).
 ///
 /// It owns the engine, the immutable runtime configuration, the engine state of each
 /// document, whether the controller connection is up, the hotkey classifier used while it
-/// is down (D24), and the decision of the last test call. The [crate
+/// is down (D24) or always in the hook, and the decision of the last test call. The [crate
 /// documentation](crate) describes the rules.
 ///
-/// One core serves one text service activation and is called from the thread that owns
-/// it; it is `Send`, so the COM layer may move it there. It is written not to panic on any
-/// input, which a property test checks with arbitrary keys and events; the COM layer still
-/// guards every entry point. `Debug` shows revisions, the mode, and counts only.
+/// One core serves one text service activation, or one hook thread, and is called from the
+/// thread that owns it; it is `Send`, so the front end may move it there. It is written not
+/// to panic on any input, which property tests check with arbitrary keys and events in both
+/// roles; the front end still guards every entry point. `Debug` shows revisions, the mode,
+/// the role, and counts only.
 pub struct ServiceCore {
     config: Arc<RuntimeConfig>,
     engine: VietnameseEngine,
@@ -239,13 +259,22 @@ pub struct ServiceCore {
     /// until one carries a record of their executable (see `record_probe`).
     probes: Vec<(HostContext, ProbeResult)>,
     connected: bool,
+    role: Role,
 }
 
 impl ServiceCore {
-    /// A core on defaults v1, disconnected from the controller, with no documents.
+    /// A core of the text service ([`Role::TextService`]) on defaults v1, disconnected from
+    /// the controller, with no documents.
     pub fn new() -> Self {
+        Self::with_role(Role::TextService)
+    }
+
+    /// A core for `role` on defaults v1, disconnected from the controller, with no
+    /// documents.
+    pub fn with_role(role: Role) -> Self {
         let config = Arc::new(RuntimeConfig::defaults_v1());
         Self {
+            role,
             engine: build_engine(&config),
             policy: CompatibilityPolicy::new(Arc::clone(config.compatibility())),
             classifier: HotkeyClassifier::new(config.hotkeys()),
@@ -267,6 +296,11 @@ impl ServiceCore {
     /// Live Vietnamese/English mode.
     pub fn vietnamese_mode(&self) -> bool {
         self.config.vietnamese_mode()
+    }
+
+    /// The front end this core serves.
+    pub fn role(&self) -> Role {
+        self.role
     }
 
     /// Whether the controller connection is up.
@@ -513,7 +547,10 @@ impl ServiceCore {
     /// probed, nor a context without a document; the next ordinary document of the same
     /// executable is.
     pub fn needs_probe(&self, host: &HostContext) -> bool {
-        !host.is_secure_field && host.document_id.is_some() && self.policy.needs_probe(host)
+        self.role == Role::TextService
+            && !host.is_secure_field
+            && host.document_id.is_some()
+            && self.policy.needs_probe(host)
     }
 
     /// Records the result of a TSF range-edit probe of `host`'s executable. Keys of that
@@ -577,13 +614,17 @@ impl ServiceCore {
         self.install(next);
     }
 
-    /// Records whether the controller connection is up. While it is, the controller's hook
-    /// is the only hotkey classifier and the core classifies nothing (D24); a change hands
-    /// classification over, so the classifier starts again from no held keys.
+    /// Records whether the controller connection is up. For the text service, while it is,
+    /// the controller's hook is the only hotkey classifier and the core classifies nothing
+    /// (D24); a change hands classification over, so the classifier starts again from no held
+    /// keys. In the [keyboard-hook role](Role::KeyboardHook) the core is the controller's
+    /// classifier: the connection is only recorded.
     pub fn set_connected(&mut self, connected: bool) {
         if self.connected != connected {
             self.connected = connected;
-            self.forget_keys();
+            if self.role == Role::TextService {
+                self.forget_keys();
+            }
         }
     }
 
@@ -642,7 +683,20 @@ impl ServiceCore {
         }
     }
 
-    /// Runs a hotkey action (D24, disconnected only).
+    /// Whether the core classifies hotkeys now (D24): always in the keyboard-hook role, which
+    /// is the controller; in the text-service role only while disconnected from it.
+    fn classifies_hotkeys(&self) -> bool {
+        self.role == Role::KeyboardHook || !self.connected
+    }
+
+    /// Whether a host with `policy` is the controller hook's and not this core's: only the
+    /// text service leaves hosts to the hook, those whose policy selects another transport
+    /// than TSF. The keyboard hook is the only transport and handles every host.
+    fn leaves_to_controller(&self, policy: &HostPolicy) -> bool {
+        self.role == Role::TextService && policy.transport != Transport::Tsf
+    }
+
+    /// Runs a hotkey action (D24: while disconnected, or in the keyboard-hook role).
     fn run_hotkey(&mut self, action: Option<HotkeyAction>) {
         match action {
             Some(HotkeyAction::ToggleMode) => {
@@ -698,11 +752,11 @@ impl ServiceCore {
             *record = Tested::fresh(key, true);
         }
         let policy = self.policy.resolve(&key.host);
-        if policy.transport != Transport::Tsf {
+        if self.leaves_to_controller(&policy) {
             // The controller's hook handles this host; no key is handled twice.
             return (Decision::Pass, None);
         }
-        if !self.connected
+        if self.classifies_hotkeys()
             && let Some(decision) = Decision::of_verdict(self.verdict(key, record))
         {
             return (decision, None);
@@ -770,7 +824,8 @@ impl ServiceCore {
     }
 
     fn decide_key_up(&mut self, key: &KeyStroke, record: &mut Tested) -> Decision {
-        if self.connected || self.policy.resolve(&key.host).transport != Transport::Tsf {
+        if !self.classifies_hotkeys() || self.leaves_to_controller(&self.policy.resolve(&key.host))
+        {
             return Decision::Pass;
         }
         Decision::of_verdict(self.verdict(key, record)).unwrap_or(Decision::Pass)
@@ -827,6 +882,7 @@ impl fmt::Debug for ServiceCore {
             .field("config_revision", &self.config.config_revision())
             .field("macro_revision", &self.config.macro_revision())
             .field("vietnamese_mode", &self.config.vietnamese_mode())
+            .field("role", &self.role)
             .field("connected", &self.connected)
             .field("documents", &self.states.len())
             .finish_non_exhaustive()

@@ -12,6 +12,7 @@ mod config;
 mod context;
 mod failures;
 mod gates;
+mod hook;
 mod hotkeys;
 mod macros;
 mod privacy;

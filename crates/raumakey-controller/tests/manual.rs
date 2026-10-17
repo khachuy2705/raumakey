@@ -149,3 +149,34 @@ fn manual_clipboard_conversion() {
     let text = clipboard.read_text().unwrap().expect("clipboard text");
     assert_eq!(String::from_utf16_lossy(&text.units), "Tiếng Việt");
 }
+
+/// Runs the real typing hook (plan D39) in this test process for `RAUMAKEY_TYPING_SECONDS`
+/// seconds (60 by default), with defaults v1 (Telex, Vietnamese mode on, no macros). Work
+/// through the manual check list of `raumakey_controller::typing` meanwhile; the mode
+/// changes the observer saw are printed at the end. Do not run `raumakey.exe` or another
+/// Vietnamese input method at the same time.
+#[test]
+#[ignore = "manual: installs a global keyboard and mouse hook and types into the foreground window"]
+fn manual_typing_hook() {
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use raumakey_controller::typing::TypingHook;
+    use raumakey_ipc::message::{MacroSnapshot, RuntimeSnapshot};
+
+    let seconds = std::env::var("RAUMAKEY_TYPING_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(60);
+    let modes = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&modes);
+    let hook = TypingHook::start(
+        RuntimeSnapshot::defaults_v1(),
+        MacroSnapshot::empty(0),
+        move |mode| seen.lock().unwrap().push(mode),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_secs(seconds));
+    hook.stop().unwrap();
+    eprintln!("mode changes: {:?}", modes.lock().unwrap());
+}

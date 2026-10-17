@@ -6,7 +6,8 @@ use raumakey_model::identity::RAUMAKEY_INJECTED_TAG;
 use raumakey_model::input::{ModifierSet, ReplayKey, vk};
 use raumakey_windows::input::{
     InputError, MAX_BACKSPACES, MAX_TEXT_UNITS, SyntheticKey, is_extended_key,
-    is_raumakey_extra_info, keyboard_inputs_for_backspaces, replay_inputs, unicode_text_inputs,
+    is_raumakey_extra_info, key_down_input, keyboard_inputs_for_backspaces, replay_inputs,
+    unicode_text_inputs,
 };
 
 const TAG: usize = RAUMAKEY_INJECTED_TAG as usize;
@@ -201,6 +202,36 @@ fn replay_rejects_keys_that_cannot_be_injected() {
         modifiers: ModifierSet::default(),
     };
     assert_eq!(replay_inputs(&key), Err(InputError::InvalidScanCode));
+}
+
+#[test]
+fn a_blocked_key_down_is_sent_again_alone_with_its_scan_code_and_flag() {
+    // A hook that blocks a key-down and sends it after an edit sends the key-down only: the
+    // physical key-up and the modifiers the user holds follow on their own.
+    assert_eq!(
+        key_down_input(vk::RETURN, 0x1C, false),
+        Ok(down(0x0D, 0x1C))
+    );
+    let numpad_enter = key_down_input(vk::RETURN, 0x1C, true).unwrap();
+    assert_eq!(
+        numpad_enter,
+        SyntheticKey {
+            extended: true,
+            ..down(0x0D, 0x1C)
+        }
+    );
+    assert_eq!(numpad_enter.flags(), 0x0001);
+    assert_eq!(key_down_input(0x41, 0x1E, false).unwrap().flags(), 0);
+    for virtual_key in [0, 0xFF, 0x100, u32::MAX] {
+        assert_eq!(
+            key_down_input(virtual_key, 0x1C, false),
+            Err(InputError::InvalidVirtualKey)
+        );
+    }
+    assert_eq!(
+        key_down_input(vk::RETURN, 0x1_0000, false),
+        Err(InputError::InvalidScanCode)
+    );
 }
 
 #[test]

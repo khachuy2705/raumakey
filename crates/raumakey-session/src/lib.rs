@@ -1,9 +1,10 @@
 //! Platform-independent session core of Raumakey (plan §10.3, design §5.2).
 //!
-//! The TSF text service (`raumakey_tip.dll`, crate `raumakey-tsf`) runs on it, and so will,
-//! next, the keyboard-hook transport of the controller (plan D39). It lives in its own crate
-//! so that the controller executable can link it without the DLL's exports and resources.
-//! The rest of this documentation describes the core as the text service drives it.
+//! The TSF text service (`raumakey_tip.dll`, crate `raumakey-tsf`) runs on it, and so does
+//! the keyboard-hook transport of the portable controller (plan D39, module `typing` of
+//! `raumakey-controller`). It lives in its own crate so that the controller executable can
+//! link it without the DLL's exports and resources. The rest of this documentation describes
+//! the core as the text service drives it; [Roles](#roles) says what differs for the hook.
 //!
 //! [`ServiceCore`] makes every decision of the text input processor. The COM layer (the
 //! `server` module of `raumakey_tip` describes it) translates TSF callbacks into calls on it
@@ -38,7 +39,7 @@
 //! | Key-down | Claimed | `key_down` |
 //! |---|---|---|
 //! | Injected: extra info `RAUMAKEY_INJECTED_TAG` (matrix #39) | no | not eaten; nothing is touched, not even the hotkey classifier |
-//! | Its host's policy selects a transport other than TSF | no | not eaten; the controller's hook handles that host, so no key is handled twice |
+//! | Text-service role only: its host's policy selects a transport other than TSF | no | not eaten; the controller's hook handles that host, so no key is handled twice |
 //! | Disconnected, and the hotkey classifier reports a hotkey (D24) | yes | runs the action (toggle the mode, or reset every document); eaten when the hotkey consumes its key, which key hotkeys do |
 //! | Disconnected, and the classifier swallows the key (auto-repeat of a consumed hotkey key) | yes | eaten |
 //! | No document, a modifier, or a lock key | no | not eaten |
@@ -57,10 +58,10 @@
 //! key; the COM layer sends it with `SendInput`, tagged `RAUMAKEY_INJECTED_TAG`, after
 //! `OnKeyDown` returns, and the tag makes the core let it through.
 //!
-//! Key-ups are claimed only while disconnected, when the classifier reports a hotkey or a
-//! key-up to swallow. A modifier-only hotkey (the default toggle `Ctrl+Shift`, D5) fires on
-//! the release of its last modifier: `key_up` runs the action and lets the key-up through.
-//! The key-up of a consumed key hotkey is eaten.
+//! Key-ups are claimed only while disconnected (or in the [hook role](#roles)), when the
+//! classifier reports a hotkey or a key-up to swallow. A modifier-only hotkey (the default
+//! toggle `Ctrl+Shift`, D5) fires on the release of its last modifier: `key_up` runs the
+//! action and lets the key-up through. The key-up of a consumed key hotkey is eaten.
 //!
 //! `test_key_down` never edits the document and commits no engine result: it runs the engine
 //! on the current state and keeps the decision. (A key from another document than the last
@@ -144,8 +145,9 @@
 //! # Hotkeys (D24)
 //!
 //! While [connected](ServiceCore::set_connected) to the controller, its global hook is the
-//! only hotkey classifier: the core classifies nothing, and the controller's `ModeChanged`
-//! and `ResetAll` reach the core as calls. While disconnected, the core feeds every key
+//! only hotkey classifier: the core of the text service classifies nothing, and the
+//! controller's `ModeChanged` and `ResetAll` reach the core as calls. (The core of the hook
+//! is that classifier: see [Roles](#roles).) While disconnected, the core feeds every key
 //! transition of a TSF host, except injected ones, to a `raumakey_policy::HotkeyClassifier`
 //! built from the configured hotkeys: the toggle flips the local mode and ends every word,
 //! the hard reset ends every word, and swallowed keys are eaten. Hotkeys are classified in
@@ -154,6 +156,30 @@
 //! from no held keys. A mouse press, and a change of a document that Raumakey did not make
 //! (other than the arrival of a key it let through), interrupt it: a modifier-only hotkey
 //! held meanwhile, as in Ctrl+Shift+click, does not fire.
+//!
+//! # Roles
+//!
+//! [`ServiceCore::new`] builds the core of the text service ([`Role::TextService`]), and
+//! [`ServiceCore::with_role`] the core of another front end. The portable controller types
+//! every host through a global low-level keyboard hook and `SendInput` (plan D39, design
+//! §21.2) and builds its core with [`Role::KeyboardHook`]. There is no TIP in that product,
+//! so three rules change, and only these:
+//!
+//! - **Every host is the hook's.** The core handles a host whatever transport its policy
+//!   selects (TSF, synthetic keys, or the clipboard, which the hook front end does not
+//!   implement and replaces with synthetic keys). The text service lets such hosts through.
+//! - **The core always classifies hotkeys.** It is the controller, so it feeds every key
+//!   transition that is not injected to its classifier, whatever
+//!   [`set_connected`](ServiceCore::set_connected) records, and a connection change does not
+//!   restart the classifier.
+//! - **No TSF probe.** [`ServiceCore::needs_probe`] never asks for one.
+//!
+//! A hook has no test-key-down step: its front end calls [`ServiceCore::key_down`] and
+//! [`ServiceCore::key_up`] alone, which compute every key themselves. It cannot read the
+//! application's text either, so it never reports a [`SelectionChange`]; it reports the
+//! foreground and focus windows as documents ([`ServiceCore::set_focus`]), mouse presses
+//! ([`ServiceCore::mouse_down`]), and an edit it could not send
+//! ([`SelectionChange::Other`]). The rest of this documentation holds for both roles.
 //!
 //! # What the COM layer must do
 //!
@@ -215,8 +241,8 @@ mod keystroke;
 mod service;
 mod states;
 
-pub use config::{RuntimeConfig, SnapshotError, build_macro_table};
+pub use config::{RuntimeConfig, SnapshotError, build_macro_table, check_runtime_snapshot};
 pub use document::{DocumentPort, EditError, EditRequest, SelectionChange};
 pub use keystroke::KeyStroke;
-pub use service::{KeyDownOutcome, ServiceCore};
+pub use service::{KeyDownOutcome, Role, ServiceCore};
 pub use states::MAX_DOCUMENTS;
