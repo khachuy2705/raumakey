@@ -82,6 +82,56 @@ fn d5_the_hard_reset_swallows_its_key_and_ends_the_word() {
 }
 
 #[test]
+fn ctrl_shift_toggles_after_win_l_whose_releases_the_hook_missed() {
+    // Win+L: the hook sees Win and L go down; their releases happen on the lock screen.
+    let mut sim = Sim::notepad();
+    sim.down(vk::LWIN);
+    sim.down(u32::from(b'L'));
+    sim.lock();
+    sim.up(u32::from(b'L'));
+    sim.up(vk::LWIN);
+    sim.wait(5000);
+    sim.unlock();
+    sim.tap_ctrl_shift();
+    assert_eq!(
+        sim.modes(),
+        [false],
+        "the first Ctrl+Shift after unlocking works"
+    );
+}
+
+#[test]
+fn ctrl_shift_toggles_after_ctrl_alt_del_whose_releases_the_hook_missed() {
+    let mut sim = Sim::notepad();
+    sim.down(vk::LCONTROL);
+    sim.down(vk::LMENU);
+    sim.down(vk::DELETE);
+    sim.lock();
+    sim.up(vk::DELETE);
+    sim.up(vk::LMENU);
+    sim.up(vk::LCONTROL);
+    sim.unlock();
+    sim.tap_ctrl_shift();
+    assert_eq!(sim.modes(), [false]);
+}
+
+#[test]
+fn ctrl_shift_f12_is_no_hard_reset_after_a_missed_alt_release() {
+    let mut sim = Sim::notepad();
+    sim.down(vk::LMENU);
+    sim.lock();
+    sim.up(vk::LMENU);
+    sim.unlock();
+    sim.type_text("tiee");
+    let (down, up) = sim.chord(&[vk::LCONTROL, vk::LSHIFT], vk::F12);
+    assert_eq!(
+        (down, up),
+        (HookDecision::PassThrough, HookDecision::PassThrough),
+        "F12 is not swallowed"
+    );
+}
+
+#[test]
 fn a_mode_chosen_in_the_tray_is_applied_at_the_next_key_and_not_reported_back() {
     let mut sim = Sim::notepad();
     sim.mailbox

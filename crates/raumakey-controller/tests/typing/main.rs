@@ -11,6 +11,7 @@ mod support;
 
 mod failures;
 mod gates;
+mod health;
 mod hotkeys;
 mod keys;
 mod privacy;

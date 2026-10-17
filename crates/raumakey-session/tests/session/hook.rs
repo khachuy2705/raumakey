@@ -179,6 +179,63 @@ fn d39_a_connection_change_does_not_restart_the_hooks_classifier() {
     assert!(!core.vietnamese_mode());
 }
 
+/// Presses `virtual_key` (key-down only) with `held` as its modifiers: its release is then
+/// missed, as when Win+L or Ctrl+Alt+Del hands the input to the secure desktop.
+fn hold_and_miss_release(core: &mut ServiceCore, doc: &mut FakeDocument, virtual_key: u32) {
+    let key = stroke(virtual_key, "", &doc.host);
+    core.key_down(&key, doc);
+}
+
+#[test]
+fn d39_a_modifier_whose_release_was_missed_blocks_the_toggle_until_transitions_are_missed() {
+    // Win+L: the hook sees Win and L go down, never their releases.
+    let mut core = ServiceCore::with_role(Role::KeyboardHook);
+    let mut doc = FakeDocument::new(1);
+    hold_and_miss_release(&mut core, &mut doc, vk::LWIN);
+    let mut l = stroke(u32::from(b'L'), "l", &doc.host);
+    l.modifiers.win = true;
+    core.key_down(&l, &mut doc);
+    hook_tap_ctrl_shift(&mut core, &doc);
+    assert!(
+        core.vietnamese_mode(),
+        "the classifier still holds Win, so Ctrl+Shift is no toggle"
+    );
+    core.transitions_missed();
+    hook_tap_ctrl_shift(&mut core, &doc);
+    assert!(!core.vietnamese_mode(), "after the reset the toggle works");
+}
+
+#[test]
+fn d39_a_missed_alt_release_no_longer_turns_ctrl_shift_f12_into_the_hard_reset() {
+    let mut core = ServiceCore::with_role(Role::KeyboardHook);
+    let mut doc = FakeDocument::new(1);
+    hold_and_miss_release(&mut core, &mut doc, vk::LMENU);
+    core.transitions_missed();
+    let ctrl = stroke(vk::LCONTROL, "", &doc.host);
+    let mut shift = stroke(vk::LSHIFT, "", &doc.host);
+    shift.modifiers.ctrl = true;
+    let mut f12 = stroke(vk::F12, "", &doc.host);
+    f12.modifiers.ctrl = true;
+    f12.modifiers.shift = true;
+    core.key_down(&ctrl, &mut doc);
+    core.key_down(&shift, &mut doc);
+    assert!(
+        !core.key_down(&f12, &mut doc).eaten,
+        "Ctrl+Shift+F12 is no hard reset"
+    );
+    assert!(!core.key_up(&f12));
+}
+
+#[test]
+fn transitions_missed_keeps_the_word_in_progress() {
+    let mut core = ServiceCore::with_role(Role::KeyboardHook);
+    let mut doc = FakeDocument::new(1);
+    hook_type(&mut core, &mut doc, "tiee");
+    core.transitions_missed();
+    hook_type(&mut core, &mut doc, "s");
+    assert_eq!(doc.text(), "tiế");
+}
+
 #[test]
 fn d39_the_hook_never_asks_for_a_tsf_probe() {
     let core = ServiceCore::with_role(Role::KeyboardHook);

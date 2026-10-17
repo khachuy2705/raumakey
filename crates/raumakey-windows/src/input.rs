@@ -269,6 +269,24 @@ pub fn current_message_is_raumakey_injected() -> bool {
     is_raumakey_extra_info(message_extra_info())
 }
 
+/// The tick (`GetTickCount` base, milliseconds) of the last input event of this session
+/// (`GetLastInputInfo`), physical or injected, keyboard or mouse. Read-only.
+#[cfg(windows)]
+pub fn last_input_tick() -> crate::error::WinResult<u32> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+
+    let mut info = LASTINPUTINFO {
+        cbSize: u32::try_from(size_of::<LASTINPUTINFO>()).unwrap_or(u32::MAX),
+        dwTime: 0,
+    };
+    // SAFETY: `info` is a valid, size-initialized out structure.
+    if unsafe { GetLastInputInfo(&mut info) }.as_bool() {
+        Ok(info.dwTime)
+    } else {
+        Err(crate::error::WinError::last("GetLastInputInfo"))
+    }
+}
+
 /// What [`send`] injected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SendReport {

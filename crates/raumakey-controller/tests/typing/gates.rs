@@ -49,12 +49,20 @@ fn keys_injected_by_other_programs_are_typed_like_physical_ones() {
 }
 
 #[test]
-fn an_elevated_foreground_gets_every_key_untouched() {
+fn an_elevated_foreground_gets_every_key_untouched_even_if_windows_calls_the_hook() {
+    // Windows does not call the low-level hook of a process that is not elevated for the
+    // input of an elevated window; the handler lets such keys through all the same.
     let mut sim = Sim::new(FakePlatform {
         foreground: Some(admin_prompt()),
         ..FakePlatform::default()
     });
+    sim.hook_sees_elevated = true;
+    let reads = sim.platform().foreground_reads;
     let decisions = sim.type_text("tieengs");
+    assert!(
+        sim.platform().foreground_reads > reads,
+        "the hook was called"
+    );
     assert!(
         decisions
             .iter()
@@ -92,8 +100,32 @@ fn an_elevated_raumakey_types_in_an_elevated_window() {
 }
 
 #[test]
-fn the_word_ends_when_an_elevated_window_takes_the_keys() {
+fn the_word_ends_when_the_user_switches_to_an_elevated_window_and_back() {
+    // Alt+Tab: Alt and Tab go down in Notepad, where the hook sees them; the rest happens in
+    // the elevated window, where Windows does not call the hook, until Alt+Tab brings Notepad
+    // back.
     let mut sim = Sim::notepad();
+    sim.type_text("tiee");
+    sim.down(vk::LMENU);
+    sim.press(vk::TAB);
+    sim.focus(Some(admin_prompt()));
+    sim.up(vk::LMENU);
+    sim.type_char('x');
+    assert_eq!(sim.text(ADMIN), "x");
+    sim.down(vk::LMENU);
+    sim.press(vk::TAB);
+    sim.focus(Some(notepad()));
+    sim.up(vk::LMENU);
+    let sends = sim.platform().sends.len();
+    sim.type_char('s');
+    assert_eq!(sim.platform().sends.len(), sends);
+    assert_eq!(sim.text(NOTEPAD), "tiês");
+}
+
+#[test]
+fn the_word_ends_on_entering_an_elevated_window_if_windows_calls_the_hook_there() {
+    let mut sim = Sim::notepad();
+    sim.hook_sees_elevated = true;
     sim.type_text("tiee");
     sim.focus(Some(admin_prompt()));
     sim.type_char('x');
@@ -111,9 +143,45 @@ fn hotkeys_are_not_classified_in_an_elevated_window() {
         foreground: Some(admin_prompt()),
         ..FakePlatform::default()
     });
+    sim.hook_sees_elevated = true;
     sim.tap_ctrl_shift();
     assert!(sim.handler.core().vietnamese_mode());
     assert!(sim.modes().is_empty());
+}
+
+/// The layouts of the Chinese, Japanese, and Korean input methods: their language ids.
+const CJK_LAYOUTS: [isize; 3] = [0x0804_0804, 0x0411_0411, 0x0412_0412];
+
+#[test]
+fn a_chinese_japanese_or_korean_ime_gets_every_key_untouched() {
+    for layout in CJK_LAYOUTS {
+        let mut sim = Sim::new(FakePlatform {
+            layout,
+            ..FakePlatform::notepad()
+        });
+        let decisions = sim.type_text("tieengs aa");
+        assert!(
+            decisions
+                .iter()
+                .all(|decision| *decision == HookDecision::PassThrough),
+            "{layout:#x}"
+        );
+        assert!(sim.platform().sends.is_empty(), "{layout:#x}");
+        assert_eq!(sim.text(NOTEPAD), "tieengs aa", "{layout:#x}");
+    }
+}
+
+#[test]
+fn switching_to_a_cjk_ime_ends_the_word() {
+    let mut sim = Sim::notepad();
+    sim.type_text("tiee");
+    sim.platform().layout = 0x0411_0411;
+    sim.type_char('x');
+    sim.platform().layout = 0;
+    let sends = sim.platform().sends.len();
+    sim.type_char('s');
+    assert_eq!(sim.platform().sends.len(), sends);
+    assert_eq!(sim.text(NOTEPAD), "tiêxs");
 }
 
 #[test]

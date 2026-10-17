@@ -628,6 +628,16 @@ impl ServiceCore {
         }
     }
 
+    /// The front end may have missed key transitions: a release it never saw (the secure
+    /// desktop took the input after Win+L or Ctrl+Alt+Del) leaves a modifier held in the
+    /// hotkey classifier, which would then refuse the toggle and turn Ctrl+Shift+F12 into the
+    /// hard reset. The classifier starts again from no held keys (the
+    /// `raumakey_policy::hotkey` adapter contract) and the last test is dropped; words in
+    /// progress are kept.
+    pub fn transitions_missed(&mut self) {
+        self.forget_keys();
+    }
+
     /// Says whether the active keyboard layout has AltGr: right Alt then types characters
     /// and is not Alt for hotkeys (matrix #22). Keep it in step with the active layout.
     pub fn set_altgr_layout(&mut self, altgr_layout: bool) {

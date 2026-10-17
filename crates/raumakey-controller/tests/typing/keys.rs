@@ -7,7 +7,12 @@ use raumakey_controller::typing::{KeyTracker, Transition};
 use raumakey_model::input::vk;
 use raumakey_windows::hooks::KeyboardEvent;
 
-use crate::support::{FAKE_LCTRL_SCAN, FakePlatform, NOTEPAD, Sim, VK_QUOTE, scan_of};
+use raumakey_windows::hooks::HookDecision;
+
+use crate::support::{
+    FAKE_LCTRL_SCAN, FakePlatform, NOTEPAD, Sim, VK_QUOTE, WORDPAD, admin_prompt, notepad, scan_of,
+    wordpad,
+};
 
 fn event(virtual_key: u32, down: bool) -> KeyboardEvent {
     KeyboardEvent {
@@ -140,6 +145,78 @@ fn keys_whose_release_was_missed_are_forgotten() {
 }
 
 #[test]
+fn a_withheld_key_is_no_missed_release_but_goes_with_one() {
+    let mut tracker = KeyTracker::new(false);
+    let a = u32::from(b'A');
+    tracker.observe(&event(a, true));
+    tracker.settle(a, false, false);
+    assert!(tracker.is_withheld(a));
+    assert!(
+        !tracker.forget_missed_releases(0, |_| false),
+        "the physical state never saw it down"
+    );
+    assert!(tracker.is_down(a));
+    tracker.observe(&event(vk::LWIN, true));
+    assert!(
+        tracker.forget_missed_releases(0, |_| false),
+        "Win was missed"
+    );
+    assert!(
+        !tracker.is_down(a),
+        "a withheld key goes with a missed release: its own may be lost too"
+    );
+}
+
+#[test]
+fn a_repeat_that_reaches_the_system_ends_the_withholding() {
+    let mut tracker = KeyTracker::new(false);
+    let a = u32::from(b'A');
+    tracker.observe(&event(a, true));
+    tracker.settle(a, false, false);
+    tracker.observe(&event(a, true));
+    tracker.settle(a, true, true);
+    assert!(!tracker.is_withheld(a));
+    tracker.observe(&event(a, true));
+    tracker.settle(a, true, false);
+    assert!(
+        !tracker.is_withheld(a),
+        "the system saw a key-down of this press"
+    );
+    tracker.observe(&event(a, false));
+    assert!(!tracker.is_withheld(a) && !tracker.is_down(a));
+}
+
+#[test]
+fn modifiers_are_synced_with_the_physical_state_both_ways() {
+    let mut tracker = KeyTracker::new(false);
+    tracker.observe(&event(vk::LCONTROL, true));
+    tracker.observe(&event(vk::SHIFT, true));
+    let physical = [vk::RSHIFT, vk::LWIN];
+    assert!(
+        tracker.sync_modifiers(false, |key| physical.contains(&key)),
+        "left Ctrl turned out released"
+    );
+    let modifiers = tracker.modifiers(false);
+    assert!(modifiers.shift && modifiers.win && !modifiers.ctrl);
+    assert!(!tracker.is_down(vk::SHIFT), "generic codes are dropped");
+    assert!(!tracker.sync_modifiers(false, |key| physical.contains(&key)));
+}
+
+#[test]
+fn the_synthetic_left_ctrl_in_the_physical_state_is_ignored_under_altgr() {
+    let mut tracker = KeyTracker::new(false);
+    let physical = [vk::LCONTROL, vk::RMENU];
+    assert!(!tracker.sync_modifiers(true, |key| physical.contains(&key)));
+    let modifiers = tracker.modifiers(true);
+    assert!(modifiers.alt_gr && !modifiers.ctrl);
+    // Without AltGr, both are real.
+    let mut tracker = KeyTracker::new(false);
+    tracker.sync_modifiers(false, |key| physical.contains(&key));
+    let modifiers = tracker.modifiers(false);
+    assert!(modifiers.ctrl && modifiers.alt);
+}
+
+#[test]
 fn caps_lock_on_at_the_start_types_capitals() {
     let mut sim = Sim::new(FakePlatform {
         caps_lock: true,
@@ -202,6 +279,120 @@ fn caps_lock_is_read_again_from_the_desktop_after_missed_releases() {
 }
 
 #[test]
+fn caps_lock_toggled_in_an_elevated_window_is_read_again_at_the_next_document() {
+    // The hook is not called for the elevated window, so it never sees Caps Lock there.
+    let mut sim = Sim::notepad();
+    sim.type_text("xin ");
+    sim.focus(Some(admin_prompt()));
+    sim.press(vk::CAPITAL);
+    sim.focus(Some(wordpad()));
+    sim.type_text("tieengs");
+    assert_eq!(
+        sim.text(WORDPAD),
+        "TIẾNG",
+        "not `TIếng`: the edits take the case the application types"
+    );
+}
+
+#[test]
+fn caps_lock_toggled_in_an_elevated_window_is_read_again_after_a_second_away() {
+    // Back in the same window, the hook sees no other document; the time away tells.
+    let mut sim = Sim::notepad();
+    sim.type_text("xin ");
+    sim.focus(Some(admin_prompt()));
+    sim.press(vk::CAPITAL);
+    sim.type_text("x");
+    sim.wait(1500);
+    sim.focus(Some(notepad()));
+    sim.type_text("tieengs");
+    assert_eq!(sim.text(NOTEPAD), "xin TIẾNG", "not `xin TIếng`");
+}
+
+#[test]
+fn caps_lock_toggled_on_the_lock_screen_is_read_again_after_an_idle_gap() {
+    let mut sim = Sim::notepad();
+    sim.type_text("xin ");
+    sim.lock();
+    sim.press(vk::CAPITAL);
+    sim.wait(3000);
+    sim.unlock();
+    sim.type_text("tieengs");
+    assert_eq!(sim.text(NOTEPAD), "xin TIẾNG");
+}
+
+#[test]
+fn caps_lock_is_not_read_again_while_keys_come_quickly_in_one_window() {
+    let mut sim = Sim::notepad();
+    sim.type_char('x');
+    let reads = sim.platform().caps_reads;
+    sim.type_text("in tieengs vieetj");
+    sim.press(vk::CAPITAL);
+    sim.type_text(" aa");
+    assert_eq!(sim.platform().caps_reads, reads);
+    assert_eq!(sim.text(NOTEPAD), "xin tiếng việt Â");
+}
+
+#[test]
+fn a_gap_of_a_second_reads_caps_lock_again_and_a_shorter_one_does_not() {
+    let mut sim = Sim::notepad();
+    sim.type_char('x');
+    let reads = sim.platform().caps_reads;
+    sim.wait(900);
+    sim.type_char('x');
+    assert_eq!(sim.platform().caps_reads, reads, "0.9 s is no idle gap");
+    sim.wait(1000);
+    sim.type_char('x');
+    assert_eq!(sim.platform().caps_reads, reads + 1);
+}
+
+#[test]
+fn a_letter_the_hook_replaced_and_that_is_still_held_is_no_missed_release() {
+    // Rollover: the second `a` is replaced (blocked) and still held when `s` goes down. The
+    // system never saw it down, so the physical state says it is up.
+    let mut sim = Sim::notepad();
+    sim.type_char('a');
+    let a = u32::from(b'A');
+    assert_eq!(sim.down(a), HookDecision::Swallow);
+    let reads = sim.platform().caps_reads;
+    sim.down(u32::from(b'S'));
+    assert!(sim.handler.tracker().is_down(a), "still held");
+    assert_eq!(
+        sim.platform().caps_reads,
+        reads,
+        "nothing was taken for a missed release"
+    );
+    sim.up(a);
+    sim.up(u32::from(b'S'));
+    assert!(!sim.handler.tracker().is_down(a));
+    assert_eq!(sim.text(NOTEPAD), "ấ");
+}
+
+#[test]
+fn a_ctrl_held_where_the_hook_did_not_see_it_turns_letters_into_shortcuts() {
+    // Ctrl went down in an elevated window; the user switched back while holding it.
+    let mut sim = Sim::notepad();
+    sim.unseen(vk::LCONTROL, true);
+    sim.type_text("aa");
+    assert!(
+        sim.platform().sends.is_empty(),
+        "nothing is edited, so no Backspace becomes Ctrl+Backspace"
+    );
+    sim.up(vk::LCONTROL);
+    sim.type_text("aa");
+    assert_eq!(sim.text(NOTEPAD), "â");
+}
+
+#[test]
+fn a_shift_held_where_the_hook_did_not_see_it_still_gives_capital_edits() {
+    let mut sim = Sim::notepad();
+    sim.unseen(vk::LSHIFT, true);
+    sim.press(u32::from(b'A'));
+    sim.press(u32::from(b'A'));
+    sim.unseen(vk::LSHIFT, false);
+    assert_eq!(sim.text(NOTEPAD), "Â");
+}
+
+#[test]
 fn the_key_after_a_dead_key_ends_the_word() {
     // The application composes the dead key with the next key, which the hook cannot see.
     let mut sim = Sim::new(FakePlatform {
@@ -231,7 +422,12 @@ fn matrix_22_altgr_characters_are_typed_and_are_no_shortcut() {
         sim.event(fake);
         sim.down(vk::RMENU);
         assert!(!sim.handler.tracker().modifiers(true).ctrl);
-        sim.press(key);
+        sim.down(key);
+        assert!(
+            !sim.handler.tracker().modifiers(true).ctrl,
+            "the synthetic left Ctrl that the physical state shows is not Ctrl"
+        );
+        sim.up(key);
         sim.up(vk::RMENU);
         let fake = sim.physical(vk::LCONTROL, FAKE_LCTRL_SCAN, false);
         sim.event(fake);

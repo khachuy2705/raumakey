@@ -11,6 +11,10 @@
 //! on I/O, locks held by other threads, or IPC; heavy work belongs on another thread.
 //!
 //! A panicking handler never unwinds into Windows: the event is passed through.
+//!
+//! Windows removes a hook that timed out without telling its thread. Both procedures beat the
+//! thread's [`Heartbeat`] with the time stamp of every event, mouse moves included, so that
+//! the owner can compare it with `GetLastInputInfo` (`crate::input::last_input_tick`).
 
 use crate::panic::guard_value;
 use raumakey_model::identity::RAUMAKEY_INJECTED_TAG;
@@ -186,6 +190,35 @@ pub trait HookHandler {
     fn on_mouse(&mut self, event: &MouseEvent);
 }
 
+/// The time stamp of the last event a hook thread's procedures were called for, keyboard or
+/// mouse, moves included (the `time` of `KBDLLHOOKSTRUCT` and `MSLLHOOKSTRUCT`, milliseconds
+/// on the `GetTickCount` base, like `GetLastInputInfo`).
+///
+/// Windows removes a low-level hook that takes too long, without telling its thread; input
+/// that the system saw well after the last beat means the hook is gone. One atomic, written
+/// by the hook procedures and read from any thread; it never blocks.
+#[derive(Debug, Default)]
+pub struct Heartbeat {
+    /// 0 before the first event, else `1 << 32 | tick`.
+    last: core::sync::atomic::AtomicU64,
+}
+
+impl Heartbeat {
+    /// Records an event of time stamp `tick`.
+    pub fn beat(&self, tick: u32) {
+        self.last.store(
+            (1 << 32) | u64::from(tick),
+            core::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// The time stamp of the last event, `None` before the first.
+    pub fn last(&self) -> Option<u32> {
+        let last = self.last.load(core::sync::atomic::Ordering::Relaxed);
+        (last != 0).then_some(last as u32)
+    }
+}
+
 /// Calls `handler.on_key`; a panic passes the key through.
 pub fn dispatch_key(handler: &mut dyn HookHandler, event: &KeyboardEvent) -> HookDecision {
     guard_value(HookDecision::PassThrough, || handler.on_key(event))
@@ -202,6 +235,7 @@ pub use win::HookThread;
 #[cfg(windows)]
 mod win {
     use std::cell::RefCell;
+    use std::sync::Arc;
     use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
     use std::thread::{self, JoinHandle};
     use std::time::Duration;
@@ -217,7 +251,8 @@ mod win {
     use windows::core::PCWSTR;
 
     use super::{
-        HookDecision, HookHandler, decode_keyboard, decode_mouse, dispatch_key, dispatch_mouse,
+        Heartbeat, HookDecision, HookHandler, decode_keyboard, decode_mouse, dispatch_key,
+        dispatch_mouse,
     };
     use crate::error::{E_UNEXPECTED, ResultExt, WinError, WinResult, win32};
     use crate::panic::guard_value;
@@ -278,6 +313,8 @@ mod win {
     thread_local! {
         /// The handler of the hook thread; hook procedures run on the installing thread.
         static HANDLER: RefCell<Option<Handler>> = const { RefCell::new(None) };
+        /// The heartbeat of the hook thread, beaten by both procedures for every event.
+        static HEARTBEAT: RefCell<Option<Arc<Heartbeat>>> = const { RefCell::new(None) };
     }
 
     /// A thread that owns the low-level keyboard and mouse hooks and their message loop.
@@ -288,6 +325,7 @@ mod win {
         thread_id: u32,
         join: Option<JoinHandle<()>>,
         done: Receiver<()>,
+        heartbeat: Arc<Heartbeat>,
     }
 
     impl HookThread {
@@ -295,17 +333,27 @@ mod win {
         /// the installation error once the thread has exited. It never returns while the thread
         /// could still install hooks on its own.
         pub fn spawn(handler: Handler) -> WinResult<Self> {
-            let started = start_reporting("raumakey-hooks", move |ready| run(handler, ready))?;
+            let heartbeat = Arc::new(Heartbeat::default());
+            let beats = Arc::clone(&heartbeat);
+            let started =
+                start_reporting("raumakey-hooks", move |ready| run(handler, beats, ready))?;
             Ok(Self {
                 thread_id: started.value,
                 join: Some(started.join),
                 done: started.done,
+                heartbeat,
             })
         }
 
         /// Id of the hook thread.
         pub const fn thread_id(&self) -> u32 {
             self.thread_id
+        }
+
+        /// The time stamp of the last event either hook procedure was called for (mouse moves
+        /// included), to tell whether Windows removed the hooks.
+        pub fn heartbeat(&self) -> Arc<Heartbeat> {
+            Arc::clone(&self.heartbeat)
         }
 
         /// Posts `WM_QUIT` and waits at most 2 s for the thread to uninstall the hooks and
@@ -341,12 +389,13 @@ mod win {
     }
 
     /// Body of the hook thread.
-    fn run(handler: Handler, ready: &dyn Fn(WinResult<u32>) -> bool) {
+    fn run(handler: Handler, heartbeat: Arc<Heartbeat>, ready: &dyn Fn(WinResult<u32>) -> bool) {
         let mut message = MSG::default();
         // Create the thread's message queue before reporting the id, so WM_QUIT can be posted.
         // SAFETY: `message` is a valid out buffer; PM_NOREMOVE leaves the queue unchanged.
         let _ = unsafe { PeekMessageW(&mut message, None, WM_USER, WM_USER, PM_NOREMOVE) };
         HANDLER.with(|slot| *slot.borrow_mut() = Some(handler));
+        HEARTBEAT.with(|slot| *slot.borrow_mut() = Some(heartbeat));
         let hooks = match install() {
             Ok(hooks) => hooks,
             Err(error) => {
@@ -411,6 +460,7 @@ mod win {
                 // SAFETY: for HC_ACTION, lparam points to a KBDLLHOOKSTRUCT that is valid for
                 // the duration of this call.
                 let record = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+                beat(record.time);
                 let event = decode_keyboard(
                     wparam.0 as u32,
                     record.vkCode,
@@ -437,6 +487,7 @@ mod win {
                 // SAFETY: for HC_ACTION, lparam points to an MSLLHOOKSTRUCT that is valid for
                 // the duration of this call.
                 let record = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
+                beat(record.time);
                 if let Some(event) = decode_mouse(
                     wparam.0 as u32,
                     record.mouseData,
@@ -450,6 +501,17 @@ mod win {
         }
         // SAFETY: forwards the unchanged arguments to the next hook.
         unsafe { CallNextHookEx(None, code, wparam, lparam) }
+    }
+
+    /// Beats the thread's heartbeat with an event's time stamp.
+    fn beat(tick: u32) {
+        let _ = HEARTBEAT.try_with(|slot| {
+            if let Ok(slot) = slot.try_borrow()
+                && let Some(heartbeat) = slot.as_ref()
+            {
+                heartbeat.beat(tick);
+            }
+        });
     }
 
     /// Runs `body` with the thread's handler; `None` when there is none or it is already in

@@ -172,6 +172,8 @@ pub struct FakePlatform {
     pub layout_descriptions: usize,
     /// How often the Caps Lock toggle of the desktop was read.
     pub caps_reads: usize,
+    /// The keyboard layout of the foreground thread; 0 stands for [`LAYOUT`].
+    pub layout: isize,
 }
 
 impl FakePlatform {
@@ -183,13 +185,23 @@ impl FakePlatform {
         }
     }
 
+    /// The layout of the foreground thread.
+    pub fn layout(&self) -> isize {
+        if self.layout == 0 {
+            LAYOUT
+        } else {
+            self.layout
+        }
+    }
+
     /// The key state the application translates keys with: the real one.
     pub fn app_state(&self) -> KeyboardSnapshot {
         let down = |keys: &[u32]| keys.iter().any(|key| self.async_down.contains(key));
         let right_alt = down(&[vk::RMENU]);
         KeyboardSnapshot {
             shift: down(&[vk::LSHIFT, vk::RSHIFT, vk::SHIFT]),
-            ctrl: down(&[vk::LCONTROL, vk::RCONTROL, vk::CONTROL]) && !right_alt,
+            ctrl: down(&[vk::LCONTROL, vk::RCONTROL, vk::CONTROL])
+                && !(right_alt && self.altgr_layout),
             alt: down(&[vk::LMENU, vk::MENU]) || (right_alt && !self.altgr_layout),
             alt_gr: right_alt && self.altgr_layout,
             win: down(&[vk::LWIN, vk::RWIN]),
@@ -209,14 +221,13 @@ impl TypingPlatform for FakePlatform {
     }
 
     fn keyboard_layout(&mut self, _thread_id: u32) -> isize {
-        LAYOUT
+        self.layout()
     }
 
     fn describe_layout(&mut self, layout: isize) -> LayoutInfo {
-        assert_eq!(layout, LAYOUT);
         self.layout_descriptions += 1;
         LayoutInfo {
-            name: "00000409".to_owned(),
+            name: format!("{:08X}", (layout as usize as u32) & 0xFFFF),
             altgr: self.altgr_layout,
         }
     }
@@ -228,7 +239,7 @@ impl TypingPlatform for FakePlatform {
         state: &KeyboardSnapshot,
         layout: isize,
     ) -> Translation {
-        assert_eq!(layout, LAYOUT);
+        assert_eq!(layout, LAYOUT, "only the US layout translates keys here");
         us_text(virtual_key, state, self.dead_quote)
     }
 
@@ -299,6 +310,12 @@ pub struct Sim {
     modes: Arc<Mutex<Vec<bool>>>,
     apps: BTreeMap<isize, App>,
     time: u32,
+    /// The workstation is locked: the secure desktop takes the input, the hook is not
+    /// called, and no application types.
+    locked: bool,
+    /// Windows calls the hook for the keys of an elevated window too (by default it does
+    /// not, as for a hook of a process that is not elevated).
+    pub hook_sees_elevated: bool,
 }
 
 impl Sim {
@@ -320,7 +337,44 @@ impl Sim {
             modes,
             apps: BTreeMap::new(),
             time: 1000,
+            locked: false,
+            hook_sees_elevated: false,
         }
+    }
+
+    /// Whether Windows calls the hook now: not while the workstation is locked (or the
+    /// secure desktop has the input), and not for an elevated foreground window when
+    /// `raumakey.exe` is not elevated (unless [`hook_sees_elevated`](Self::hook_sees_elevated)).
+    pub fn hook_called(&mut self) -> bool {
+        let (locked, sees_elevated) = (self.locked, self.hook_sees_elevated);
+        let platform = self.platform();
+        let elevated_foreground = platform
+            .foreground
+            .as_ref()
+            .is_some_and(|foreground| foreground.elevated == Some(true));
+        !locked && (sees_elevated || platform.elevated || !elevated_foreground)
+    }
+
+    /// Locks the workstation (Win+L): from now on the hook is not called.
+    pub fn lock(&mut self) {
+        self.locked = true;
+    }
+
+    /// Unlocks the workstation.
+    pub fn unlock(&mut self) {
+        self.locked = false;
+    }
+
+    /// Lets `milliseconds` pass without any input.
+    pub fn wait(&mut self, milliseconds: u32) {
+        self.time += milliseconds;
+    }
+
+    /// A key transition that the system sees but the hook does not (it happened on the
+    /// secure desktop, or in a window whose input the hook does not get).
+    pub fn unseen(&mut self, virtual_key: u32, down: bool) {
+        let event = self.physical(virtual_key, scan_of(virtual_key), down);
+        self.reach_system(&event);
     }
 
     /// Notepad in the foreground.
@@ -367,8 +421,14 @@ impl Sim {
         }
     }
 
-    /// Runs `event` through the hook and the desktop; returns the hook's decision.
+    /// Runs `event` through the hook and the desktop; returns the hook's decision. When the
+    /// hook is not called ([`hook_called`](Self::hook_called)), the event goes straight to
+    /// the system and the decision is `PassThrough`.
     pub fn event(&mut self, event: KeyboardEvent) -> HookDecision {
+        if !self.hook_called() {
+            self.reach_system(&event);
+            return HookDecision::PassThrough;
+        }
         let decision = self.handler.on_key(&event);
         if decision == HookDecision::PassThrough {
             self.reach_system(&event);
@@ -419,6 +479,10 @@ impl Sim {
                 platform.caps_lock = !platform.caps_lock;
             }
         }
+        if self.locked {
+            return;
+        }
+        let platform = self.handler.platform_mut();
         let Some(hwnd) = platform
             .foreground
             .as_ref()
@@ -522,7 +586,9 @@ impl Sim {
             time: self.time,
             extra_info: 0,
         };
-        self.handler.on_mouse(&event);
+        if self.hook_called() {
+            self.handler.on_mouse(&event);
+        }
     }
 
     /// `virtual_key` goes up while the hook does not see it (the secure desktop or an

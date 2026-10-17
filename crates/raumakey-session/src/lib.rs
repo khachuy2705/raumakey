@@ -178,8 +178,10 @@
 //! [`ServiceCore::key_up`] alone, which compute every key themselves. It cannot read the
 //! application's text either, so it never reports a [`SelectionChange`]; it reports the
 //! foreground and focus windows as documents ([`ServiceCore::set_focus`]), mouse presses
-//! ([`ServiceCore::mouse_down`]), and an edit it could not send
-//! ([`SelectionChange::Other`]). The rest of this documentation holds for both roles.
+//! ([`ServiceCore::mouse_down`]), an edit it could not send ([`SelectionChange::Other`]), and
+//! key transitions it may have missed ([`ServiceCore::transitions_missed`]: Windows does not
+//! call the hook while the secure desktop has the input, so a modifier released there would
+//! stay held in the hotkey classifier). The rest of this documentation holds for both roles.
 //!
 //! # What the COM layer must do
 //!

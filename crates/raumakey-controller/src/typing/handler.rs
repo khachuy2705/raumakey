@@ -4,7 +4,7 @@ use core::fmt;
 use std::sync::Arc;
 
 use raumakey_model::host::{DocumentId, ExeName, HostContext, SessionId};
-use raumakey_model::input::{MAX_EVENT_TEXT_UNITS, ReplayKey, vk};
+use raumakey_model::input::{MAX_EVENT_TEXT_UNITS, Modifiers, ReplayKey, vk};
 use raumakey_session::{KeyDownOutcome, KeyStroke, Role, SelectionChange, ServiceCore};
 use raumakey_windows::hooks::{HookDecision, HookHandler, KeyboardEvent, MouseEvent};
 use raumakey_windows::input::{
@@ -53,14 +53,15 @@ enum Plan {
 /// therefore always blocks the key, and when the core lets the key through all the same, the
 /// key is sent again after the edit. A key the core eats is replaced by its edit and the
 /// core's replay key. A key sent again is its key-down alone ([`key_down_input`]): its
-/// physical key-up follows, and the modifiers the user holds are down already.
+/// physical key-up follows, and the modifiers the user holds are down already. A replay of
+/// another key than the blocked one is sent down and up.
 fn plan(outcome: KeyDownOutcome, edit: Option<Vec<SyntheticKey>>, key: &KeyboardEvent) -> Plan {
     let replay = match (outcome.eaten, outcome.replay) {
-        (true, Some(replay)) => Some(replay_key_down(replay, key)),
+        (true, Some(replay)) => Some(replay_keys(replay, key)),
         (true, None) => None,
         (false, _) => edit
             .is_some()
-            .then(|| key_down_input(key.vk, key.scan, key.extended)),
+            .then(|| key_down_input(key.vk, key.scan, key.extended).map(|down| vec![down])),
     };
     let mut keys = match edit {
         Some(keys) => keys,
@@ -69,27 +70,53 @@ fn plan(outcome: KeyDownOutcome, edit: Option<Vec<SyntheticKey>>, key: &Keyboard
         None => Vec::new(),
     };
     match replay {
-        Some(Ok(replay)) => keys.push(replay),
+        Some(Ok(replay)) => keys.extend(replay),
         Some(Err(_)) => return Plan::Unsendable,
         None => {}
     }
     Plan::Replace(keys)
 }
 
-/// The key-down that replays `replay` for the blocked `key`. The engine replays the key it
-/// was given (Enter or Tab after a macro), which keeps the scan code and extended flag of the
-/// physical key; a key of its own would take the usual extended flag of its code.
-fn replay_key_down(replay: ReplayKey, key: &KeyboardEvent) -> Result<SyntheticKey, InputError> {
+/// The keys that replay `replay` for the blocked `key`. The engine replays the key it was
+/// given (Enter or Tab after a macro): its key-down alone, with the scan code and extended
+/// flag of the physical key, whose key-up follows. A key of its own is sent down and up, with
+/// the usual extended flag of its code.
+fn replay_keys(replay: ReplayKey, key: &KeyboardEvent) -> Result<Vec<SyntheticKey>, InputError> {
     if replay.virtual_key == key.vk {
-        key_down_input(key.vk, key.scan, key.extended)
-    } else {
-        key_down_input(
-            replay.virtual_key,
-            replay.scan_code.unwrap_or(0),
-            is_extended_key(replay.virtual_key),
-        )
+        return key_down_input(key.vk, key.scan, key.extended).map(|down| vec![down]);
     }
+    let down = key_down_input(
+        replay.virtual_key,
+        replay.scan_code.unwrap_or(0),
+        is_extended_key(replay.virtual_key),
+    )?;
+    let up = SyntheticKey {
+        key_up: true,
+        ..down
+    };
+    Ok(vec![down, up])
 }
+
+/// Whether the hook may send an edit while `modifiers` are held: not while Ctrl, Alt, or Win
+/// is down outside AltGr, where a Backspace would arrive as Ctrl+Backspace (which deletes a
+/// word in many editors) or as a shortcut. The modifiers come from the physical state.
+fn edits_allowed(modifiers: Modifiers) -> bool {
+    !(modifiers.win || ((modifiers.ctrl || modifiers.alt) && !modifiers.alt_gr))
+}
+
+/// Whether keyboard layout `layout` (an `HKL` value) belongs to the input method of Chinese,
+/// Japanese, or Korean: the primary language of its language id (the low word) is `0x04`,
+/// `0x11`, or `0x12`. Such an input method composes the keys itself, so the hook leaves them
+/// alone.
+fn is_cjk_ime_layout(layout: isize) -> bool {
+    let language = (layout as usize & 0xFFFF) as u16;
+    matches!(language & 0x3FF, 0x04 | 0x11 | 0x12)
+}
+
+/// A gap since the last key event the hook saw after which the Caps Lock toggle is read
+/// again from the desktop, in milliseconds: the hook may not have been called meanwhile (the
+/// lock screen, an elevated window in front, the secure desktop).
+pub const IDLE_RESYNC_MS: u32 = 1000;
 
 /// The document of a foreground: its foreground window and the window with keyboard focus.
 fn document_of(foreground: &Foreground) -> DocumentId {
@@ -122,10 +149,14 @@ pub struct TypingHandler<P> {
     observer: ModeObserver,
     /// This process is elevated.
     elevated: bool,
-    /// The document of the last key, `None` before the first and without a foreground.
+    /// The document of the last key, `None` before the first, without a foreground, and
+    /// while keys pass untouched.
     document: Option<DocumentId>,
-    /// The foreground runs with more privileges than this process: keys pass untouched.
-    passing: bool,
+    /// The time stamp of the last key event the hook saw (Raumakey's own excluded).
+    last_key: Option<u32>,
+    /// Alt went down with no other key held and no other key has gone down since: its
+    /// release alone puts the window's menu bar into menu mode.
+    lone_alt: bool,
     /// The layout of the last key and its description.
     layout: Option<(isize, LayoutInfo)>,
     /// Counts document changes, for the host context.
@@ -156,13 +187,15 @@ impl<P: TypingPlatform> TypingHandler<P> {
             observer: Box::new(observer),
             elevated,
             document: None,
-            passing: false,
+            last_key: None,
+            lone_alt: false,
             layout: None,
             epoch: 0,
             dead_key: false,
             host: None,
         };
         handler.apply_updates();
+        handler.mailbox.note_mode(handler.core.vietnamese_mode());
         handler
     }
 
@@ -194,63 +227,52 @@ impl<P: TypingPlatform> TypingHandler<P> {
         }
         self.apply_updates();
         let down = !event.key_up;
+        let idle = self
+            .last_key
+            .is_none_or(|last| event.time.wrapping_sub(last) >= IDLE_RESYNC_MS);
+        self.last_key = Some(event.time);
+        let foreground = self.platform.foreground();
+        let layout = foreground
+            .as_ref()
+            .map(|foreground| self.platform.keyboard_layout(foreground.thread_id));
+        let passing = self.passes_untouched(foreground.as_ref(), layout);
+        let document = if passing {
+            None
+        } else {
+            foreground.as_ref().map(document_of)
+        };
+        // The hook may not have been called meanwhile, so Caps Lock may have been toggled
+        // unseen: read it again before this key, which may toggle it itself.
+        if idle || document != self.document {
+            self.read_caps_lock();
+        }
         if down
-            && !vk::is_modifier(event.vk)
             && self
                 .tracker
                 .forget_missed_releases(event.vk, |key| self.platform.key_is_down(key))
         {
-            // Releases went missing, so Caps Lock presses may have too.
-            let caps_lock = self.platform.caps_lock_on();
-            self.tracker.set_caps_lock(caps_lock);
+            // Releases went missing: so may have Caps Lock presses, and the hotkey classifier
+            // still holds the keys.
+            self.core.transitions_missed();
+            self.read_caps_lock();
         }
         let repeat = match self.tracker.observe(event) {
             Transition::SyntheticCtrl => return HookDecision::PassThrough,
             Transition::Down { repeat } => repeat,
             Transition::Up => true,
         };
-        let foreground = self.platform.foreground();
-        if self.passes_untouched(foreground.as_ref()) {
-            if !self.passing {
-                self.passing = true;
-                self.enter_document(None);
-            }
-            return HookDecision::PassThrough;
-        }
-        if self.passing {
-            // The hook may not have seen the keys typed in that window.
-            self.passing = false;
-            let caps_lock = self.platform.caps_lock_on();
-            self.tracker.set_caps_lock(caps_lock);
-        }
-        let document = foreground.as_ref().map(document_of);
         if document != self.document {
             self.enter_document(document);
         }
-        let (layout, altgr) = self.layout_of(foreground.as_ref());
-        let Some(host) = self.host_context(foreground.as_ref(), document) else {
-            return HookDecision::PassThrough;
-        };
-        let mode = self.core.vietnamese_mode();
-        let decision = if down {
-            let text = match (&foreground, layout) {
-                (Some(_), Some(layout)) => self.key_text(event, layout, altgr),
-                _ => Vec::new(),
-            };
-            let stroke = self.stroke(event, repeat, altgr, text, host);
-            let mut port = BlindDocument::new();
-            let outcome = self.core.key_down(&stroke, &mut port);
-            let edit = port.edited().then(|| port.into_keys());
-            self.carry_out(plan(outcome, edit, event), document)
+        let (decision, reached) = if passing {
+            (HookDecision::PassThrough, true)
         } else {
-            let stroke = self.stroke(event, repeat, altgr, Vec::new(), host);
-            if self.core.key_up(&stroke) {
-                HookDecision::Swallow
-            } else {
-                HookDecision::PassThrough
-            }
+            self.handle(event, down, repeat, foreground.as_ref(), layout, document)
         };
-        self.report_mode(mode);
+        if down {
+            self.tracker.settle(event.vk, repeat, reached);
+        }
+        self.mailbox.note_mode(self.core.vietnamese_mode());
         decision
     }
 
@@ -261,6 +283,7 @@ impl<P: TypingPlatform> TypingHandler<P> {
             return;
         }
         self.apply_updates();
+        self.lone_alt = false;
         let host = self
             .host
             .clone()
@@ -268,6 +291,91 @@ impl<P: TypingPlatform> TypingHandler<P> {
         if let Some(host) = host {
             self.core.mouse_down(&host);
         }
+        self.mailbox.note_mode(self.core.vietnamese_mode());
+    }
+
+    /// A key event of a document the hook types in: the core, then what replaces the key.
+    /// Returns the decision and whether a key-down reached the system (let through, or sent
+    /// again).
+    fn handle(
+        &mut self,
+        event: &KeyboardEvent,
+        down: bool,
+        repeat: bool,
+        foreground: Option<&Foreground>,
+        layout: Option<isize>,
+        document: Option<DocumentId>,
+    ) -> (HookDecision, bool) {
+        let altgr = self.describe_layout(layout);
+        if down && !vk::is_modifier(event.vk) {
+            // A modifier the hook never saw go down is held now. One whose release it missed
+            // was dropped (and the classifier reset) by the missed-release check already, so
+            // the sync reports no release here.
+            let _ = self
+                .tracker
+                .sync_modifiers(altgr, |key| self.platform.key_is_down(key));
+        }
+        let lone_alt_released = self.track_lone_alt(event, down, repeat, altgr);
+        let Some(host) = self.host_context(foreground, document) else {
+            return (HookDecision::PassThrough, true);
+        };
+        let mode = self.core.vietnamese_mode();
+        let result = if down {
+            let text = match (foreground, layout) {
+                (Some(_), Some(layout)) => self.key_text(event, layout, altgr),
+                _ => Vec::new(),
+            };
+            let stroke = self.stroke(event, repeat, altgr, text, host);
+            let mut port = BlindDocument::new();
+            let outcome = self.core.key_down(&stroke, &mut port);
+            let edit = port.edited().then(|| port.into_keys());
+            self.carry_out(plan(outcome, edit, event), event, document, altgr)
+        } else {
+            let stroke = self.stroke(event, repeat, altgr, Vec::new(), host);
+            let decision = if self.core.key_up(&stroke) {
+                HookDecision::Swallow
+            } else {
+                HookDecision::PassThrough
+            };
+            if lone_alt_released {
+                // Menu mode: the keys that follow go to the menu, and its commands change the
+                // text the engine cannot see.
+                self.end_word(document);
+            }
+            (decision, true)
+        };
+        self.report_mode(mode);
+        result
+    }
+
+    /// Follows a lone Alt tap (matrix #21: Alt alone opens the menu bar): Alt goes down with
+    /// no other modifier held, and up before any other key goes down. Right Alt on an AltGr
+    /// layout is AltGr, which opens no menu. Returns true for the release of such a tap.
+    fn track_lone_alt(
+        &mut self,
+        event: &KeyboardEvent,
+        down: bool,
+        repeat: bool,
+        altgr: bool,
+    ) -> bool {
+        let menu_alt =
+            matches!(event.vk, vk::LMENU | vk::MENU) || (event.vk == vk::RMENU && !altgr);
+        if !down {
+            return menu_alt && std::mem::take(&mut self.lone_alt);
+        }
+        if !menu_alt {
+            self.lone_alt = false;
+        } else if !repeat {
+            let held = self.tracker.modifiers(altgr);
+            self.lone_alt = !(held.shift || held.ctrl || held.win);
+        }
+        false
+    }
+
+    /// Reads the Caps Lock toggle of the desktop again.
+    fn read_caps_lock(&mut self) {
+        let caps_lock = self.platform.caps_lock_on();
+        self.tracker.set_caps_lock(caps_lock);
     }
 
     /// Applies what was posted to the mailbox, in posting order. A refused snapshot (the
@@ -286,40 +394,41 @@ impl<P: TypingPlatform> TypingHandler<P> {
         }
     }
 
-    /// Whether keys must pass untouched: the foreground runs with more privileges than this
-    /// process, or its privileges cannot be read (User Interface Privilege Isolation would
-    /// drop what the hook sends, and a blocked key would be lost).
-    fn passes_untouched(&self, foreground: Option<&Foreground>) -> bool {
-        !self.elevated && foreground.is_some_and(|foreground| foreground.elevated != Some(false))
+    /// Whether keys must pass untouched, without reaching the core:
+    ///
+    /// - the foreground runs with more privileges than this process, or its privileges cannot
+    ///   be read (User Interface Privilege Isolation would drop what the hook sends, and a
+    ///   blocked key would be lost);
+    /// - the foreground thread's layout is a Chinese, Japanese, or Korean input method, which
+    ///   composes the keys itself.
+    fn passes_untouched(&self, foreground: Option<&Foreground>, layout: Option<isize>) -> bool {
+        let privileged = !self.elevated
+            && foreground.is_some_and(|foreground| foreground.elevated != Some(false));
+        privileged || layout.is_some_and(is_cjk_ime_layout)
     }
 
-    /// The keys now go to `document`: the words of the last document and of `document` end
-    /// (matrix #20), and the hotkey classifier starts again.
+    /// The keys now go to `document` (`None` while they pass untouched): the words of the last
+    /// document and of `document` end (matrix #20), and the hotkey classifier starts again.
     fn enter_document(&mut self, document: Option<DocumentId>) {
         self.core.set_focus(document);
         self.document = document;
         self.epoch = self.epoch.wrapping_add(1);
         self.dead_key = false;
+        self.lone_alt = false;
     }
 
-    /// The layout of the foreground thread and whether it has AltGr, described once per
-    /// change; the core follows the AltGr flag. Without a foreground, the last layout.
-    fn layout_of(&mut self, foreground: Option<&Foreground>) -> (Option<isize>, bool) {
-        let Some(foreground) = foreground else {
-            return (
-                self.layout.as_ref().map(|(handle, _)| *handle),
-                self.layout.as_ref().is_some_and(|(_, info)| info.altgr),
-            );
-        };
-        let handle = self.platform.keyboard_layout(foreground.thread_id);
-        let current = self.layout.as_ref().map(|(current, _)| *current);
-        if current != Some(handle) {
-            let info = self.platform.describe_layout(handle);
-            self.core.set_altgr_layout(info.altgr);
-            self.layout = Some((handle, info));
+    /// Whether `layout` (the foreground thread's, or the last one without a foreground) has
+    /// AltGr, described once per change; the core follows the flag.
+    fn describe_layout(&mut self, layout: Option<isize>) -> bool {
+        if let Some(handle) = layout {
+            let current = self.layout.as_ref().map(|(current, _)| *current);
+            if current != Some(handle) {
+                let info = self.platform.describe_layout(handle);
+                self.core.set_altgr_layout(info.altgr);
+                self.layout = Some((handle, info));
+            }
         }
-        let altgr = self.layout.as_ref().is_some_and(|(_, info)| info.altgr);
-        (Some(handle), altgr)
+        self.layout.as_ref().is_some_and(|(_, info)| info.altgr)
     }
 
     /// The host context of a key in `document`, kept for mouse presses; `None` only in the
@@ -379,29 +488,46 @@ impl<P: TypingPlatform> TypingHandler<P> {
         }
     }
 
-    /// Carries out `plan` for a key-down in `document`. A send that injects nothing lets the
-    /// key through; a send that injects only part leaves the key blocked (part of what
+    /// Carries out `plan` for the key-down `key` in `document`; returns the decision and
+    /// whether the key-down reached the system (let through, or sent again in full).
+    ///
+    /// Nothing is sent while Ctrl, Alt, or Win is physically down outside AltGr
+    /// ([`edits_allowed`]): the word ends and the key passes. A send that injects nothing lets
+    /// the key through; a send that injects only part leaves the key blocked (part of what
     /// replaces it is on its way, and the key would arrive ahead of it). Either way the text
     /// of the document is not what the engine believes, so the word ends; nothing is sent
     /// again.
-    fn carry_out(&mut self, plan: Plan, document: Option<DocumentId>) -> HookDecision {
+    fn carry_out(
+        &mut self,
+        plan: Plan,
+        key: &KeyboardEvent,
+        document: Option<DocumentId>,
+        altgr: bool,
+    ) -> (HookDecision, bool) {
         match plan {
-            Plan::Pass => HookDecision::PassThrough,
-            Plan::Block => HookDecision::Swallow,
+            Plan::Pass => (HookDecision::PassThrough, true),
+            Plan::Block => (HookDecision::Swallow, false),
             Plan::Unsendable => {
                 self.end_word(document);
-                HookDecision::PassThrough
+                (HookDecision::PassThrough, true)
+            }
+            Plan::Replace(_) if !edits_allowed(self.tracker.modifiers(altgr)) => {
+                self.end_word(document);
+                (HookDecision::PassThrough, true)
             }
             Plan::Replace(keys) => {
                 let report = self.platform.send(&keys);
                 if report.is_complete() {
-                    return HookDecision::Swallow;
+                    let sent_again = keys.iter().any(|sent| {
+                        !sent.unicode && !sent.key_up && u32::from(sent.virtual_key) == key.vk
+                    });
+                    return (HookDecision::Swallow, sent_again);
                 }
                 self.end_word(document);
                 if report.sent == 0 {
-                    HookDecision::PassThrough
+                    (HookDecision::PassThrough, true)
                 } else {
-                    HookDecision::Swallow
+                    (HookDecision::Swallow, false)
                 }
             }
         }
@@ -470,7 +596,7 @@ impl<P> fmt::Debug for TypingHandler<P> {
             .field("core", &self.core)
             .field("tracker", &self.tracker)
             .field("elevated", &self.elevated)
-            .field("passing", &self.passing)
+            .field("typing", &self.document.is_some())
             .field("epoch", &self.epoch)
             .finish_non_exhaustive()
     }
@@ -490,7 +616,7 @@ mod tests {
         SyntheticKey, key_down_input, keyboard_inputs_for_backspaces, unicode_text_inputs,
     };
 
-    use super::{Plan, UNKNOWN_EXECUTABLE, plan};
+    use super::{Plan, UNKNOWN_EXECUTABLE, edits_allowed, is_cjk_ime_layout, plan};
 
     fn key(virtual_key: u32, scan: u32) -> KeyboardEvent {
         KeyboardEvent {
@@ -605,6 +731,91 @@ mod tests {
             plan(outcome, None, &enter)
                 == Plan::Replace(vec![key_down_input(vk::RETURN, 0x1C, true).unwrap()])
         );
+    }
+
+    #[test]
+    fn a_replay_of_another_key_is_sent_down_and_up() {
+        // The blocked key's own physical key-up follows a replay of that key, not of another.
+        let space = key(vk::SPACE, 0x39);
+        let replay = ReplayKey {
+            virtual_key: vk::TAB,
+            scan_code: Some(0x0F),
+            modifiers: ModifierSet::default(),
+        };
+        let outcome = KeyDownOutcome {
+            eaten: true,
+            replay: Some(replay),
+        };
+        let Plan::Replace(keys) = plan(outcome, Some(edit()), &space) else {
+            panic!("the key must be replaced");
+        };
+        let down = key_down_input(vk::TAB, 0x0F, false).unwrap();
+        let up = SyntheticKey {
+            key_up: true,
+            ..down
+        };
+        assert_eq!(keys[edit().len()..], [down, up]);
+    }
+
+    #[test]
+    fn edits_are_withheld_while_ctrl_alt_or_win_is_down_outside_altgr() {
+        use raumakey_model::input::Modifiers;
+
+        assert!(edits_allowed(Modifiers::default()));
+        let shift = Modifiers {
+            shift: true,
+            caps_lock: true,
+            ..Modifiers::default()
+        };
+        assert!(edits_allowed(shift));
+        for held in [
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+            Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            },
+            Modifiers {
+                win: true,
+                ..Modifiers::default()
+            },
+        ] {
+            assert!(!edits_allowed(held), "{held:?}");
+        }
+        let altgr = Modifiers {
+            ctrl: true,
+            alt: true,
+            alt_gr: true,
+            ..Modifiers::default()
+        };
+        assert!(edits_allowed(altgr));
+        let altgr_with_win = Modifiers { win: true, ..altgr };
+        assert!(!edits_allowed(altgr_with_win));
+    }
+
+    #[test]
+    fn the_input_methods_of_chinese_japanese_and_korean_are_recognized_by_language() {
+        for layout in [
+            0x0804_0804_isize,
+            0x0404_0404,
+            0x0C04_0C04,
+            0x0411_0411,
+            0x0412_0412,
+            0xE020_0804_u32 as i32 as isize,
+        ] {
+            assert!(is_cjk_ime_layout(layout), "{layout:#x}");
+        }
+        for layout in [
+            0x0409_0409_isize,
+            0x042A_042A,
+            0x0407_0407,
+            0xF001_0409_u32 as i32 as isize,
+            0,
+        ] {
+            assert!(!is_cjk_ime_layout(layout), "{layout:#x}");
+        }
     }
 
     #[test]

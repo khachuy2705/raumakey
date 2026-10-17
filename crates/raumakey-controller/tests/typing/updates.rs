@@ -179,6 +179,68 @@ fn only_the_last_update_of_each_kind_is_kept() {
 }
 
 #[test]
+fn a_restarted_handler_starts_from_the_configuration_and_mode_of_the_last_one() {
+    let mut sim = Sim::notepad();
+    sim.mailbox
+        .post(TypingUpdate::Runtime(vni(3)))
+        .expect("a valid snapshot");
+    sim.mailbox
+        .post(TypingUpdate::Macros(macros(4, &[(1, "ko", "không")])))
+        .expect("valid macros");
+    sim.type_char('x');
+    sim.tap_ctrl_shift();
+    assert_eq!(sim.modes(), [false], "the hotkey switched to English");
+    // Windows removed the hook; the run mode starts a new handler on the same mailbox.
+    sim.mailbox.rearm();
+    let restarted = Sim::with_mailbox(FakePlatform::notepad(), Arc::clone(&sim.mailbox));
+    let config = restarted.handler.core().config();
+    assert_eq!(config.config_revision(), 3);
+    assert_eq!(config.options().input_method, InputMethod::Vni);
+    assert_eq!(config.macro_revision(), 4);
+    assert!(
+        !restarted.handler.core().vietnamese_mode(),
+        "the mode the hotkey chose, not the snapshot's"
+    );
+}
+
+#[test]
+fn updates_posted_while_the_hook_was_gone_come_after_what_is_rearmed() {
+    let mut sim = Sim::notepad();
+    sim.mailbox
+        .post(TypingUpdate::Runtime(vni(3)))
+        .expect("a valid snapshot");
+    sim.type_char('x');
+    // Posted after the hook stopped seeing events.
+    sim.mailbox
+        .post(TypingUpdate::Mode(false))
+        .expect("accepted");
+    sim.mailbox.rearm();
+    let restarted = Sim::with_mailbox(FakePlatform::notepad(), Arc::clone(&sim.mailbox));
+    assert_eq!(restarted.handler.core().config().config_revision(), 3);
+    assert!(!restarted.handler.core().vietnamese_mode());
+    // A newer snapshot posted meanwhile wins over the rearmed one, mode included.
+    let sim = restarted;
+    sim.mailbox
+        .post(TypingUpdate::Runtime(snapshot(9, |snapshot| {
+            snapshot.vietnamese_mode = true;
+        })))
+        .expect("a valid snapshot");
+    sim.mailbox.rearm();
+    let again = Sim::with_mailbox(FakePlatform::notepad(), Arc::clone(&sim.mailbox));
+    assert_eq!(again.handler.core().config().config_revision(), 9);
+    assert!(again.handler.core().vietnamese_mode());
+}
+
+#[test]
+fn rearming_a_mailbox_that_never_reached_a_hook_changes_nothing() {
+    let mailbox = Arc::new(Mailbox::new());
+    mailbox.rearm();
+    let sim = Sim::with_mailbox(FakePlatform::notepad(), mailbox);
+    assert_eq!(sim.handler.core().config().config_revision(), 0);
+    assert!(sim.handler.core().vietnamese_mode());
+}
+
+#[test]
 fn the_initial_updates_are_applied_when_the_handler_is_built() {
     let mailbox = Arc::new(Mailbox::new());
     mailbox

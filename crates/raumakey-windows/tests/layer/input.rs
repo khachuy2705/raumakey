@@ -279,6 +279,15 @@ fn conversion_to_win32_input_preserves_every_field() {
 }
 
 #[cfg(windows)]
+#[test]
+fn the_tick_of_the_last_input_is_read() {
+    // Read-only; any value is fine, and a second read is never older than the first.
+    let first = raumakey_windows::input::last_input_tick().unwrap();
+    let second = raumakey_windows::input::last_input_tick().unwrap();
+    assert!(second.wrapping_sub(first) < u32::MAX / 2);
+}
+
+#[cfg(windows)]
 mod extra_info {
     use raumakey_windows::input::{current_message_is_raumakey_injected, message_extra_info};
     use windows::Win32::Foundation::LPARAM;

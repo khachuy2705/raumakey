@@ -171,6 +171,21 @@ mod dispatch {
     }
 }
 
+#[test]
+fn the_heartbeat_keeps_the_tick_of_the_last_event() {
+    use raumakey_windows::hooks::Heartbeat;
+
+    let heartbeat = Heartbeat::default();
+    assert_eq!(heartbeat.last(), None, "no event yet");
+    heartbeat.beat(0);
+    assert_eq!(heartbeat.last(), Some(0), "tick 0 is a tick like any other");
+    heartbeat.beat(1234);
+    assert_eq!(heartbeat.last(), Some(1234));
+    heartbeat.beat(u32::MAX);
+    assert_eq!(heartbeat.last(), Some(u32::MAX));
+    let _ = format!("{heartbeat:?}");
+}
+
 #[cfg(windows)]
 mod manual {
     use std::time::Duration;
@@ -194,7 +209,9 @@ mod manual {
     #[ignore = "manual: installs global low-level keyboard and mouse hooks"]
     fn manual_hook_thread_installs_and_stops() {
         let hooks = HookThread::spawn(Box::new(PassAll)).unwrap();
-        std::thread::sleep(Duration::from_millis(200));
+        // Move the mouse meanwhile: every event of either hook beats, moves included.
+        std::thread::sleep(Duration::from_millis(2000));
+        let _ = hooks.heartbeat().last();
         assert!(hooks.stop().is_ok());
     }
 }

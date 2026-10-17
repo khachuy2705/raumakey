@@ -96,6 +96,55 @@ fn alt_and_win_chords_pass_and_end_the_word() {
 }
 
 #[test]
+fn a_lone_alt_tap_ends_the_word() {
+    // Alt pressed and released alone puts the window's menu bar into menu mode.
+    for alt in [vk::LMENU, vk::RMENU] {
+        let mut sim = Sim::notepad();
+        sim.type_text("tiee");
+        assert_eq!(sim.press(alt), HookDecision::PassThrough);
+        sim.type_char('s');
+        assert_eq!(sim.text(NOTEPAD), "tiês", "{alt:#x}");
+    }
+}
+
+#[test]
+fn f10_ends_the_word() {
+    let mut sim = Sim::notepad();
+    sim.type_text("tiee");
+    assert_eq!(sim.press(0x79), HookDecision::PassThrough);
+    sim.type_char('s');
+    assert_eq!(sim.text(NOTEPAD), "tiês");
+}
+
+#[test]
+fn alt_held_with_another_key_is_no_lone_tap() {
+    // Alt+Shift switches the input language; it opens no menu.
+    let mut sim = Sim::notepad();
+    sim.type_text("tiee");
+    sim.down(vk::LMENU);
+    sim.press(vk::LSHIFT);
+    sim.up(vk::LMENU);
+    sim.type_char('s');
+    assert_eq!(sim.text(NOTEPAD), "tiế");
+}
+
+#[test]
+fn an_altgr_tap_is_no_lone_alt_on_an_altgr_layout() {
+    let mut sim = Sim::new(crate::support::FakePlatform {
+        altgr_layout: true,
+        ..crate::support::FakePlatform::notepad()
+    });
+    sim.type_text("tiee");
+    let fake = sim.physical(vk::LCONTROL, crate::support::FAKE_LCTRL_SCAN, true);
+    sim.event(fake);
+    sim.press(vk::RMENU);
+    let fake = sim.physical(vk::LCONTROL, crate::support::FAKE_LCTRL_SCAN, false);
+    sim.event(fake);
+    sim.type_char('s');
+    assert_eq!(sim.text(NOTEPAD), "tiế");
+}
+
+#[test]
 fn a_navigation_key_passes_and_ends_the_word() {
     let mut sim = Sim::notepad();
     sim.type_text("tiee");

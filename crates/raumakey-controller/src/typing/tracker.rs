@@ -42,27 +42,48 @@ pub enum Transition {
 /// - The synthetic left Ctrl of AltGr (scan code `0x21D`) is ignored.
 ///
 /// A key whose release the hook did not see stays down here until
-/// [`forget_missed_releases`](Self::forget_missed_releases) drops it: the secure desktop
-/// (Ctrl+Alt+Del, the lock screen, a UAC prompt) and windows of a higher integrity level take
-/// the input away from the hook.
+/// [`forget_missed_releases`](Self::forget_missed_releases) drops it, and a modifier the hook
+/// never saw go down or up is corrected by [`sync_modifiers`](Self::sync_modifiers): the
+/// secure desktop (Ctrl+Alt+Del, the lock screen, a UAC prompt) and windows of a higher
+/// integrity level take the input away from the hook. Both read the physical state
+/// (`GetAsyncKeyState`), which never shows a key-down that the hook blocked; the handler
+/// reports such keys ([`settle`](Self::settle)), and the tracker never takes them for missed
+/// releases.
 ///
 /// `Debug` shows how many keys are down and the Caps Lock toggle, never which keys.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct KeyTracker {
     down: [u64; 4],
+    /// Keys down whose press the hook withheld from the system: no key-down of the press
+    /// reached it, so the physical state shows them up.
+    withheld: [u64; 4],
     caps_lock: bool,
 }
+
+/// The side-specific modifier codes that low-level hooks report.
+const MODIFIERS: [u32; 8] = [
+    vk::LSHIFT,
+    vk::RSHIFT,
+    vk::LCONTROL,
+    vk::RCONTROL,
+    vk::LMENU,
+    vk::RMENU,
+    vk::LWIN,
+    vk::RWIN,
+];
 
 impl KeyTracker {
     /// No key down; Caps Lock as the desktop reports it when the hook starts.
     pub fn new(caps_lock: bool) -> Self {
         Self {
             down: [0; 4],
+            withheld: [0; 4],
             caps_lock,
         }
     }
 
-    /// Records one key transition of the hook and says what it was.
+    /// Records one key transition of the hook and says what it was. A key-down counts as
+    /// delivered to the system until [`settle`](Self::settle) says otherwise.
     pub fn observe(&mut self, event: &KeyboardEvent) -> Transition {
         if event.vk == vk::LCONTROL && event.scan & SYNTHETIC_SCAN != 0 {
             return Transition::SyntheticCtrl;
@@ -79,9 +100,29 @@ impl KeyTracker {
         Transition::Down { repeat }
     }
 
+    /// Reports what became of the key-down of `virtual_key` just observed: whether it
+    /// `reached` the system (the hook let it through, or sent it again). The first key-down of
+    /// a press that did not reach it leaves the key withheld until a later key-down of the
+    /// same press reaches it, or the key goes up.
+    pub fn settle(&mut self, virtual_key: u32, repeat: bool, reached: bool) {
+        if !self.is_down(virtual_key) {
+            return;
+        }
+        if reached {
+            set_bit(&mut self.withheld, virtual_key, false);
+        } else if !repeat {
+            set_bit(&mut self.withheld, virtual_key, true);
+        }
+    }
+
+    /// Whether `virtual_key` is down and its press was withheld from the system.
+    pub fn is_withheld(&self, virtual_key: u32) -> bool {
+        self.is_down(virtual_key) && get_bit(&self.withheld, virtual_key)
+    }
+
     /// Whether `virtual_key` is down as far as the tracker knows.
     pub fn is_down(&self, virtual_key: u32) -> bool {
-        bit(virtual_key).is_some_and(|(word, mask)| self.down[word] & mask != 0)
+        get_bit(&self.down, virtual_key)
     }
 
     /// The Caps Lock toggle.
@@ -95,14 +136,14 @@ impl KeyTracker {
         self.caps_lock = caps_lock;
     }
 
-    /// Drops every key held down here, other than `except` (the key being handled), for
-    /// which `still_down` (the physical state, `GetAsyncKeyState`) says it is up: the hook
-    /// missed its release. Returns whether any key was dropped.
+    /// Drops every key held down here, other than `except` (the key being handled) and the
+    /// keys withheld from the system, for which `still_down` (the physical state,
+    /// `GetAsyncKeyState`) says it is up: the hook missed its release. Returns whether any key
+    /// was dropped; the withheld keys are dropped too then, since their releases may have
+    /// gone missing with the others.
     ///
     /// The physical state only ever clears keys here: inside a low-level hook it does not yet
-    /// include the key being handled, and it never shows a key-down that a hook blocked, which
-    /// is why a held key that Raumakey replaced may be dropped too (only its repeat flag
-    /// depends on it, and only the last key pressed auto-repeats).
+    /// include the key being handled, and it never shows a key-down that a hook blocked.
     pub fn forget_missed_releases(
         &mut self,
         except: u32,
@@ -110,12 +151,53 @@ impl KeyTracker {
     ) -> bool {
         let mut forgot = false;
         for virtual_key in 0..256_u32 {
-            if virtual_key != except && self.is_down(virtual_key) && !still_down(virtual_key) {
+            if virtual_key != except
+                && self.is_down(virtual_key)
+                && !self.is_withheld(virtual_key)
+                && !still_down(virtual_key)
+            {
                 self.set(virtual_key, false);
                 forgot = true;
             }
         }
+        if forgot {
+            for virtual_key in 0..256_u32 {
+                if virtual_key != except && self.is_withheld(virtual_key) {
+                    self.set(virtual_key, false);
+                }
+            }
+        }
         forgot
+    }
+
+    /// Sets the eight side-specific modifier codes from `physically_down` (the physical
+    /// state, `GetAsyncKeyState`), both ways: a modifier the hook never saw go down counts as
+    /// held, one whose release it missed as released. The generic codes are dropped (the
+    /// side-specific ones stand for them). While right Alt is down on an AltGr layout, left
+    /// Ctrl is left as it is: Windows holds a synthetic left Ctrl down with AltGr. Returns
+    /// whether a modifier held here turned out released. Call it before a key-down that is
+    /// not a modifier: the physical state of the other keys is current then.
+    pub fn sync_modifiers(
+        &mut self,
+        altgr_layout: bool,
+        mut physically_down: impl FnMut(u32) -> bool,
+    ) -> bool {
+        let altgr_held = altgr_layout && physically_down(vk::RMENU);
+        let mut released = false;
+        for modifier in MODIFIERS {
+            if modifier == vk::LCONTROL && altgr_held {
+                continue;
+            }
+            let down = physically_down(modifier);
+            if self.is_down(modifier) && !down {
+                released = true;
+            }
+            self.set(modifier, down);
+        }
+        for generic in [vk::SHIFT, vk::CONTROL, vk::MENU] {
+            self.set(generic, false);
+        }
+        released
     }
 
     /// The modifiers of a key for the session core. On an AltGr layout right Alt is AltGr:
@@ -157,14 +239,13 @@ impl KeyTracker {
         }
     }
 
+    /// Marks `virtual_key` down or up; a key that goes up, or down again, is no longer
+    /// withheld.
     fn set(&mut self, virtual_key: u32, down: bool) {
-        if let Some((word, mask)) = bit(virtual_key) {
-            if down {
-                self.down[word] |= mask;
-            } else {
-                self.down[word] &= !mask;
-            }
+        if down != self.is_down(virtual_key) {
+            set_bit(&mut self.withheld, virtual_key, false);
         }
+        set_bit(&mut self.down, virtual_key, down);
     }
 
     fn held(&self) -> u32 {
@@ -196,4 +277,18 @@ fn bit(virtual_key: u32) -> Option<(usize, u64)> {
         .ok()
         .filter(|index| *index < 256)?;
     Some((index / 64, 1 << (index % 64)))
+}
+
+fn get_bit(set: &[u64; 4], virtual_key: u32) -> bool {
+    bit(virtual_key).is_some_and(|(word, mask)| set[word] & mask != 0)
+}
+
+fn set_bit(set: &mut [u64; 4], virtual_key: u32, on: bool) {
+    if let Some((word, mask)) = bit(virtual_key) {
+        if on {
+            set[word] |= mask;
+        } else {
+            set[word] &= !mask;
+        }
+    }
 }

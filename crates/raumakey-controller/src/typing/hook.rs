@@ -7,7 +7,7 @@
 //! the [`typing`](super) module is.
 
 use core::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use raumakey_ipc::message::{MacroSnapshot, RuntimeSnapshot};
 use raumakey_model::host::ExeName;
@@ -21,6 +21,7 @@ use raumakey_windows::input::{self, SendReport, SyntheticKey};
 use raumakey_windows::keyboard::{self, KeyboardSnapshot, KlidSource, Translation, klid_from_hkl};
 
 use super::handler::TypingHandler;
+use super::health::hook_lost;
 use super::mailbox::{Mailbox, TypingUpdate};
 use super::platform::{Foreground, LayoutInfo, TypingPlatform};
 
@@ -44,14 +45,48 @@ impl fmt::Display for TypingError {
 
 impl std::error::Error for TypingError {}
 
+/// The observer of the mode, shared by the handlers of successive hook threads.
+type SharedObserver = Arc<Mutex<Box<dyn FnMut(bool) + Send>>>;
+
 /// The running typing hook: a thread that owns `WH_KEYBOARD_LL` and `WH_MOUSE_LL` and runs
 /// a [`TypingHandler`] over the Windows platform (plan D39).
 ///
-/// Dropping it stops the thread like [`stop`](Self::stop), ignoring the result.
-#[derive(Debug)]
+/// Windows removes a low-level hook that times out, without telling its thread;
+/// [`ensure_alive`](Self::ensure_alive) notices it and starts a new hook thread.
+///
+/// Dropping it stops the thread like [`stop`](Self::stop), ignoring the result. `Debug`
+/// shows whether a hook thread runs.
 pub struct TypingHook {
     mailbox: Arc<Mailbox>,
-    thread: HookThread,
+    thread: Option<HookThread>,
+    observer: SharedObserver,
+    /// This process is elevated.
+    elevated: bool,
+    /// The tick (`GetLastInputInfo` base) when the current hook thread started, `None` when
+    /// it could not be read then.
+    started: Option<u32>,
+    /// A hook thread did not stop in time and may still run: no other is started, lest two
+    /// hooks transform every key.
+    abandoned: bool,
+}
+
+impl fmt::Debug for TypingHook {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TypingHook")
+            .field("running", &self.thread.is_some())
+            .field("abandoned", &self.abandoned)
+            .finish_non_exhaustive()
+    }
+}
+
+/// An observer for one handler that calls the shared one. Only hook threads call it, one at
+/// a time, so the lock is never held by another thread for long.
+fn relay(observer: &SharedObserver) -> impl FnMut(bool) + Send + 'static {
+    let shared = Arc::clone(observer);
+    move |mode| {
+        let mut observer = shared.lock().unwrap_or_else(PoisonError::into_inner);
+        observer(mode);
+    }
 }
 
 impl TypingHook {
@@ -80,9 +115,87 @@ impl TypingHook {
         mailbox
             .post(TypingUpdate::Macros(macros))
             .map_err(TypingError::Snapshot)?;
-        let handler = TypingHandler::new(WinPlatform::default(), Arc::clone(&mailbox), observer);
+        let observer: SharedObserver = Arc::new(Mutex::new(Box::new(observer)));
+        let started = input::last_input_tick().ok();
+        let handler = TypingHandler::new(
+            WinPlatform::default(),
+            Arc::clone(&mailbox),
+            relay(&observer),
+        );
         let thread = HookThread::spawn(Box::new(handler)).map_err(TypingError::Hook)?;
-        Ok(Self { mailbox, thread })
+        Ok(Self {
+            mailbox,
+            thread: Some(thread),
+            observer,
+            elevated: current_process_is_elevated().unwrap_or(false),
+            started,
+            abandoned: false,
+        })
+    }
+
+    /// Checks that Windows did not remove the hooks, and starts a new hook thread when it did;
+    /// call it every few seconds (the tray's 2-second timer). Returns whether a new thread
+    /// was started.
+    ///
+    /// The hooks count as removed when the session saw input (`GetLastInputInfo`) more than
+    /// [`HOOK_SILENCE_LIMIT_MS`](super::HOOK_SILENCE_LIMIT_MS) after the last event either hook
+    /// saw ([`hook_lost`]), while the foreground is a window the hook types in (Windows does
+    /// not call it for the lock screen or a more privileged window). The new thread gets the
+    /// runtime snapshot and the macro table in effect, the mode the last one had (also one the
+    /// hotkey chose), the updates posted since ([`Mailbox::rearm`]), and the same observer.
+    /// Words in progress end. A thread whose hooks were only slow, not removed, is stopped and
+    /// replaced all the same: harmless, as is a restart after input the hook could not see.
+    ///
+    /// # Errors
+    ///
+    /// [`TypingError::Hook`] when the last input cannot be read, when the old thread does not
+    /// stop in time (no new thread is started then, and none later, since the old one may
+    /// still run), or when the new one cannot start (a later call tries again).
+    pub fn ensure_alive(&mut self) -> Result<bool, TypingError> {
+        if self.abandoned {
+            return Ok(false);
+        }
+        let last_input = input::last_input_tick().map_err(TypingError::Hook)?;
+        let Some(started) = self.started else {
+            self.started = Some(last_input);
+            return Ok(false);
+        };
+        if let Some(thread) = &self.thread {
+            let last_event = thread.heartbeat().last();
+            // The foreground is read only when the ticks say the hook is gone.
+            if !hook_lost(last_event, started, last_input, true)
+                || !hook_lost(
+                    last_event,
+                    started,
+                    last_input,
+                    foreground_typable(self.elevated),
+                )
+            {
+                return Ok(false);
+            }
+        }
+        self.restart(last_input)?;
+        Ok(true)
+    }
+
+    /// Stops the hook thread, if any, and starts a new one on the same mailbox.
+    fn restart(&mut self, last_input: u32) -> Result<(), TypingError> {
+        if let Some(thread) = self.thread.take()
+            && let Err(error) = thread.stop()
+        {
+            self.abandoned = true;
+            return Err(TypingError::Hook(error));
+        }
+        self.mailbox.rearm();
+        let handler = TypingHandler::new(
+            WinPlatform::default(),
+            Arc::clone(&self.mailbox),
+            relay(&self.observer),
+        );
+        let thread = HookThread::spawn(Box::new(handler)).map_err(TypingError::Hook)?;
+        self.thread = Some(thread);
+        self.started = Some(last_input);
+        Ok(())
     }
 
     /// Hands `update` to the hook thread, which applies it at its next key or mouse press,
@@ -107,9 +220,17 @@ impl TypingHook {
     /// # Errors
     ///
     /// `ERROR_TIMEOUT` when the thread did not end in time; it is detached then.
-    pub fn stop(self) -> WinResult<()> {
-        self.thread.stop()
+    pub fn stop(mut self) -> WinResult<()> {
+        self.thread.take().map_or(Ok(()), HookThread::stop)
     }
+}
+
+/// Whether the foreground is a window the hook types in, for [`TypingHook::ensure_alive`]:
+/// there is one, and it does not run with more privileges than this process.
+fn foreground_typable(elevated: bool) -> bool {
+    WinPlatform::default()
+        .foreground()
+        .is_some_and(|foreground| elevated || foreground.elevated == Some(false))
 }
 
 /// The process facts of the last foreground window, which take kernel objects to read.
