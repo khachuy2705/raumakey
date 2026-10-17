@@ -16,18 +16,20 @@ use crate::error::{Error, Result};
 use crate::evidence::{
     ArtifactEvidence, CROSS_BUILD_VERIFIED, Evidence, StepEvidence, StepStatus, evidence_file_name,
 };
-use crate::gate::{STEPS, dry_run_problems, installer_dry_run_commands, validate_review};
+use crate::gate::{
+    STEPS, layout_problems, scan_package, validate_review, version_command, version_problems,
+};
 use crate::inspect::{format_table, inspect_file};
 use crate::notices;
 use crate::package::{
     PackageInputs, PackageKind, assemble, missing_inputs, missing_inputs_error, package_dir_name,
+    package_paths,
 };
 use crate::runner::{CommandSpec, Runner, elapsed_ms};
 use crate::targets::{Artifact, Profile, Target};
-use crate::wix::{msi_file_name, wix_build_args, wix_source, wxs_file_name};
 
-/// Time limit for one `raumakey.exe ... --dry-run` invocation.
-const DRY_RUN_TIMEOUT: Duration = Duration::from_secs(120);
+/// Time limit for the packaged `raumakey.exe --version`.
+const VERSION_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What a task produced, for the release evidence.
 #[derive(Debug, Default)]
@@ -278,26 +280,6 @@ fn package(ctx: &mut Context, profile: Profile, output: &mut TaskOutput) -> Resu
         );
         output.artifacts.extend(package.files);
     }
-
-    let x64_dir = out_dir.join(package_dir_name(PackageKind::X64, &version, profile));
-    let wxs = out_dir.join(wxs_file_name(profile));
-    fs::write(&wxs, wix_source(&version, &x64_dir))
-        .map_err(|error| Error::io("write", &wxs, error))?;
-    println!("WiX source: {}", wxs.display());
-    output.artifacts.push(wxs.clone());
-    let msi = out_dir.join(msi_file_name(&version, profile));
-    if msi.exists() {
-        fs::remove_file(&msi).map_err(|error| Error::io("remove", &msi, error))?;
-    }
-    if ctx.runner.probe(&CommandSpec::new("wix", ["--version"])) {
-        ctx.runner
-            .run(&CommandSpec::new("wix", wix_build_args(&wxs, &msi)))?;
-        println!("MSI: {}", msi.display());
-        output.artifacts.push(msi);
-    } else {
-        println!("MSI skipped: wix not found");
-        output.notes.push("MSI skipped: wix not found".to_owned());
-    }
     println!("packages are unsigned and not runtime verified");
     Ok(())
 }
@@ -340,43 +322,61 @@ fn notices(ctx: &mut Context) -> Result<()> {
     }
 }
 
-fn installer_dry_run(ctx: &mut Context) -> Result<()> {
+/// The x64 release package holds exactly its expected files with `raumakey.exe` as the only
+/// executable, and the packaged `raumakey.exe --version` names this version. The layout is
+/// checked first: a wrong package is not run.
+fn portable_check(ctx: &mut Context) -> Result<()> {
     if ctx.host != Host::Windows {
         return Err(Error::new(
-            "the installer dry-run contract check executes raumakey.exe and needs a Windows host",
+            "the portable package check executes raumakey.exe and needs a Windows host",
         ));
     }
     let target_dir = ctx.target_dir()?;
     let version = ctx.version()?;
-    let package_dir = target_dir.join("package").join(package_dir_name(
-        PackageKind::X64,
-        &version,
-        Profile::Release,
-    ));
-    let system_root = env::var_os("SystemRoot")
-        .or_else(|| env::var_os("windir"))
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            Error::new("neither SystemRoot nor windir is set; Windows PowerShell cannot be found")
-        })?;
-    let mut problems = Vec::new();
-    for spec in installer_dry_run_commands(&package_dir, &system_root) {
-        let captured = ctx.runner.capture_with_timeout(&spec, DRY_RUN_TIMEOUT)?;
-        let output = format!("{}{}", captured.stdout, captured.stderr);
-        for line in output.lines() {
-            println!("    {line}");
-        }
-        problems.extend(
-            dry_run_problems(captured.exit_code, &output)
-                .into_iter()
-                .map(|problem| format!("`{}`: {problem}", spec.display())),
-        );
+    let kind = PackageKind::X64;
+    let package_dir =
+        target_dir
+            .join("package")
+            .join(package_dir_name(kind, &version, Profile::Release));
+    let expected = package_paths(kind, &version, Profile::Release);
+    let entries = scan_package(&package_dir)?;
+    let problems = layout_problems(&entries, &expected);
+    if !problems.is_empty() {
+        return Err(Error::new(format!(
+            "{}: {}",
+            package_dir.display(),
+            problems.join("; ")
+        )));
     }
+    println!(
+        "portable layout: {} files, raumakey.exe is the only executable",
+        entries.len()
+    );
+
+    // raumakey.exe is a GUI-subsystem program: its output is read from redirected pipes, and
+    // the runner waits for it with a time limit.
+    let spec = version_command(&package_dir);
+    let captured = ctx.runner.capture_with_timeout(&spec, VERSION_TIMEOUT)?;
+    let output = format!("{}{}", captured.stdout, captured.stderr);
+    for line in output.lines() {
+        println!("    {line}");
+    }
+    let mut problems = version_problems(captured.exit_code, &output, &version);
+    // `--version` must leave the release package as it was (no configuration file, no log).
+    problems.extend(
+        layout_problems(&scan_package(&package_dir)?, &expected)
+            .into_iter()
+            .map(|problem| format!("after the run, {problem}")),
+    );
     if problems.is_empty() {
-        println!("installer dry-run contract: passed");
+        println!("portable check: passed");
         Ok(())
     } else {
-        Err(Error::new(problems.join("\n")))
+        Err(Error::new(format!(
+            "`{}`: {}",
+            spec.display(),
+            problems.join("; ")
+        )))
     }
 }
 
@@ -448,7 +448,7 @@ fn release_gate(ctx: &mut Context) -> Result<()> {
             "inspect" => inspect(ctx, &release),
             "whole-branch-review" => whole_branch_review(ctx, &mut output),
             "package" => package(ctx, Profile::Release, &mut output),
-            "installer-dry-run" => installer_dry_run(ctx),
+            "portable-check" => portable_check(ctx),
             other => Err(Error::new(format!("unknown gate step `{other}`"))),
         };
         let duration_ms = elapsed_ms(start);

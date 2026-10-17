@@ -20,15 +20,17 @@ Commands:
       validate PE machine, subsystem, exports, manifest, resources, COM identities
       and CRT imports of the built artifacts
   package [--release]
-      assemble the x64 and ARM64 packages (SHA256SUMS, manifest.json, install and
-      uninstall scripts) and the WiX source; builds the MSI when `wix` is on PATH
+      assemble the portable x64 and ARM64 (compile-gated) packages; each holds
+      raumakey.exe, README.txt, LICENSE, THIRD_PARTY.md, SHA256SUMS and manifest.json
   audit
       cargo deny check
   notices
       list third-party crates and licenses for the Windows targets
   release-gate
       ci, audit, cross --release, inspect --release, whole-branch review,
-      package --release and the installer dry-run contract; writes release evidence JSON
+      package --release and portable-check (the x64 package holds exactly its files with
+      raumakey.exe as the only executable, and raumakey.exe --version names this version);
+      writes release evidence JSON
       requires release-evidence/whole-branch-review.json under the Cargo target directory,
       approving the current clean Git revision with no unresolved findings
   help
@@ -325,5 +327,26 @@ mod tests {
         assert!(USAGE.contains("--release"));
         assert!(USAGE.contains("--target"));
         assert!(USAGE.contains("cross-build verified"));
+    }
+
+    /// The packages are portable (D38): `package` lists what a package holds, and the gate's
+    /// last step checks the packaged `raumakey.exe`. Nothing installs, so no installer, script,
+    /// WiX source, or MSI is mentioned.
+    #[test]
+    fn usage_describes_the_portable_package_and_its_check() {
+        for needle in [
+            "portable",
+            "raumakey.exe, README.txt, LICENSE, THIRD_PARTY.md, SHA256SUMS and manifest.json",
+            "portable-check",
+            "raumakey.exe --version",
+        ] {
+            assert!(USAGE.contains(needle), "usage lacks {needle}\n{USAGE}");
+        }
+        for stale in ["install", "script", "WiX", "wix", "MSI", "dry-run"] {
+            assert!(
+                !USAGE.contains(stale),
+                "usage still mentions {stale}\n{USAGE}"
+            );
+        }
     }
 }

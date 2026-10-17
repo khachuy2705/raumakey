@@ -18,7 +18,6 @@ mod pe;
 mod runner;
 mod targets;
 mod tasks;
-mod wix;
 
 use std::ffi::OsString;
 use std::process::ExitCode;

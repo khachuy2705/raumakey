@@ -1,4 +1,8 @@
-//! `cargo xtask package`: distributable package layout, scripts, and manifests.
+//! `cargo xtask package`: layout and manifests of the portable packages (D38).
+//!
+//! A package is one directory the user copies anywhere and starts `raumakey.exe` from; there is
+//! no installer, no install script, and no MSI. The TSF TIP and the test runner are still built
+//! and inspected, but not shipped.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,13 +18,15 @@ use crate::targets::{Artifact, Profile, Target};
 pub const SHA256SUMS: &str = "SHA256SUMS";
 /// File name of the per-package manifest.
 pub const MANIFEST: &str = "manifest.json";
+/// File name of the controller, the only executable of a package.
+pub const CONTROLLER: &str = "raumakey.exe";
 
 /// Distributable package flavours (design §13).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PackageKind {
-    /// x64 controller with the x64 and x86 TIPs.
+    /// The portable x64 `raumakey.exe`.
     X64,
-    /// ARM64 controller and TIP; compile-gated, no installer scripts.
+    /// The portable ARM64 `raumakey.exe`; compile-gated.
     Arm64,
 }
 
@@ -39,6 +45,14 @@ impl PackageKind {
     /// Whether the package contains compile-gated (never executed) binaries only.
     pub const fn compile_gated(self) -> bool {
         matches!(self, PackageKind::Arm64)
+    }
+
+    /// Target of the packaged controller.
+    pub const fn target(self) -> Target {
+        match self {
+            PackageKind::X64 => Target::X86_64,
+            PackageKind::Arm64 => Target::Aarch64,
+        }
     }
 }
 
@@ -83,177 +97,45 @@ pub fn package_dir_name(kind: PackageKind, version: &str, profile: Profile) -> S
     format!("raumakey-{version}-windows-{}{suffix}", kind.arch())
 }
 
-/// Payload files of a package (everything except `manifest.json` and `SHA256SUMS`).
+/// Payload files of a package (everything except `manifest.json` and `SHA256SUMS`): the portable
+/// controller and the documents (D38).
 pub fn package_files(kind: PackageKind, version: &str, profile: Profile) -> Vec<PackageFile> {
     let file = |path, source| PackageFile { path, source };
-    let mut files = match kind {
-        PackageKind::X64 => vec![
-            file(
-                "raumakey.exe",
-                FileSource::Artifact(Artifact::Controller, Target::X86_64),
-            ),
-            file(
-                "x64/raumakey_tip.dll",
-                FileSource::Artifact(Artifact::Tip, Target::X86_64),
-            ),
-            file(
-                "x86/raumakey_tip.dll",
-                FileSource::Artifact(Artifact::Tip, Target::I686),
-            ),
-            file(
-                "tools/raumakey-test-runner.exe",
-                FileSource::Artifact(Artifact::TestRunner, Target::X86_64),
-            ),
-            file("install.ps1", FileSource::Generated(install_script())),
-            file("uninstall.ps1", FileSource::Generated(uninstall_script())),
-        ],
-        PackageKind::Arm64 => vec![
-            file(
-                "raumakey.exe",
-                FileSource::Artifact(Artifact::Controller, Target::Aarch64),
-            ),
-            file(
-                "arm64/raumakey_tip.dll",
-                FileSource::Artifact(Artifact::Tip, Target::Aarch64),
-            ),
-        ],
-    };
-    files.push(file("LICENSE", FileSource::Repository("LICENSE")));
-    files.push(file(
-        "THIRD_PARTY.md",
-        FileSource::Repository("THIRD_PARTY.md"),
-    ));
-    files.push(file(
-        "README.txt",
-        FileSource::Generated(readme(kind, version, profile)),
-    ));
-    files
+    vec![
+        file(
+            CONTROLLER,
+            FileSource::Artifact(Artifact::Controller, kind.target()),
+        ),
+        file("LICENSE", FileSource::Repository("LICENSE")),
+        file("THIRD_PARTY.md", FileSource::Repository("THIRD_PARTY.md")),
+        file(
+            "README.txt",
+            FileSource::Generated(readme(kind, version, profile)),
+        ),
+    ]
 }
 
-const SCRIPT_PRELUDE: &str = r#"[CmdletBinding()]
-param(
-    [switch]$DryRun,
-    [switch]$Elevated
-)
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-
-$controller = Join-Path $PSScriptRoot 'raumakey.exe'
-"#;
-
-const SCRIPT_BODY: &str = r#"
-function Test-Administrator {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+/// Every file of an assembled package: the payload, then `manifest.json` and `SHA256SUMS`.
+pub fn package_paths(kind: PackageKind, version: &str, profile: Profile) -> Vec<&'static str> {
+    package_files(kind, version, profile)
+        .iter()
+        .map(|file| file.path)
+        .chain([MANIFEST, SHA256SUMS])
+        .collect()
 }
 
-# Checked before asking for administrator rights, so that a missing controller is reported here
-# instead of in an elevated window that closes at once.
-if (-not (Test-Path -LiteralPath $controller -PathType Leaf)) {
-    Write-Host "raumakey.exe was not found next to this script: $controller" -ForegroundColor Red
-    exit 1
-}
-
-if ($DryRun) {
-    # A dry run only prints the plan, so it needs no elevation.
-    $arguments += '--dry-run'
-} elseif (-not (Test-Administrator)) {
-    if ($Elevated) {
-        Write-Host 'Administrator rights are required.' -ForegroundColor Red
-        exit 1
-    }
-    $shell = (Get-Process -Id $PID).Path
-    $relaunch = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $PSCommandPath), '-Elevated')
-    try {
-        $process = Start-Process -FilePath $shell -Verb RunAs -ArgumentList $relaunch -Wait -PassThru
-    } catch {
-        Write-Host "Elevation was cancelled or failed: $($_.Exception.Message)" -ForegroundColor Red
-        exit 1
-    }
-    exit $process.ExitCode
-}
-
-function Join-Arguments([string[]]$values) {
-    # Quotes each argument for CommandLineToArgvW: backslashes before a quote or at the end of
-    # a quoted argument are doubled, and quotes are escaped.
-    $quoted = foreach ($value in $values) {
-        if ($value.Length -gt 0 -and $value -notmatch '[\s"]') {
-            $value
-        } else {
-            '"' + (($value -replace '(\\*)"', '$1$1\"') -replace '(\\+)\z', '$1$1') + '"'
-        }
-    }
-    return $quoted -join ' '
-}
-
-# raumakey.exe is a GUI-subsystem program: the call operator of Windows PowerShell 5.1 neither
-# waits for it nor sets the exit code, so it is started with redirected output and waited for.
-# Standard error is read asynchronously while standard output is read, so neither pipe can fill
-# up; it is printed after standard output, so the order between the two is lost.
-$code = 1
-try {
-    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $startInfo.FileName = $controller
-    $startInfo.Arguments = Join-Arguments $arguments
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    $startInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
-    $startInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
-    $process = [System.Diagnostics.Process]::Start($startInfo)
-    $errors = $process.StandardError.ReadToEndAsync()
-    $output = $process.StandardOutput.ReadToEnd()
-    $process.WaitForExit()
-    $code = $process.ExitCode
-    foreach ($text in @($output, $errors.Result)) {
-        if ($text) {
-            $text.TrimEnd() -split "`r?`n" | ForEach-Object { Write-Host $_ }
-        }
-    }
-    if ($code -ne 0) {
-        Write-Host "raumakey.exe exited with code $code." -ForegroundColor Red
-    }
-} catch {
-    Write-Host "raumakey.exe could not be run: $($_.Exception.Message)" -ForegroundColor Red
-    $code = 1
-} finally {
-    if ($Elevated) {
-        Read-Host 'Press Enter to close this window' | Out-Null
-    }
-}
-exit $code
-"#;
-
-/// `install.ps1`: self-elevates and runs `raumakey.exe install` with both TIP paths.
-pub fn install_script() -> String {
-    crlf(&format!(
-        r#"# Raumakey install script, generated by `cargo xtask package`.
-# Registers the Raumakey text input processor for 64-bit and 32-bit applications.
-#
-#   install.ps1          register Raumakey (asks for administrator rights)
-#   install.ps1 -DryRun  print the registration plan without changing anything
-{SCRIPT_PRELUDE}$arguments = @(
-    'install',
-    '--tip-x64', (Join-Path $PSScriptRoot 'x64\raumakey_tip.dll'),
-    '--tip-x86', (Join-Path $PSScriptRoot 'x86\raumakey_tip.dll')
-)
-{SCRIPT_BODY}"#
-    ))
-}
-
-/// `uninstall.ps1`: self-elevates and runs `raumakey.exe uninstall`.
-pub fn uninstall_script() -> String {
-    crlf(&format!(
-        r#"# Raumakey uninstall script, generated by `cargo xtask package`.
-# Removes only the Raumakey registration entries.
-#
-#   uninstall.ps1          unregister Raumakey (asks for administrator rights)
-#   uninstall.ps1 -DryRun  print the removal plan without changing anything
-{SCRIPT_PRELUDE}$arguments = @('uninstall')
-{SCRIPT_BODY}"#
-    ))
+/// The "Nội dung gói" (package contents) section of a README.
+fn readme_contents(arch: &str) -> String {
+    format!(
+        "Nội dung gói
+  raumakey.exe      bộ gõ Raumakey ({arch})
+  README.txt        file hướng dẫn này
+  LICENSE           giấy phép GPL-3.0-or-later
+  THIRD_PARTY.md    giấy phép của các thành phần bên thứ ba
+  SHA256SUMS        checksum SHA-256 của từng file trong gói
+  manifest.json     danh sách file của gói, kèm kích thước và checksum
+"
+    )
 }
 
 /// `README.txt` of a package: Vietnamese, in UTF-8 with a byte order mark so that every Windows
@@ -268,62 +150,84 @@ pub fn readme(kind: PackageKind, version: &str, profile: Profile) -> String {
         PackageKind::X64 => format!(
             "Raumakey {version} cho Windows - gói x64{build}
 
-Nội dung
-  raumakey.exe                    controller của Raumakey (x64)
-  x64\\raumakey_tip.dll            bộ gõ TSF (TIP) cho ứng dụng 64-bit
-  x86\\raumakey_tip.dll            bộ gõ TSF (TIP) cho ứng dụng 32-bit
-  tools\\raumakey-test-runner.exe  công cụ chạy test nghiệm thu
-  install.ps1, uninstall.ps1      script cài đặt và gỡ cài đặt
-  SHA256SUMS, manifest.json       checksum và manifest của gói
+Raumakey là bộ gõ tiếng Việt cho Windows, gói gọn trong một file raumakey.exe
+chạy trực tiếp: không cần cài đặt, không cần quyền quản trị viên.
 
-Nên chép cả thư mục này vào một thư mục chỉ quản trị viên sửa được (ví dụ
-C:\\Program Files\\Raumakey) rồi mới cài: mọi ứng dụng đều nạp TIP từ chỗ đã cài.
+{contents}
+Cách dùng
+  1. Chép cả thư mục này tới chỗ bạn muốn, ví dụ D:\\Raumakey.
+  2. Nhấp đúp vào raumakey.exe. Biểu tượng V/E hiện ở vùng thông báo, cạnh đồng
+     hồ trên thanh tác vụ: V là đang gõ tiếng Việt, E là đang gõ tiếng Anh.
+     Nếu không thấy, hãy bấm mũi tên ^ để xem các biểu tượng bị ẩn.
+  3. Nhấp vào biểu tượng hoặc nhấn Ctrl+Shift để chuyển giữa tiếng Việt và
+     tiếng Anh. Nhấp chuột phải vào biểu tượng để mở menu.
+  4. Mở Notepad và gõ thử: tieengs vieetj
+     Notepad sẽ hiện: tiếng việt
 
-Cài đặt (script sẽ hỏi quyền quản trị viên):
-  powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
-Xem trước kế hoạch đăng ký mà không thay đổi gì:
-  powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -DryRun
-Gỡ cài đặt:
-  powershell -NoProfile -ExecutionPolicy Bypass -File uninstall.ps1
+Cấu hình
+  Lần chạy đầu tiên, Raumakey tạo file raumakey.toml cạnh raumakey.exe;
+  các lần chạy sau đọc lại file này. Nếu không ghi được vào thư mục chứa
+  raumakey.exe (ví dụ khi để trong Program Files), cấu hình được lưu ở
+  %LOCALAPPDATA%\\Raumakey.
 
-Dùng thử
-  1. Thêm bàn phím. Windows 11: Settings > Time & language > Language & region >
-     Vietnamese > Language options > Keyboards > Add a keyboard > Raumakey.
-     Windows 10: Settings > Time & Language > Language > Vietnamese > Options >
-     Add a keyboard > Raumakey. Nếu danh sách chưa có tiếng Việt (Vietnamese),
-     hãy thêm ngôn ngữ này trước.
-  2. Chọn Raumakey bằng Windows+Space, mở Notepad và gõ: tieengs vieetj
-     Notepad hiện: tiếng việt
-  3. Ctrl+Shift bật hoặc tắt tiếng Việt.
-  4. Tắt tiếng Việt rồi gõ hàng phím số và ngoặc: 1234567890-=[]
-     Phải hiện đúng các ký tự đó. Nếu ra chữ tiếng Việt thì đây là lỗi đã biết
-     đang chờ kiểm chứng (quyết định D36), hãy báo lại.
-Bản này chỉ gõ Telex với tuỳ chọn mặc định: TIP chưa kết nối với controller nên
-cấu hình và macro chưa có tác dụng.
+Menu (nhấp chuột phải vào biểu tượng V/E)
+  Gõ tiếng Việt (Ctrl+Shift)   bật hoặc tắt tiếng Việt
+  Telex, VNI, VIQR             chọn kiểu gõ
+  Kiểm tra chính tả            chỉ bỏ dấu khi chữ đang gõ là tiếng Việt hợp lệ
+  Đặt dấu kiểu mới (oà, uý)    đặt dấu kiểu mới: hoà, thuý thay cho hòa, thúy
+  Gõ tắt (macro)               bật hoặc tắt gõ tắt
+  Khởi động cùng Windows       tự chạy Raumakey khi bạn đăng nhập Windows
+                               (tạo shortcut trong thư mục Startup của bạn)
+  Mở file cấu hình             mở raumakey.toml để sửa
+  Giới thiệu                   thông tin về Raumakey
+  Thoát                        đóng Raumakey
+  Mỗi thay đổi trong menu được lưu ngay vào raumakey.toml. Nếu bạn tự sửa
+  raumakey.toml, Raumakey nhận thay đổi sau vài giây.
 
-Gói này chưa được ký số. Hãy so từng file với SHA256SUMS
-(Get-FileHash -Algorithm SHA256 <file>) trước khi cài.
+Gõ tắt (macro)
+  Danh sách gõ tắt lấy từ file raumakey-macros.toml nằm cùng thư mục với
+  raumakey.toml. File này không bắt buộc; cách viết xem trong GUIDE.md.
+
+Cửa sổ chạy với quyền quản trị viên
+  Windows không cho Raumakey gõ vào cửa sổ của chương trình đang chạy với
+  quyền quản trị viên (ví dụ PowerShell mở bằng Run as administrator), trừ khi
+  Raumakey cũng chạy với quyền đó: nhấp chuột phải vào raumakey.exe rồi chọn
+  Run as administrator.
+
+Bộ gõ khác
+  Khi dùng Raumakey, hãy tắt các bộ gõ tiếng Việt khác như UniKey hay EVKey;
+  nếu không, cả hai cùng biến đổi một phím và chữ gõ ra sẽ bị sai.
+
+Gỡ bỏ
+  1. Nếu đã bật, hãy tắt \"Khởi động cùng Windows\" trước.
+  2. Trong menu, chọn \"Thoát\".
+  3. Xoá thư mục chứa raumakey.exe. Nếu cấu hình nằm ở %LOCALAPPDATA%\\Raumakey
+     thì xoá cả thư mục đó.
+
+Gói này chưa được ký số, nên Windows SmartScreen hoặc phần mềm diệt virus có thể
+cảnh báo khi bạn mở raumakey.exe. Nếu nhận gói từ nơi khác, hãy so từng file với
+SHA256SUMS bằng PowerShell, ví dụ:
+  Get-FileHash -Algorithm SHA256 raumakey.exe
+Chỉ chọn More info > Run anyway khi checksum khớp.
 
 Mức kiểm chứng: chưa kiểm chứng khi chạy thật. Hành vi trên Windows 10 trở lên
-phải được xác nhận bằng bộ nghiệm thu của Raumakey.
-
-Hướng dẫn build và cài đặt đầy đủ: GUIDE.md trong kho mã
-https://github.com/khachuy2705/raumakey
+còn phải được xác nhận bằng bộ nghiệm thu của Raumakey.
 
 Raumakey là phần mềm tự do theo giấy phép GPL-3.0-or-later; xem LICENSE và
-THIRD_PARTY.md.
-"
+THIRD_PARTY.md. Hướng dẫn đầy đủ nằm trong GUIDE.md của kho mã
+https://github.com/khachuy2705/raumakey
+",
+            contents = readme_contents("x64"),
         ),
         PackageKind::Arm64 => format!(
             "Raumakey {version} cho Windows - gói ARM64 (compile-gated){build}
 
-Các file ARM64 chỉ được kiểm tra biên dịch (compile-gated): chúng chưa từng chạy
-trên Windows ARM64, chưa được hỗ trợ và không kèm script cài đặt.
+raumakey.exe trong gói này chỉ được kiểm tra biên dịch (compile-gated): nó chưa
+từng chạy trên Windows ARM64 và chưa được hỗ trợ.
 
-Nội dung
-  raumakey.exe                    controller của Raumakey (ARM64)
-  arm64\\raumakey_tip.dll          bộ gõ TSF (TIP) cho ứng dụng ARM64
-  SHA256SUMS, manifest.json       checksum và manifest của gói
+{contents}
+Cách dùng giống gói x64; xem GUIDE.md trong kho mã
+https://github.com/khachuy2705/raumakey
 
 Gói này chưa được ký số. Hãy so từng file với SHA256SUMS
 (Get-FileHash -Algorithm SHA256 <file>).
@@ -332,7 +236,8 @@ Mức kiểm chứng: chỉ kiểm tra biên dịch (compile-gated), chưa kiể
 
 Raumakey là phần mềm tự do theo giấy phép GPL-3.0-or-later; xem LICENSE và
 THIRD_PARTY.md.
-"
+",
+            contents = readme_contents("ARM64"),
         ),
     };
     format!("\u{feff}{}", crlf(&text))
@@ -528,154 +433,56 @@ mod tests {
         assert_eq!(PackageKind::Arm64.arch(), "arm64");
         assert!(!PackageKind::X64.compile_gated());
         assert!(PackageKind::Arm64.compile_gated());
+        assert_eq!(PackageKind::X64.target(), Target::X86_64);
+        assert_eq!(PackageKind::Arm64.target(), Target::Aarch64);
     }
 
+    /// Both packages are portable: the controller of their architecture and the documents,
+    /// nothing else (D38). The TIP, the test runner, and the install scripts are not shipped.
     #[test]
-    fn x64_layout_has_both_tips_tools_scripts_and_notices() {
-        let files = package_files(PackageKind::X64, "0.1.0", Profile::Release);
-        assert_eq!(
-            paths(&files),
-            [
-                "raumakey.exe",
-                "x64/raumakey_tip.dll",
-                "x86/raumakey_tip.dll",
-                "tools/raumakey-test-runner.exe",
-                "install.ps1",
-                "uninstall.ps1",
-                "LICENSE",
-                "THIRD_PARTY.md",
-                "README.txt",
-            ]
-        );
-        assert_eq!(
-            files[0].source,
-            FileSource::Artifact(Artifact::Controller, Target::X86_64)
-        );
-        assert_eq!(
-            files[1].source,
-            FileSource::Artifact(Artifact::Tip, Target::X86_64)
-        );
-        assert_eq!(
-            files[2].source,
-            FileSource::Artifact(Artifact::Tip, Target::I686)
-        );
-        assert_eq!(
-            files[3].source,
-            FileSource::Artifact(Artifact::TestRunner, Target::X86_64)
-        );
-        assert_eq!(files[4].source, FileSource::Generated(install_script()));
-        assert_eq!(files[5].source, FileSource::Generated(uninstall_script()));
-        assert_eq!(files[6].source, FileSource::Repository("LICENSE"));
-        assert_eq!(files[7].source, FileSource::Repository("THIRD_PARTY.md"));
-        assert_eq!(
-            files[8].source,
-            FileSource::Generated(readme(PackageKind::X64, "0.1.0", Profile::Release))
-        );
-    }
-
-    #[test]
-    fn arm64_layout_has_controller_and_tip_only() {
-        let files = package_files(PackageKind::Arm64, "0.1.0", Profile::Release);
-        assert_eq!(
-            paths(&files),
-            [
-                "raumakey.exe",
-                "arm64/raumakey_tip.dll",
-                "LICENSE",
-                "THIRD_PARTY.md",
-                "README.txt",
-            ]
-        );
-        assert_eq!(
-            files[0].source,
-            FileSource::Artifact(Artifact::Controller, Target::Aarch64)
-        );
-        assert_eq!(
-            files[1].source,
-            FileSource::Artifact(Artifact::Tip, Target::Aarch64)
-        );
-    }
-
-    fn assert_windows_text(text: &str) {
-        assert!(
-            text.is_ascii(),
-            "Windows PowerShell 5.1 reads BOM-less files as ANSI"
-        );
-        assert!(
-            !text.replace("\r\n", "").contains('\n'),
-            "CRLF line endings"
-        );
-        assert!(text.ends_with("\r\n"));
-    }
-
-    #[test]
-    fn install_script_self_elevates_and_passes_both_tips() {
-        let script = install_script();
-        assert_windows_text(&script);
-        for needle in [
-            "[switch]$DryRun",
-            "Start-Process",
-            "-Verb RunAs",
-            "'install'",
-            "'--tip-x64'",
-            "'x64\\raumakey_tip.dll'",
-            "'--tip-x86'",
-            "'x86\\raumakey_tip.dll'",
-            "'--dry-run'",
-            "raumakey.exe",
-            "$PSScriptRoot",
-            "exit $code",
+    fn packages_hold_the_portable_controller_and_the_documents_only() {
+        for (kind, target) in [
+            (PackageKind::X64, Target::X86_64),
+            (PackageKind::Arm64, Target::Aarch64),
         ] {
-            assert!(script.contains(needle), "install.ps1 lacks {needle}");
+            let files = package_files(kind, "0.1.0", Profile::Release);
+            assert_eq!(
+                paths(&files),
+                ["raumakey.exe", "LICENSE", "THIRD_PARTY.md", "README.txt"],
+                "{kind:?}"
+            );
+            assert_eq!(
+                files[0].source,
+                FileSource::Artifact(Artifact::Controller, target)
+            );
+            assert_eq!(files[1].source, FileSource::Repository("LICENSE"));
+            assert_eq!(files[2].source, FileSource::Repository("THIRD_PARTY.md"));
+            assert_eq!(
+                files[3].source,
+                FileSource::Generated(readme(kind, "0.1.0", Profile::Release))
+            );
         }
-        assert_waits_for_the_controller(&script);
-    }
-
-    /// `raumakey.exe` is a GUI-subsystem program: Windows PowerShell 5.1's call operator neither
-    /// waits for it nor sets `$LASTEXITCODE`, so the scripts start it with redirected output.
-    fn assert_waits_for_the_controller(script: &str) {
-        for needle in [
-            "Test-Path -LiteralPath $controller -PathType Leaf",
-            "System.Diagnostics.ProcessStartInfo",
-            "UseShellExecute = $false",
-            "RedirectStandardOutput = $true",
-            "RedirectStandardError = $true",
-            // Reading both streams synchronously could deadlock on a full pipe.
-            "$process.StandardError.ReadToEndAsync()",
-            "WaitForExit()",
-            "$code = $process.ExitCode",
-            // `$` also matches before a final newline in .NET.
-            r"-replace '(\\+)\z', '$1$1'",
-            // An error in the elevated window must stay readable.
-            "} finally {",
-        ] {
-            assert!(script.contains(needle), "script lacks {needle}");
-        }
-        assert!(!script.contains("& $controller"));
-        assert!(!script.contains("$LASTEXITCODE"));
     }
 
     #[test]
-    fn uninstall_script_self_elevates_without_tip_paths() {
-        let script = uninstall_script();
-        assert_windows_text(&script);
-        for needle in [
-            "[switch]$DryRun",
-            "Start-Process",
-            "-Verb RunAs",
-            "'uninstall'",
-            "'--dry-run'",
-            "raumakey.exe",
-        ] {
-            assert!(script.contains(needle), "uninstall.ps1 lacks {needle}");
+    fn package_paths_add_the_manifest_and_the_checksums_to_the_payload() {
+        for kind in PackageKind::ALL {
+            assert_eq!(
+                package_paths(kind, "0.1.0", Profile::Release),
+                [
+                    "raumakey.exe",
+                    "LICENSE",
+                    "THIRD_PARTY.md",
+                    "README.txt",
+                    "manifest.json",
+                    "SHA256SUMS",
+                ]
+            );
         }
-        assert!(!script.contains("--tip-x64"));
-        assert!(!script.contains("'install'"));
-        assert_waits_for_the_controller(&script);
     }
 
-    /// The README is read in an editor, not by PowerShell: it is Vietnamese, in UTF-8 with a
-    /// byte order mark so that every Windows editor detects the encoding, with CRLF endings.
+    /// The README is read in an editor: it is Vietnamese, in UTF-8 with a byte order mark so
+    /// that every Windows editor detects the encoding, with CRLF endings.
     fn assert_windows_readme(text: &str) {
         assert!(text.starts_with('\u{feff}'), "UTF-8 byte order mark");
         assert!(
@@ -685,42 +492,129 @@ mod tests {
         assert!(text.ends_with("\r\n"));
     }
 
+    /// The tray menu labels (D42), exactly as the menu shows them.
+    const MENU_LABELS: [&str; 11] = [
+        "Gõ tiếng Việt (Ctrl+Shift)",
+        "Telex",
+        "VNI",
+        "VIQR",
+        "Kiểm tra chính tả",
+        "Đặt dấu kiểu mới (oà, uý)",
+        "Gõ tắt (macro)",
+        "Khởi động cùng Windows",
+        "Mở file cấu hình",
+        "Giới thiệu",
+        "Thoát",
+    ];
+
     #[test]
-    fn readmes_state_unsigned_and_verification_level() {
+    fn the_x64_readme_explains_the_portable_program() {
         let x64 = readme(PackageKind::X64, "0.1.0", Profile::Release);
         assert_windows_readme(&x64);
         for needle in [
             "Raumakey 0.1.0",
+            // What is in the package.
+            "raumakey.exe",
+            "README.txt",
+            "LICENSE",
+            "THIRD_PARTY.md",
+            "SHA256SUMS",
+            "manifest.json",
+            // How to use it (D38, D39).
+            "không cần cài đặt",
+            "không cần quyền quản trị viên",
+            "Chép cả thư mục",
+            "Nhấp đúp vào raumakey.exe",
+            "Biểu tượng V/E",
+            "vùng thông báo",
+            "nhấn Ctrl+Shift",
+            "Nhấp chuột phải",
+            "tieengs vieetj",
+            "tiếng việt",
+            // Where the settings live (D40).
+            "Lần chạy đầu tiên",
+            "tạo file raumakey.toml cạnh raumakey.exe",
+            "các lần chạy sau",
+            "Program Files",
+            "%LOCALAPPDATA%\\Raumakey",
+            // The tray menu saves at once and picks up hand edits (D42).
+            "được lưu ngay",
+            "sau vài giây",
+            // Macros.
+            "raumakey-macros.toml",
+            "GUIDE.md",
+            // Elevated windows.
+            "quyền quản trị viên",
+            "Run as administrator",
+            // Other input methods.
+            "UniKey",
+            "EVKey",
+            // Removal (D41).
+            "tắt \"Khởi động cùng Windows\" trước",
+            "chọn \"Thoát\"",
+            "Xoá thư mục chứa raumakey.exe",
+            // Trust and status.
+            "chưa được ký số",
+            "SmartScreen",
+            "Get-FileHash -Algorithm SHA256",
+            "chưa kiểm chứng khi chạy thật",
+            "GPL-3.0-or-later",
+            "https://github.com/khachuy2705/raumakey",
+        ] {
+            assert!(x64.contains(needle), "x64 README lacks {needle}\n{x64}");
+        }
+        for label in MENU_LABELS {
+            assert!(
+                x64.contains(label),
+                "x64 README lacks the menu item {label}"
+            );
+        }
+        for stale in [
             "install.ps1",
             "uninstall.ps1",
             "-DryRun",
+            "raumakey_tip.dll",
+            "test-runner",
+            "MSI",
+            "regsvr32",
+            "Add a keyboard",
+            "Windows+Space",
+        ] {
+            assert!(!x64.contains(stale), "x64 README still mentions {stale}");
+        }
+    }
+
+    #[test]
+    fn the_arm64_and_debug_readmes_state_their_limits() {
+        let arm64 = readme(PackageKind::Arm64, "0.1.0", Profile::Release);
+        assert_windows_readme(&arm64);
+        for needle in [
+            "Raumakey 0.1.0",
+            "raumakey.exe",
+            "compile-gated",
             "chưa được ký số",
             "SHA256SUMS",
             "chưa kiểm chứng khi chạy thật",
             "GPL-3.0-or-later",
-            "Ctrl+Shift",
             "GUIDE.md",
-            "Windows 10",
-            "hàng phím số",
         ] {
-            assert!(x64.contains(needle), "x64 README lacks {needle}");
+            assert!(arm64.contains(needle), "ARM64 README lacks {needle}");
         }
-        let arm64 = readme(PackageKind::Arm64, "0.1.0", Profile::Release);
-        assert_windows_readme(&arm64);
-        assert!(arm64.contains("compile-gated"));
-        assert!(arm64.contains("chưa được ký số"));
-        assert!(!arm64.contains("install.ps1"));
+        for stale in ["raumakey_tip.dll", "install.ps1"] {
+            assert!(!arm64.contains(stale), "ARM64 README mentions {stale}");
+        }
         let debug = readme(PackageKind::X64, "0.1.0", Profile::Debug);
         assert!(debug.contains("bản build debug"));
+        assert_windows_readme(&debug);
     }
 
     #[test]
     fn manifest_marks_packages_unsigned_and_not_runtime_verified() {
         let files = vec![ManifestFile {
-            path: "x86/raumakey_tip.dll".to_owned(),
+            path: "raumakey.exe".to_owned(),
             size: 42,
             sha256: "ab".repeat(32),
-            target: Some("i686-pc-windows-msvc"),
+            target: Some("aarch64-pc-windows-msvc"),
         }];
         let text = manifest_json(PackageKind::Arm64, "0.1.0", Profile::Release, &files)
             .expect("manifest serializes");
@@ -732,10 +626,10 @@ mod tests {
         assert_eq!(value["signed"], false);
         assert_eq!(value["runtime_verified"], false);
         assert_eq!(value["compile_gated"], true);
-        assert_eq!(value["files"][0]["path"], "x86/raumakey_tip.dll");
+        assert_eq!(value["files"][0]["path"], "raumakey.exe");
         assert_eq!(value["files"][0]["size"], 42);
         assert_eq!(value["files"][0]["sha256"], "ab".repeat(32));
-        assert_eq!(value["files"][0]["target"], "i686-pc-windows-msvc");
+        assert_eq!(value["files"][0]["target"], "aarch64-pc-windows-msvc");
         assert!(text.ends_with('\n'));
 
         let generated = vec![ManifestFile {
@@ -809,11 +703,34 @@ mod tests {
         let package = assemble(PackageKind::X64, &inputs, &out).expect("assemble");
         assert_eq!(package.dir, out.join("raumakey-0.1.0-windows-x64"));
         assert!(!stale.exists());
-        assert_eq!(package.files.len(), 11);
+        let written: Vec<PathBuf> = package_paths(PackageKind::X64, "0.1.0", Profile::Release)
+            .into_iter()
+            .map(|path| package.dir.join(path))
+            .collect();
+        assert_eq!(package.files, written);
+        let mut on_disk: Vec<String> = std::fs::read_dir(&package.dir)
+            .expect("package dir")
+            .map(|entry| {
+                let entry = entry.expect("entry");
+                assert!(entry.file_type().expect("type").is_file(), "flat layout");
+                entry.file_name().into_string().expect("UTF-8 name")
+            })
+            .collect();
+        on_disk.sort();
         assert_eq!(
-            std::fs::read_to_string(package.dir.join("x86").join("raumakey_tip.dll"))
-                .expect("x86 tip"),
-            "i686-pc-windows-msvc:raumakey_tip.dll"
+            on_disk,
+            [
+                "LICENSE",
+                "README.txt",
+                "SHA256SUMS",
+                "THIRD_PARTY.md",
+                "manifest.json",
+                "raumakey.exe"
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(package.dir.join("raumakey.exe")).expect("controller"),
+            "x86_64-pc-windows-msvc:raumakey.exe"
         );
         assert_eq!(
             std::fs::read_to_string(package.dir.join("LICENSE")).expect("license"),
@@ -831,13 +748,8 @@ mod tests {
                 "LICENSE",
                 "README.txt",
                 "THIRD_PARTY.md",
-                "install.ps1",
                 "manifest.json",
                 "raumakey.exe",
-                "tools/raumakey-test-runner.exe",
-                "uninstall.ps1",
-                "x64/raumakey_tip.dll",
-                "x86/raumakey_tip.dll",
             ]
         );
         let exe_line = sums
@@ -854,7 +766,7 @@ mod tests {
         )
         .expect("manifest JSON");
         let files = manifest["files"].as_array().expect("files array");
-        assert_eq!(files.len(), 9, "manifest lists the payload files");
+        assert_eq!(files.len(), 4, "manifest lists the payload files");
         assert_eq!(files[0]["path"], "raumakey.exe");
         assert_eq!(files[0]["target"], "x86_64-pc-windows-msvc");
         assert_eq!(files[0]["size"], 35);
@@ -866,8 +778,8 @@ mod tests {
     fn assemble_reports_missing_artifacts() {
         let temp = TempDir::new("assemble-missing");
         let (repo, target) = fake_inputs(&temp);
-        std::fs::remove_file(Artifact::Tip.path(&target, Target::I686, Profile::Release))
-            .expect("remove x86 tip");
+        std::fs::remove_file(Artifact::Controller.path(&target, Target::X86_64, Profile::Release))
+            .expect("remove x64 controller");
         let inputs = PackageInputs {
             repo_root: &repo,
             target_dir: &target,
@@ -877,10 +789,35 @@ mod tests {
         let error = assemble(PackageKind::X64, &inputs, &temp.0.join("package"))
             .expect_err("missing artifact");
         let message = error.to_string();
-        assert!(message.contains("i686-pc-windows-msvc"), "{message}");
+        assert!(message.contains("x86_64-pc-windows-msvc"), "{message}");
         assert!(message.contains("cargo xtask cross --release"), "{message}");
-        // The ARM64 package does not need the x86 TIP.
+        // The ARM64 package does not need the x64 controller.
         assert!(assemble(PackageKind::Arm64, &inputs, &temp.0.join("package")).is_ok());
+    }
+
+    /// The TIPs and the test runner are still built, but no package needs them.
+    #[test]
+    fn packages_need_only_the_controller_of_their_architecture() {
+        let temp = TempDir::new("assemble-controller-only");
+        let (repo, target) = fake_inputs(&temp);
+        for target_triple in Target::ALL {
+            for artifact in [Artifact::Tip, Artifact::TestRunner] {
+                std::fs::remove_file(artifact.path(&target, target_triple, Profile::Release))
+                    .expect("remove artifact");
+            }
+        }
+        std::fs::remove_file(Artifact::Controller.path(&target, Target::I686, Profile::Release))
+            .expect("remove x86 controller");
+        let inputs = PackageInputs {
+            repo_root: &repo,
+            target_dir: &target,
+            version: "0.1.0",
+            profile: Profile::Release,
+        };
+        for kind in PackageKind::ALL {
+            assert!(missing_inputs(kind, &inputs).is_empty(), "{kind:?}");
+            assemble(kind, &inputs, &temp.0.join("package")).expect("assemble");
+        }
     }
 
     #[test]
@@ -894,17 +831,24 @@ mod tests {
             profile: Profile::Release,
         };
         assert!(missing_inputs(PackageKind::X64, &inputs).is_empty());
-        let arm64_tip = Artifact::Tip.path(&target, Target::Aarch64, Profile::Release);
-        std::fs::remove_file(&arm64_tip).expect("remove arm64 tip");
+        let arm64_controller =
+            Artifact::Controller.path(&target, Target::Aarch64, Profile::Release);
+        std::fs::remove_file(&arm64_controller).expect("remove arm64 controller");
         std::fs::remove_file(repo.join("THIRD_PARTY.md")).expect("remove notices");
         assert_eq!(
             missing_inputs(PackageKind::Arm64, &inputs),
-            [arm64_tip, repo.join("THIRD_PARTY.md")]
+            [arm64_controller, repo.join("THIRD_PARTY.md")]
         );
         let debug = PackageInputs {
             profile: Profile::Debug,
             ..inputs
         };
-        assert_eq!(missing_inputs(PackageKind::X64, &debug).len(), 5);
+        assert_eq!(
+            missing_inputs(PackageKind::X64, &debug),
+            [
+                Artifact::Controller.path(&target, Target::X86_64, Profile::Debug),
+                repo.join("THIRD_PARTY.md")
+            ]
+        );
     }
 }

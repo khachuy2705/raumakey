@@ -1,12 +1,15 @@
-//! `cargo xtask release-gate`: gate order and the installer dry-run contract.
+//! `cargo xtask release-gate`: gate order, the whole-branch review record, and the contract of
+//! the portable package check.
 
+use std::fs;
+use std::io::Read;
 use std::path::Path;
 
-use raumakey_model::identity::{TIP_CLSID, TIP_PROFILE_GUID};
+use raumakey_model::identity::PRODUCT_NAME;
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
-use crate::pe::{LEGACY_EVKEY_GUIDS, contains_guid_text};
+use crate::package::CONTROLLER;
 use crate::runner::CommandSpec;
 
 /// Gate steps in execution order.
@@ -17,7 +20,7 @@ pub const STEPS: [&str; 7] = [
     "inspect",
     "whole-branch-review",
     "package",
-    "installer-dry-run",
+    "portable-check",
 ];
 
 /// Reviewer-supplied attestation; xtask validates its scope and revision, not the review itself.
@@ -56,87 +59,140 @@ pub fn validate_review(bytes: &[u8], source_revision: Option<&str>) -> Result<()
     Ok(())
 }
 
-/// The `install --dry-run` and `uninstall --dry-run` invocations of the packaged x64 controller.
-pub fn dry_run_commands(package_dir: &Path) -> [CommandSpec; 2] {
-    let controller = package_dir.join("raumakey.exe");
-    let tip = |arch: &str| {
-        package_dir
-            .join(arch)
-            .join("raumakey_tip.dll")
-            .display()
-            .to_string()
-    };
-    [
-        CommandSpec::new(
-            &controller,
-            [
-                "install".to_owned(),
-                "--dry-run".to_owned(),
-                "--tip-x64".to_owned(),
-                tip("x64"),
-                "--tip-x86".to_owned(),
-                tip("x86"),
-            ],
-        ),
-        CommandSpec::new(&controller, ["uninstall", "--dry-run"]),
-    ]
+/// One entry of a package directory, as found on disk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackageEntry {
+    /// Path inside the package, with `/` separators.
+    pub path: String,
+    /// Whether the entry is a directory.
+    pub directory: bool,
+    /// Whether the file is executable code: a PE image, or a file with an extension that Windows
+    /// runs or loads as code.
+    pub executable: bool,
 }
 
-/// Every run of the installer dry-run step, in order: the controller's own dry runs, then the
-/// packaged `install.ps1 -DryRun` and `uninstall.ps1 -DryRun`, run with Windows PowerShell 5.1
-/// the way the package README tells users to run them. The scripts' output must meet the same
-/// contract as the controller's, so a script that loses the controller's output or exit code
-/// fails the gate. Windows PowerShell is taken from `system_root` (`%SystemRoot%`), never from
-/// the search path, which starts with the directory of `xtask.exe`.
-pub fn installer_dry_run_commands(package_dir: &Path, system_root: &Path) -> [CommandSpec; 4] {
-    let powershell = system_root
-        .join("System32")
-        .join("WindowsPowerShell")
-        .join("v1.0")
-        .join("powershell.exe");
-    let script = |name: &str| {
-        CommandSpec::new(
-            &powershell,
-            [
-                "-NoProfile".to_owned(),
-                "-ExecutionPolicy".to_owned(),
-                "Bypass".to_owned(),
-                "-File".to_owned(),
-                package_dir.join(name).display().to_string(),
-                "-DryRun".to_owned(),
-            ],
-        )
-    };
-    let [install, uninstall] = dry_run_commands(package_dir);
-    [
-        install,
-        uninstall,
-        script("install.ps1"),
-        script("uninstall.ps1"),
-    ]
+/// Extensions of files that Windows runs or loads as code (compared without case).
+const EXECUTABLE_EXTENSIONS: [&str; 22] = [
+    "bat", "cmd", "com", "cpl", "dll", "exe", "hta", "js", "jse", "lnk", "msc", "msi", "msp",
+    "ocx", "ps1", "psm1", "scr", "sys", "vbe", "vbs", "wsf", "wsh",
+];
+
+/// Every entry below `dir`, sorted by path.
+pub fn scan_package(dir: &Path) -> Result<Vec<PackageEntry>> {
+    let mut entries = Vec::new();
+    scan_into(dir, "", &mut entries)?;
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(entries)
 }
 
-/// Contract violations of one dry run: it must exit with 0, mention the Raumakey CLSID and
-/// profile GUID, and never mention a legacy EVKey GUID.
-pub fn dry_run_problems(exit_code: Option<i32>, output: &str) -> Vec<String> {
+fn scan_into(dir: &Path, prefix: &str, entries: &mut Vec<PackageEntry>) -> Result<()> {
+    let listing = fs::read_dir(dir).map_err(|error| Error::io("list", dir, error))?;
+    for entry in listing {
+        let entry = entry.map_err(|error| Error::io("list", dir, error))?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let relative = format!("{prefix}{name}");
+        let file_type = entry
+            .file_type()
+            .map_err(|error| Error::io("stat", &path, error))?;
+        if file_type.is_dir() {
+            scan_into(&path, &format!("{relative}/"), entries)?;
+            entries.push(PackageEntry {
+                path: relative,
+                directory: true,
+                executable: false,
+            });
+        } else {
+            entries.push(PackageEntry {
+                executable: has_executable_extension(&name) || is_pe_image(&path)?,
+                path: relative,
+                directory: false,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn has_executable_extension(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(_, extension)| {
+        EXECUTABLE_EXTENSIONS
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(extension))
+    })
+}
+
+/// Whether the file starts with the `MZ` signature of a PE image.
+fn is_pe_image(path: &Path) -> Result<bool> {
+    let mut signature = [0u8; 2];
+    let mut file = fs::File::open(path).map_err(|error| Error::io("open", path, error))?;
+    let mut read = 0;
+    while read < signature.len() {
+        match file.read(&mut signature[read..]) {
+            Ok(0) => break,
+            Ok(count) => read += count,
+            Err(error) => return Err(Error::io("read", path, error)),
+        }
+    }
+    Ok(read == signature.len() && signature == *b"MZ")
+}
+
+/// Contract violations of a portable package layout: it holds exactly the `expected` files (and
+/// the directories they need), and [`CONTROLLER`] is its only executable.
+pub fn layout_problems(entries: &[PackageEntry], expected: &[&str]) -> Vec<String> {
+    let mut problems = Vec::new();
+    let files: Vec<&str> = entries
+        .iter()
+        .filter(|entry| !entry.directory)
+        .map(|entry| entry.path.as_str())
+        .collect();
+    for path in expected {
+        if !files.contains(path) {
+            problems.push(format!("missing {path}"));
+        }
+    }
+    for entry in entries {
+        if entry.directory {
+            let prefix = format!("{}/", entry.path);
+            if !expected.iter().any(|path| path.starts_with(&prefix)) {
+                problems.push(format!("unexpected directory {prefix}"));
+            }
+        } else if !expected.contains(&entry.path.as_str()) {
+            problems.push(format!("unexpected file {}", entry.path));
+        }
+    }
+    for entry in entries {
+        if entry.executable && entry.path != CONTROLLER {
+            problems.push(format!(
+                "{} is executable code; {CONTROLLER} must be the only executable",
+                entry.path
+            ));
+        }
+    }
+    problems
+}
+
+/// The `--version` invocation of the controller in `package_dir`.
+pub fn version_command(package_dir: &Path) -> CommandSpec {
+    CommandSpec::new(package_dir.join(CONTROLLER), ["--version"])
+}
+
+/// Contract violations of `raumakey.exe --version`: it exits with 0 and prints a line
+/// `Raumakey <version>` (optionally followed by more words).
+pub fn version_problems(exit_code: Option<i32>, output: &str, version: &str) -> Vec<String> {
     let mut problems = Vec::new();
     match exit_code {
         Some(0) => {}
         Some(code) => problems.push(format!("exit code {code} (expected 0)")),
         None => problems.push("process did not exit normally".to_owned()),
     }
-    for (label, guid) in [
-        ("Raumakey CLSID", TIP_CLSID),
-        ("Raumakey profile GUID", TIP_PROFILE_GUID),
-    ] {
-        if !contains_guid_text(output.as_bytes(), guid) {
-            problems.push(format!("plan does not mention the {label} {guid}"));
-        }
-    }
-    for (label, guid) in LEGACY_EVKEY_GUIDS {
-        if contains_guid_text(output.as_bytes(), guid) {
-            problems.push(format!("plan mentions the {label} {guid}"));
-        }
+    let expected = format!("{PRODUCT_NAME} {version}");
+    let found = output.lines().any(|line| {
+        line.trim()
+            .strip_prefix(&expected)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+    });
+    if !found {
+        problems.push(format!("output does not contain the line `{expected}`"));
     }
     problems
 }
@@ -144,8 +200,6 @@ pub fn dry_run_problems(exit_code: Option<i32>, output: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pe::{LEGACY_EVKEY_GUIDS, guid_text};
-    use raumakey_model::identity::{TIP_CLSID, TIP_PROFILE_GUID};
 
     fn review_record() -> serde_json::Value {
         serde_json::json!({
@@ -207,119 +261,170 @@ mod tests {
                 "inspect",
                 "whole-branch-review",
                 "package",
-                "installer-dry-run"
+                "portable-check"
             ]
         );
     }
 
     #[test]
-    fn dry_runs_use_the_packaged_controller_and_tips() {
+    fn the_version_check_runs_the_packaged_controller() {
         let dir = Path::new("pkg");
-        let [install, uninstall] = dry_run_commands(dir);
         assert_eq!(
-            install,
-            CommandSpec::new(
-                dir.join("raumakey.exe"),
-                [
-                    "install".to_owned(),
-                    "--dry-run".to_owned(),
-                    "--tip-x64".to_owned(),
-                    dir.join("x64")
-                        .join("raumakey_tip.dll")
-                        .display()
-                        .to_string(),
-                    "--tip-x86".to_owned(),
-                    dir.join("x86")
-                        .join("raumakey_tip.dll")
-                        .display()
-                        .to_string(),
-                ]
-            )
-        );
-        assert_eq!(
-            uninstall,
-            CommandSpec::new(dir.join("raumakey.exe"), ["uninstall", "--dry-run"])
+            version_command(dir),
+            CommandSpec::new(dir.join("raumakey.exe"), ["--version"])
         );
     }
 
     #[test]
-    fn the_installer_dry_run_runs_the_controller_then_both_scripts_with_windows_powershell() {
-        let dir = Path::new("pkg");
-        let system_root = Path::new("C:\\Windows");
-        let powershell = system_root
-            .join("System32")
-            .join("WindowsPowerShell")
-            .join("v1.0")
-            .join("powershell.exe");
-        let script = |name: &str| {
-            CommandSpec::new(
-                &powershell,
-                [
-                    "-NoProfile".to_owned(),
-                    "-ExecutionPolicy".to_owned(),
-                    "Bypass".to_owned(),
-                    "-File".to_owned(),
-                    dir.join(name).display().to_string(),
-                    "-DryRun".to_owned(),
-                ],
-            )
-        };
-        let [install, uninstall] = dry_run_commands(dir);
-        assert_eq!(
-            installer_dry_run_commands(dir, system_root),
-            [
-                install,
-                uninstall,
-                script("install.ps1"),
-                script("uninstall.ps1")
-            ]
-        );
-    }
-
-    fn plan() -> String {
-        format!(
-            "register CLSID {TIP_CLSID} (64-bit view)\nregister profile {TIP_PROFILE_GUID} \
-             LANGID 0x042A\n"
-        )
+    fn the_version_line_and_exit_code_zero_pass() {
+        for output in [
+            "Raumakey 0.1.0\n",
+            "Raumakey 0.1.0\r\n",
+            "Raumakey 0.1.0",
+            "\r\n  Raumakey 0.1.0 (x64)\r\n",
+        ] {
+            assert!(
+                version_problems(Some(0), output, "0.1.0").is_empty(),
+                "{output:?}"
+            );
+        }
     }
 
     #[test]
-    fn a_plan_naming_both_raumakey_identities_passes() {
-        assert!(dry_run_problems(Some(0), &plan()).is_empty());
-        let lower = plan().to_ascii_lowercase();
-        assert!(
-            dry_run_problems(Some(0), &lower).is_empty(),
-            "case-insensitive"
-        );
-    }
-
-    #[test]
-    fn exit_status_is_part_of_the_contract() {
-        let problems = dry_run_problems(Some(3), &plan());
+    fn exit_status_is_part_of_the_version_contract() {
+        let problems = version_problems(Some(2), "Raumakey 0.1.0\n", "0.1.0");
         assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].contains('3'), "{problems:?}");
-        let problems = dry_run_problems(None, &plan());
+        assert!(problems[0].contains("exit code 2"), "{problems:?}");
+        let problems = version_problems(None, "Raumakey 0.1.0\n", "0.1.0");
         assert_eq!(problems.len(), 1, "{problems:?}");
     }
 
     #[test]
-    fn missing_identities_are_reported() {
-        let problems = dry_run_problems(Some(0), "nothing to do\n");
-        assert_eq!(problems.len(), 2, "{problems:?}");
-        assert!(problems[0].contains(&guid_text(TIP_CLSID)), "{problems:?}");
+    fn another_version_or_no_version_line_is_reported() {
+        for output in [
+            "",
+            "raumakey: unknown command\n",
+            "Raumakey 0.2.0\n",
+            "Raumakey 0.1.01\n",
+            "Raumakey 0.1.0-rc.1\n",
+            "Raumakey0.1.0\n",
+            "raumakey 0.1.0\n",
+            "EVKey 0.1.0\n",
+        ] {
+            let problems = version_problems(Some(0), output, "0.1.0");
+            assert_eq!(problems.len(), 1, "{output:?}: {problems:?}");
+            assert!(problems[0].contains("Raumakey 0.1.0"), "{problems:?}");
+        }
+    }
+
+    fn file(path: &str, executable: bool) -> PackageEntry {
+        PackageEntry {
+            path: path.to_owned(),
+            directory: false,
+            executable,
+        }
+    }
+
+    fn directory(path: &str) -> PackageEntry {
+        PackageEntry {
+            path: path.to_owned(),
+            directory: true,
+            executable: false,
+        }
+    }
+
+    const EXPECTED: [&str; 6] = [
+        "raumakey.exe",
+        "LICENSE",
+        "THIRD_PARTY.md",
+        "README.txt",
+        "manifest.json",
+        "SHA256SUMS",
+    ];
+
+    fn portable() -> Vec<PackageEntry> {
+        EXPECTED
+            .iter()
+            .map(|path| file(path, *path == "raumakey.exe"))
+            .collect()
+    }
+
+    #[test]
+    fn the_expected_files_with_one_executable_pass() {
+        assert!(layout_problems(&portable(), &EXPECTED).is_empty());
+    }
+
+    #[test]
+    fn missing_and_unexpected_files_are_reported() {
+        let mut entries = portable();
+        entries.retain(|entry| entry.path != "SHA256SUMS");
+        entries.push(file("notes.txt", false));
+        assert_eq!(
+            layout_problems(&entries, &EXPECTED),
+            ["missing SHA256SUMS", "unexpected file notes.txt"]
+        );
+    }
+
+    #[test]
+    fn subdirectories_are_reported_unless_they_hold_an_expected_file() {
+        let mut entries = portable();
+        entries.push(directory("x64"));
+        assert_eq!(
+            layout_problems(&entries, &EXPECTED),
+            ["unexpected directory x64/"]
+        );
+        let nested = [directory("docs"), file("docs/README.txt", false)];
+        assert!(layout_problems(&nested, &["docs/README.txt"]).is_empty());
+    }
+
+    #[test]
+    fn raumakey_exe_must_be_the_only_executable() {
+        // The old layout's TIP is both unexpected and a second executable.
+        let mut entries = portable();
+        entries.push(directory("x64"));
+        entries.push(file("x64/raumakey_tip.dll", true));
+        let problems = layout_problems(&entries, &EXPECTED);
+        assert_eq!(problems.len(), 3, "{problems:?}");
         assert!(
-            problems[1].contains(&guid_text(TIP_PROFILE_GUID)),
+            problems.iter().any(|problem| {
+                problem.contains("x64/raumakey_tip.dll") && problem.contains("only executable")
+            }),
             "{problems:?}"
         );
+        // An expected document that holds executable code is reported as well.
+        let mut entries = portable();
+        entries[3].executable = true;
+        let problems = layout_problems(&entries, &EXPECTED);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("README.txt"), "{problems:?}");
     }
 
     #[test]
-    fn legacy_identities_are_rejected() {
-        for (label, guid) in LEGACY_EVKEY_GUIDS {
-            let output = format!("{}\nskip {guid}\n", plan());
-            let problems = dry_run_problems(Some(0), &output);
-            assert_eq!(problems.len(), 1, "{problems:?}");
-            assert!(problems[0].contains(label), "{problems:?}");
-        }
+    fn scan_lists_every_entry_and_flags_executable_code() {
+        let dir = std::env::temp_dir().join(format!("raumakey-xtask-scan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("tools")).expect("temp dir");
+        std::fs::write(dir.join("raumakey.exe"), b"MZ\x90\x00").expect("exe");
+        std::fs::write(dir.join("README.txt"), "\u{feff}Raumakey").expect("readme");
+        std::fs::write(dir.join("LICENSE"), "").expect("empty file");
+        // A PE image is executable code whatever its name.
+        std::fs::write(dir.join("notes"), b"MZ disguised").expect("pe without extension");
+        // A script is executable code by its extension, in any case.
+        std::fs::write(dir.join("tools").join("Setup.PS1"), "Write-Host").expect("script");
+        let entries = scan_package(&dir);
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+        assert_eq!(
+            entries.expect("scan"),
+            [
+                file("LICENSE", false),
+                file("README.txt", false),
+                file("notes", true),
+                file("raumakey.exe", true),
+                directory("tools"),
+                file("tools/Setup.PS1", true),
+            ]
+        );
+        let error = scan_package(&dir).expect_err("a missing package is an error");
+        assert!(error.to_string().contains("raumakey-xtask-scan"), "{error}");
     }
 }

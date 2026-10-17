@@ -217,6 +217,42 @@ mod tests {
         assert_eq!(evidence.host.arch, std::env::consts::ARCH);
     }
 
+    /// The portable package (D38) has no installer: a passing gate ends with the check of the
+    /// packaged `raumakey.exe`, and no step of the evidence names an installer dry run.
+    #[test]
+    fn a_passing_gate_ends_with_the_portable_check() {
+        let evidence = Evidence::new(
+            "0.1.0".to_owned(),
+            1,
+            None,
+            crate::gate::STEPS
+                .into_iter()
+                .map(|name| step(name, StepStatus::Passed, Vec::new()))
+                .collect(),
+            Vec::new(),
+        );
+        assert!(evidence.passed);
+        let value: serde_json::Value =
+            serde_json::from_str(&evidence.to_json().expect("serializes")).expect("JSON");
+        let names: Vec<&str> = value["steps"]
+            .as_array()
+            .expect("steps")
+            .iter()
+            .map(|step| step["name"].as_str().expect("name"))
+            .collect();
+        assert_eq!(names.last(), Some(&"portable-check"), "{names:?}");
+        assert!(
+            names[..names.len() - 1].contains(&"package"),
+            "the check runs after the package step: {names:?}"
+        );
+        assert!(
+            !names
+                .iter()
+                .any(|name| name.contains("installer") || name.contains("dry-run")),
+            "{names:?}"
+        );
+    }
+
     #[test]
     fn incomplete_duplicate_or_reordered_gates_cannot_claim_verification() {
         let complete: Vec<_> = crate::gate::STEPS
