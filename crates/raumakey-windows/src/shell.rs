@@ -34,6 +34,7 @@ mod win {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     use std::path::{Path, PathBuf};
+    use std::rc::Rc;
 
     use windows::Win32::Foundation::HWND;
     use windows::Win32::System::Com::{
@@ -44,12 +45,13 @@ mod win {
         NIM_SETVERSION, NOTIFY_ICON_MESSAGE, NOTIFYICON_VERSION_4, NOTIFYICONDATAW,
         Shell_NotifyIconW, ShellLink,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{HICON, RegisterWindowMessageW};
+    use windows::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW;
     use windows::core::{Interface, w};
 
     use super::tooltip_units;
     use crate::com::ComApartment;
     use crate::error::{E_FAIL, E_INVALIDARG, ResultExt, WinError, WinResult};
+    use crate::icon::Icon;
     use crate::strings::{WideString, until_nul};
 
     /// `SLGP_RAWPATH`: return the stored target path without resolution.
@@ -70,8 +72,15 @@ mod win {
 
     /// The controller's notification-area icon (`NOTIFYICON_VERSION_4`). It is removed on drop.
     /// The icon belongs to the thread of its window and is not `Send`.
+    ///
+    /// It shares ownership of the [`Icon`] it shows (`Rc<Icon>`): every later change
+    /// ([`set_tooltip`](Self::set_tooltip), [`set_icon`](Self::set_icon)) and every
+    /// [`readd`](Self::readd) after `TaskbarCreated` sends the icon handle to the shell again,
+    /// so the icon must live as long as the notification icon may send it.
     pub struct NotifyIcon {
         data: NOTIFYICONDATAW,
+        /// The icon whose handle `data` holds.
+        icon: Rc<Icon>,
         added: bool,
     }
 
@@ -88,12 +97,12 @@ mod win {
     }
 
     impl NotifyIcon {
-        /// Adds icon `id` of window `hwnd`, which receives `callback_message`.
+        /// Adds icon `id` of window `hwnd`, which receives `callback_message`, showing `icon`.
         pub fn add(
             hwnd: HWND,
             id: u32,
             callback_message: u32,
-            icon: HICON,
+            icon: Rc<Icon>,
             tooltip: &str,
         ) -> WinResult<Self> {
             let data = NOTIFYICONDATAW {
@@ -102,11 +111,15 @@ mod win {
                 uID: id,
                 uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP,
                 uCallbackMessage: callback_message,
-                hIcon: icon,
+                hIcon: icon.handle(),
                 szTip: tooltip_units(tooltip),
                 ..Default::default()
             };
-            let mut tray = Self { data, added: false };
+            let mut tray = Self {
+                data,
+                icon,
+                added: false,
+            };
             tray.readd()?;
             Ok(tray)
         }
@@ -119,10 +132,15 @@ mod win {
             self.notify(NIM_SETVERSION, "Shell_NotifyIconW(NIM_SETVERSION)")
         }
 
-        /// Replaces the icon image.
-        pub fn set_icon(&mut self, icon: HICON) -> WinResult<()> {
-            self.data.hIcon = icon;
-            self.notify(NIM_MODIFY, "Shell_NotifyIconW(NIM_MODIFY)")
+        /// Replaces the icon image. The new icon is kept even when the shell rejects the change
+        /// (for example while Explorer restarts), so the next [`readd`](Self::readd) shows it;
+        /// the previous icon is released after the call.
+        pub fn set_icon(&mut self, icon: Rc<Icon>) -> WinResult<()> {
+            self.data.hIcon = icon.handle();
+            let previous = core::mem::replace(&mut self.icon, icon);
+            let result = self.notify(NIM_MODIFY, "Shell_NotifyIconW(NIM_MODIFY)");
+            drop(previous);
+            result
         }
 
         /// Replaces the tooltip.

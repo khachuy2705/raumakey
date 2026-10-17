@@ -1005,10 +1005,11 @@ behavior was verified in a Windows host application (§0 rule 6).
 - **Done:** the core libraries `raumakey-model`, `-engine`, `-macro`, `-config`, `-converter`,
   `-policy`, and `-ipc` (with the `evkey-compat` codec), and `raumakey-resources`, apart from the
   gaps in §14.2 and the defects in §14.4. `raumakey-migrate`, `raumakey-windows`, and `xtask` are
-  mostly done. `xtask` includes the release-gate evidence contract of §12.
-- **Not done:** the controller (`raumakey.exe`) and the TIP (`raumakey_tip.dll`) are empty stubs,
-  so Raumakey cannot be installed or used. `raumakey-tests` is a stub, and `fuzz/`,
-  `tests/fixtures/`, and `tests/windows/` do not exist.
+  mostly done. `xtask` includes the release-gate evidence contract of §12. The TIP has its
+  platform-independent session core (`raumakey_tip::session`), tested with fakes.
+- **Not done:** the controller (`raumakey.exe`) is an empty stub and the TIP
+  (`raumakey_tip.dll`) has no COM layer, so Raumakey cannot be installed or used.
+  `raumakey-tests` is a stub, and `fuzz/`, `tests/fixtures/`, and `tests/windows/` do not exist.
 - **Gates:** `cargo xtask ci` fails by design until the `fuzz_smoke` target exists (§12);
   `ci --no-fuzz` passes (§14.6). Neither "cross-build verified" nor "runtime x86_64 verified"
   can be claimed (design §19).
@@ -1021,46 +1022,38 @@ behavior was verified in a Windows host application (§0 rule 6).
 | 2 | Done (library) | `raumakey-engine` with every §3.10 golden vector; `raumakey-macro` | No test runs the engine with the real `MacroTable`; the Circumflex fallback with spell checking off has no test (design §20.8 item 9); the macro defects in §14.4 items 1, 2, and 4 |
 | 3 | Mostly done (library) | `raumakey-config`, `raumakey-converter`, `raumakey-migrate` (sources, parsing, commit with rollback, idempotence) | Commit durability (design §20.7); a Windows `LegacyRegistry` adapter; default EVKey folder discovery; the `migrate` and `convert` commands |
 | 4 | Done (library) | `raumakey-policy`; `raumakey-ipc` with frames, messages, client and server sessions, backoff, and the `evkey-compat` codec | The controller's server hub and snapshot builder; the policy and the engine disagree on `Restricted` secure fields (design §20.8 item 1) |
-| 5 | Building blocks only | `raumakey-resources`; `raumakey-windows` wrappers for errors, panic guards, strings, handles, SIDs, object names, security, pipes, registry, known folders, file replacement, clipboard, input, hooks, foreground, keyboard, processes, shell, task scheduler, COM apartments, single instance, and legacy objects | No `build.rs` calls `raumakey-resources`; wrappers for windows, message-only windows, the message loop and `PostMessageW`, dialogs, icons, the module, and `GetMessageExtraInfo` (most are in §14.3), and the building blocks of §14.5 item 3; `raumakey-controller` is `fn main() {}` |
-| 6 | Registration code only | TSF registration planner, executor, and verification in `raumakey-windows`, tested with fakes | `raumakey-tsf` is a doc comment; verification does not enumerate the profile (§10.4); D17 and D21 have no decision text |
+| 5 | Building blocks only | `raumakey-resources`; `raumakey-windows` wrappers for errors, panic guards, strings, handles, SIDs, object names, security, pipes, registry, known folders, file replacement, clipboard, input (including `GetMessageExtraInfo`), hooks, foreground, keyboard, processes, shell, task scheduler, COM apartments, single instance, legacy objects, hidden and message-only windows with the message loop and `PostMessageW`, popup menus, icons, modules, COM server support (class factory, object and lock counts), and message boxes | No `build.rs` calls `raumakey-resources`; dialogs and controls, and the building blocks of §14.5 item 3; `raumakey-controller` is `fn main() {}` |
+| 6 | Session core and registration code | TSF registration planner, executor, and verification in `raumakey-windows`, tested with fakes; the TIP's platform-independent session core (`raumakey_tip::session`: document port, key path, per-document state, mouse-press resets, probe bookkeeping, D24 while disconnected, snapshots), tested with fakes | The COM layer (§14.5 item 4); verification does not enumerate the profile (§10.4); D17 and D21 have no decision text |
 | 7 | Partial | `xtask` commands `ci`, `cross`, `inspect`, `package`, `audit`, `notices`, and `release-gate` | `raumakey-tests` (fixtures, contract suites, fuzz targets, `fuzz_smoke`, runner); `fuzz/`; PowerShell suite; manual checklist; the `xtask` items of design §20.6 item 7 that the follow-up left open (§14.5 item 7); documentation (§14.5 item 8) |
 | 8 | Not started | `xtask audit` passed in the design §20 snapshot (design §20.2; not rerun) | Hardening (design §20.7), whole-branch review, release-gate evidence |
 
-Design §20.6 item 8 is half done: the implementation is in Git (`24ba7a6` and this revision).
-The other half is open: §0 rule 1 and §13 require each task to record its failing test run and
-an independent review, and the code before the follow-up has neither. The 2026-10-17 follow-up
-(`2026-10-17-review-followup.md`) records TDD evidence for its `xtask` increment only. It was a
-targeted review, not an independent whole-branch review, and the independent review of its own
-increment is still pending.
+Design §20.6 item 8 is half done: the implementation is in Git (`24ba7a6` and later revisions).
+The other half is open for the code before the follow-up: §0 rule 1 and §13 require each task to
+record its failing test run and an independent review, and that code has neither. The
+2026-10-17 follow-up (`2026-10-17-review-followup.md`) records TDD evidence for its `xtask`
+increment only; it was a targeted review, not an independent whole-branch review, and the
+independent review of its own increment is still pending. `2026-10-17-phase1-task-notes.md`
+records the failing test runs and the independent reviews of the work merged since.
 
 ### 14.3 Started, not in this revision
 
-On 2026-10-17 the following work was started in local Git worktrees on the development host
-(`target/wt/tests`, `target/wt/windows`, and `target/wt/tsf`, detached at `24ba7a6`; uncommitted
-and not pushed). It has code and tests but is still under review and still changing, and none of
-it is part of this revision. The list describes it as it was when this revision was written:
+On 2026-10-17 the following work was started in a local Git worktree on the development host
+(`target/wt/tests`, detached at `24ba7a6`; uncommitted and not pushed). It has code and tests but
+is still under review and still changing, and none of it is part of this revision. The list
+describes it as it was when this revision was written:
 
 - `raumakey-tests`: `fuzz_targets` with the seven targets of §12, `tests/fuzz_smoke.rs` with a
   seeded PRNG, a macro/engine suite that runs the engine with the real `MacroTable`,
   compatibility vectors in `tests/fixtures/compat/`, the runner's `vectors` mode (`live` is not
   implemented), and a `build.rs` that gives the runner its resources.
-- `raumakey-windows`: window classes, hidden and message-only windows, the message loop and
-  posting from other threads (`PostMessageW`), popup menus, icon loading, the module handle and
-  path, COM server support (a generic class factory, object and lock counts, and the bodies of
-  `DllGetClassObject` and `DllCanUnloadNow`), message boxes, and `GetMessageExtraInfo`.
-- `raumakey-tsf`: the platform-independent session core (document port, key path, per-document
-  state, mouse-press resets, the decision to probe a host and the record of its result, D24
-  while disconnected, snapshots), tested with fakes. It passes secure fields through in both
-  `SecureFieldMode`s, pending design §20.8 item 1. The probe edit itself, opt-in diagnostics, and
-  the `evkey-compat` path are not in it, and the COM layer is not started.
 
 Once this work is merged, `xtask ci` can run its fuzz step, and this section must be updated.
 
 ### 14.4 Defects found after design §20
 
-The work in §14.3 found these defects; item 4 shows that the "Silent fallback" risk of design
-§20.7 is reachable with valid input. Each was confirmed against the code of `4507b1b`. Item 3 is
-fixed; items 1, 2, and 4 wait for the decisions of §14.5 step 2.
+The 2026-10-17 Phase 1 work found these defects; item 4 shows that the "Silent fallback" risk
+of design §20.7 is reachable with valid input. Each was confirmed against the code of
+`4507b1b`. Item 3 is fixed; items 1, 2, and 4 wait for the decisions of §14.5 step 2.
 
 1. `MacroTable` accepts triggers that contain boundary punctuation, such as `v.v`. When no
    input-method action consumes the punctuation key, the engine commits the word at it (§3.8),
@@ -1095,13 +1088,16 @@ its independent review (§0 rule 1, §13).
    (item 5 is answered by writing D17 and D21), and align the code and tests with them.
 3. Add the `build.rs` files and the remaining `raumakey-windows` building blocks: dialogs and
    controls, TSF sink and edit-session helpers, input-scope detection, foreground-change
-   tracking, the `LegacyRegistry` adapter and default EVKey folders, profile enumeration, and
-   x64 + x86 install orchestration.
+   tracking, the `LegacyRegistry` adapter and default EVKey folders, profile enumeration, x64 +
+   x86 install orchestration, a `ChangeWindowMessageFilterEx` wrapper so that an elevated
+   controller receives `TaskbarCreated` (matrix #58), a DPI query, and a message loop with
+   `IsDialogMessageW` for the modeless panel.
 4. Implement the TIP COM layer (§10.3) on the session core: the four exports, the class factory
    on the `raumakey-windows` COM server support, `TextService` with its activation lifecycle and
    sinks, edit sessions, replay through `SendInput`, the snapshot client thread, reporting mouse
-   presses to the core, the range-edit probe edit and its `ReportProbe`, opt-in `Diagnostic`
-   events (only while `RuntimeSnapshot.diagnostics_enabled` is set), and the `evkey-compat`
+   presses to the core, the range-edit probe edit and its `ReportProbe` (sent again after a
+   reconnect while the session core still holds the result), opt-in `Diagnostic` events (only
+   while `RuntimeSnapshot.diagnostics_enabled` is set), and the `evkey-compat`
    path.
 5. Implement the controller (§10.2). First the Windows GUI subsystem (attaching to the console
    for subcommands) and the CLI with `install`/`uninstall --dry-run`, accepting options in any
@@ -1114,7 +1110,7 @@ its independent review (§0 rule 1, §13).
    legacy server.
 6. Finish `raumakey-tests` and the runner (`vectors`, `live`), the `fuzz/` workspace,
    `tests/windows/Invoke-RaumakeyAcceptance.ps1`, and `MANUAL_ACCEPTANCE.md`. Run the manual
-   `#[ignore]`d `raumakey-windows` tests (8 in this revision, more after step 1) and keep their
+   `#[ignore]`d `raumakey-windows` tests (10 in this revision) and keep their
    results as evidence.
 7. Finish `xtask`: ship notices and license texts, check the manifest's Common Controls v6,
    PerMonitorV2, and supportedOS entries in `inspect`, run the i686 tests under WOW64, compile
@@ -1132,12 +1128,14 @@ Run on 2026-10-17 on the Windows 11 x86_64 development host (Rust 1.99.1, `rust-
 |---|---|
 | `cargo fmt --all --check` | Pass |
 | `cargo xtask ci --no-fuzz`: Clippy with `-D warnings`, default features and all five `evkey-compat` features | Pass |
-| `cargo xtask ci --no-fuzz`: `cargo test --locked --workspace` | 1,242 passed, 0 failed, 8 ignored |
-| The same tests with all five `evkey-compat` features | 1,316 passed, 0 failed, 8 ignored |
+| `cargo xtask ci --no-fuzz`: `cargo test --locked --workspace` | 1,442 passed, 0 failed, 10 ignored |
+| The same tests with all five `evkey-compat` features | 1,515 passed, 0 failed, 10 ignored |
+| `cargo test --locked -p raumakey-windows -p raumakey-tsf --target i686-pc-windows-msvc` (WOW64) | 346 passed, 0 failed, 10 ignored |
+| `cargo xtask cross` (debug: x86_64, i686, aarch64) | Pass |
 
-The 8 ignored tests are the manual `raumakey-windows` tests (design §15.1). `cargo xtask ci`
-without `--no-fuzz` was not rerun: the follow-up observed its intended failure at the missing
-`fuzz_smoke` target on the same `xtask` code (`2026-10-17-review-followup.md`, step 7), and the
-unit test `missing_fuzz_suite_fails_before_starting_ci_commands` passed in this run.
-Cross-builds, PE inspection, packaging, and the audit were not rerun for this revision; design
-§20.2 has their last results.
+The 10 ignored tests are the manual `raumakey-windows` tests (design §15.1); menu tracking and
+message boxes added two. `cargo xtask ci` without `--no-fuzz` was not rerun: the follow-up
+observed its intended failure at the missing `fuzz_smoke` target on the same `xtask` code
+(`2026-10-17-review-followup.md`, step 7), and the unit test
+`missing_fuzz_suite_fails_before_starting_ci_commands` passed in this run. PE inspection,
+packaging, and the audit were not rerun for this revision; design §20.2 has their last results.

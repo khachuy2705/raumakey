@@ -503,6 +503,7 @@ dependencies = [
 name = "raumakey-tsf"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "raumakey-engine",
  "raumakey-ipc",
  "raumakey-macro",

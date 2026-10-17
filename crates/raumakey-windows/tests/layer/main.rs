@@ -2,10 +2,14 @@
 //!
 //! Pure modules are tested on every host. Win32 modules are tested only on Windows, and only
 //! with operations that are safe on a user's desktop: temporary files, uniquely named pipes and
-//! kernel objects, registry keys under `HKCU\Software\Raumakey\Tests-<pid>-<n>`, and read-only
-//! queries. Anything that sends input, hooks the keyboard or mouse, touches the real clipboard,
-//! writes `HKEY_LOCAL_MACHINE`, registers COM/TSF, or schedules tasks is `#[ignore]`d and run
-//! manually.
+//! kernel objects, registry keys under `HKCU\Software\Raumakey\Tests-<pid>-<n>`, process-local
+//! windows that are never shown (created on a fresh thread and destroyed before it ends; nothing
+//! is broadcast), `WH_CBT` hooks of such a thread only (they see only that thread's windows),
+//! menus that are never shown, in-process COM objects that are never registered, system DLLs
+//! mapped as data, a uniquely named temporary copy of a data-only DLL (no code runs), and
+//! read-only queries. Anything that sends input, hooks the keyboard or mouse, touches the
+//! real clipboard, writes `HKEY_LOCAL_MACHINE`, registers COM/TSF, schedules tasks, or shows a
+//! menu, a message box, or a notification icon is `#[ignore]`d and run manually.
 //!
 //! The quiet panic hook is tested in its own binary (`tests/panic_hook.rs`) because installing
 //! it would silence the failure messages of this suite.
@@ -14,11 +18,15 @@ mod support;
 
 // Pure modules (every platform); Windows-only cases inside are gated individually.
 mod clipboard;
+mod com_server;
+mod dialog;
 mod error;
 mod foreground;
 mod hooks;
+mod icon;
 mod input;
 mod keyboard;
+mod menu;
 mod names;
 mod process;
 mod registry_model;
@@ -26,6 +34,7 @@ mod security;
 mod shell;
 mod strings;
 mod tsf_registration;
+mod window;
 
 // Win32 modules.
 #[cfg(windows)]
@@ -36,6 +45,8 @@ mod file_replace;
 mod known_folder;
 #[cfg(all(windows, feature = "evkey-compat"))]
 mod legacy;
+#[cfg(windows)]
+mod module;
 #[cfg(windows)]
 mod pipe;
 #[cfg(windows)]

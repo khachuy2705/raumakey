@@ -1,4 +1,6 @@
-//! `input`: synthetic input builders (pure). Nothing here sends input.
+//! `input`: synthetic input builders (pure) and, on Windows, the extra information of the
+//! current message (read on fresh threads, set only with `SetMessageExtraInfo` on that thread).
+//! Nothing here sends input outside the manual test.
 
 use raumakey_model::identity::RAUMAKEY_INJECTED_TAG;
 use raumakey_model::input::{ModifierSet, ReplayKey, vk};
@@ -243,6 +245,51 @@ fn conversion_to_win32_input_preserves_every_field() {
     assert_eq!(ki.dwFlags.0, 0x6);
     assert_eq!(ki.time, 0);
     assert_eq!(ki.dwExtraInfo, TAG);
+}
+
+#[cfg(windows)]
+mod extra_info {
+    use raumakey_windows::input::{current_message_is_raumakey_injected, message_extra_info};
+    use windows::Win32::Foundation::LPARAM;
+    use windows::Win32::UI::WindowsAndMessaging::SetMessageExtraInfo;
+
+    use super::TAG;
+    use crate::support::on_fresh_thread;
+
+    /// The legacy EVKey sentinel (clean-room spec §3.1), which is not Raumakey's tag.
+    const LEGACY_SENTINEL: u32 = 0xEBCA_1234;
+
+    fn set_thread_extra_info(value: usize) -> usize {
+        // SAFETY: changes only the calling thread's extra message information.
+        unsafe { SetMessageExtraInfo(LPARAM(value as isize)) }.0 as usize
+    }
+
+    #[test]
+    fn a_fresh_thread_has_no_extra_information() {
+        on_fresh_thread(|| {
+            assert_eq!(message_extra_info(), 0);
+            assert!(!current_message_is_raumakey_injected());
+        });
+    }
+
+    #[test]
+    fn the_extra_information_of_the_thread_is_read_back_and_classified() {
+        on_fresh_thread(|| {
+            assert_eq!(set_thread_extra_info(TAG), 0);
+            assert_eq!(message_extra_info(), TAG);
+            assert!(current_message_is_raumakey_injected());
+
+            // Values with the top bit set (negative LPARAMs on i686) come back unchanged.
+            assert_eq!(set_thread_extra_info(LEGACY_SENTINEL as usize), TAG);
+            assert_eq!(message_extra_info(), LEGACY_SENTINEL as usize);
+            assert!(!current_message_is_raumakey_injected());
+
+            set_thread_extra_info(TAG + 1);
+            assert!(!current_message_is_raumakey_injected());
+            set_thread_extra_info(0);
+            assert_eq!(message_extra_info(), 0);
+        });
+    }
 }
 
 /// Sends real input to the desktop. Manual test only: run with `--ignored` on a test machine

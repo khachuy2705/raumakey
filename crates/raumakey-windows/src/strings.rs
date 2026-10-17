@@ -2,9 +2,10 @@
 //!
 //! [`WideString`] owns a NUL-terminated UTF-16 buffer without interior NULs, so the `PCWSTR` it
 //! lends is valid for as long as the borrow and cannot be silently truncated by an embedded NUL
-//! (which matters for registry paths and object names).
+//! (which matters for registry paths and object names). [`read_growing`] reads a string of
+//! unknown length into a buffer that grows until it fits.
 
-use crate::error::{E_INVALIDARG, WinError, WinResult};
+use crate::error::{E_INVALIDARG, WinError, WinResult, win32};
 
 /// UTF-16 units of `text` followed by one NUL. An interior NUL is kept, so Win32 would stop at
 /// it; use [`WideString::new`] when that must be rejected.
@@ -24,6 +25,35 @@ pub fn until_nul(units: &[u16]) -> &[u16] {
         .position(|&unit| unit == 0)
         .unwrap_or(units.len());
     units.get(..end).unwrap_or(units)
+}
+
+/// Reads a string with `fill`, which writes into the buffer it gets and returns the number of
+/// units written without the NUL, or the buffer length when the string was truncated (the
+/// `GetModuleFileNameW` contract). The buffer starts at `initial` units and doubles up to
+/// `max`; a string that does not fit in `max` units fails with `ERROR_INSUFFICIENT_BUFFER` for
+/// the operation `context`. Errors of `fill` are returned unchanged.
+pub fn read_growing(
+    initial: usize,
+    max: usize,
+    context: &'static str,
+    mut fill: impl FnMut(&mut [u16]) -> WinResult<usize>,
+) -> WinResult<Vec<u16>> {
+    let mut size = initial.clamp(1, max.max(1));
+    loop {
+        let mut buffer = vec![0_u16; size];
+        let written = fill(&mut buffer)?;
+        if written < buffer.len() {
+            buffer.truncate(written);
+            return Ok(buffer);
+        }
+        if size >= max {
+            return Err(WinError::from_win32(
+                win32::ERROR_INSUFFICIENT_BUFFER,
+                context,
+            ));
+        }
+        size = size.saturating_mul(2).min(max);
+    }
 }
 
 /// A NUL-terminated UTF-16 string without interior NULs.

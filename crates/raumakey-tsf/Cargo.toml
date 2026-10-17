@@ -31,5 +31,8 @@ raumakey-windows.workspace = true
 windows.workspace = true
 windows-core.workspace = true
 
+[dev-dependencies]
+proptest.workspace = true
+
 [build-dependencies]
 raumakey-resources.workspace = true

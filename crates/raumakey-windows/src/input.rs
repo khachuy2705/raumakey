@@ -4,6 +4,11 @@
 //! [`SyntheticKey`] records, all tagged with [`RAUMAKEY_INJECTED_TAG`] in `dwExtraInfo` so that
 //! Raumakey's own hooks recognize and ignore them. [`send`] (Windows only) is the only function
 //! that injects anything.
+//!
+//! On the receiving side, hooks read the tag from their records ([`is_raumakey_extra_info`]);
+//! the TIP, whose key event sinks run while a message is retrieved, reads it with
+//! [`message_extra_info`] (`GetMessageExtraInfo`, Windows only) and bypasses its own keys with
+//! [`current_message_is_raumakey_injected`].
 
 use core::fmt;
 
@@ -223,6 +228,24 @@ pub const fn is_extended_key(virtual_key: u32) -> bool {
 /// True when `extra_info` is Raumakey's injection tag.
 pub const fn is_raumakey_extra_info(extra_info: usize) -> bool {
     extra_info as u64 == RAUMAKEY_INJECTED_TAG
+}
+
+/// The extra information of the message the calling thread retrieved last
+/// (`GetMessageExtraInfo`): for keyboard input, the `dwExtraInfo` its sender gave `SendInput`.
+/// A thread that has not retrieved input yet reads 0. The bits are returned unchanged, so a
+/// 32-bit value with the top bit set reads the same on i686 as on 64-bit targets.
+#[cfg(windows)]
+pub fn message_extra_info() -> usize {
+    // SAFETY: no preconditions; reads the calling thread's message state.
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetMessageExtraInfo() }.0 as usize
+}
+
+/// True when the message the calling thread is processing was injected by Raumakey: its
+/// [`message_extra_info`] is [`RAUMAKEY_INJECTED_TAG`] (see [`is_raumakey_extra_info`]). The
+/// TIP's key event sinks bypass such keys (matrix #39).
+#[cfg(windows)]
+pub fn current_message_is_raumakey_injected() -> bool {
+    is_raumakey_extra_info(message_extra_info())
 }
 
 /// What [`send`] injected.

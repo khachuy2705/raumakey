@@ -24,10 +24,26 @@ fn tooltips_are_nul_terminated_and_truncated_at_scalar_boundaries() {
 
 #[cfg(windows)]
 mod win {
+    use std::rc::Rc;
+
     use raumakey_windows::com::ComApartment;
+    use raumakey_windows::error::WinResult;
+    use raumakey_windows::icon::Icon;
     use raumakey_windows::shell::{
-        ShortcutSpec, create_shortcut, read_shortcut, remove_shortcut, taskbar_created_message,
+        NotifyIcon, ShortcutSpec, create_shortcut, read_shortcut, remove_shortcut,
+        taskbar_created_message,
     };
+    use windows::Win32::Foundation::HWND;
+
+    /// A notification icon sends its icon handle to the shell again with every later change
+    /// and every re-add after `TaskbarCreated`, so it shares ownership of the icon: the icon
+    /// cannot be destroyed while the notification icon may still send it. Adding one shows it,
+    /// so this checks the signatures only; `manual_notify_icon` runs them.
+    #[test]
+    fn notify_icons_share_ownership_of_their_icon() {
+        let _add: fn(HWND, u32, u32, Rc<Icon>, &str) -> WinResult<NotifyIcon> = NotifyIcon::add;
+        let _set_icon: fn(&mut NotifyIcon, Rc<Icon>) -> WinResult<()> = NotifyIcon::set_icon;
+    }
 
     #[test]
     fn taskbar_created_is_a_registered_message() {
@@ -80,17 +96,31 @@ mod win {
         assert!(remove_shortcut(&dir.path().join("x.txt")).is_err());
     }
 
-    /// Adds a real tray icon for a moment. Manual test only.
+    /// Adds a real tray icon for a moment, showing the first icon group of `shell32.dll`.
+    /// Manual test only.
     #[test]
     #[ignore = "manual: shows a notification-area icon"]
     fn manual_notify_icon() {
-        use raumakey_windows::shell::NotifyIcon;
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::WindowsAndMessaging::{IDI_APPLICATION, LoadIconW};
-        // SAFETY: loads a stock icon.
-        let icon = unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap();
-        let mut tray = NotifyIcon::add(HWND::default(), 1, 0x8001, icon, "Raumakey").unwrap();
+        use raumakey_windows::icon::{IconKind, icon_size};
+
+        use crate::support::{ResourceFile, group_icon_ids};
+
+        let file = ResourceFile::system("shell32.dll");
+        let first = *group_icon_ids(&file)
+            .first()
+            .expect("an integer icon group");
+        let size = icon_size(IconKind::Small).unwrap();
+        let icon = Rc::new(Icon::load(file.module(), first, size).unwrap());
+        let mut tray =
+            NotifyIcon::add(HWND::default(), 1, 0x8001, Rc::clone(&icon), "Raumakey").unwrap();
+        assert_eq!(
+            Rc::strong_count(&icon),
+            2,
+            "the notification icon keeps the icon"
+        );
         tray.set_tooltip("Raumakey test").unwrap();
+        tray.set_icon(Rc::clone(&icon)).unwrap();
         tray.delete().unwrap();
+        assert_eq!(Rc::strong_count(&icon), 1);
     }
 }
