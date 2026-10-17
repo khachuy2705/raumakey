@@ -1,8 +1,10 @@
 # Thiết kế viết lại Raumakey bằng Rust
 
-**Ngày:** 2026-10-16 (cập nhật lần cuối 2026-10-17: bổ sung trạng thái triển khai thành §20)
+**Ngày:** 2026-10-16 (cập nhật lần cuối 2026-10-17: bổ sung trạng thái triển khai thành §20;
+chuyển sang bản portable một file ở §21)
 
-**Trạng thái:** Đã được duyệt; đang triển khai (xem §20)
+**Trạng thái:** Đã được duyệt; đang triển khai (xem §20). §21 thay thế các phần nói về TIP TSF,
+installer và thư mục dữ liệu; khi có mâu thuẫn, §21 thắng.
 
 **Sản phẩm:** Raumakey
 
@@ -83,6 +85,10 @@ Các hợp đồng chuẩn là `InputEvent`, `EngineOptions`, `EngineState`, `Ed
 
 ### 5.2 Đường TSF
 
+> **Thay đổi ngày 2026-10-17 (D38, D39, §21):** bản phát hành không còn dùng đường TSF. Đường gõ
+> chính là hook bàn phím của controller (§5.3, §21.2). Mục này mô tả TIP, vẫn được giữ trong kho
+> nhưng không được phát hành.
+
 Đường nhập liệu mặc định là:
 
 ```text
@@ -99,6 +105,9 @@ Với đường TSF, engine chạy bên trong tiến trình của TIP. Phím gõ
 Nếu việc áp dụng qua TSF thất bại, context thay đổi, hoặc vùng khả dụng ngắn hơn `delete_before`, adapter không commit trạng thái kế tiếp được đề xuất. Nó kết thúc composition và reset hoặc cho phím đi qua (pass through) tuỳ theo chính sách.
 
 ### 5.3 Đường dự phòng (fallback)
+
+> **Thay đổi ngày 2026-10-17 (D39, §21.2):** trong bản portable, đây là đường gõ duy nhất: mọi host
+> dùng transport `SyntheticKey` qua hook bàn phím của `raumakey.exe`.
 
 `CompatibilityPolicy` chọn đúng một transport cho mỗi host:
 
@@ -135,6 +144,11 @@ Mỗi mục macro chứa một ID ổn định, trigger NFC, nội dung thay th�
 Bộ chuyển đổi hỗ trợ chuyển đổi văn bản trong bộ nhớ và các thao tác tường minh trên clipboard/tệp. Theo mặc định, chuyển đổi tệp không bao giờ ghi đè tệp nguồn. Chuyển đổi clipboard bị tắt đối với ô bảo mật và báo cáo xung đột quyền sở hữu thay vì thay thế nội dung clipboard mới hơn.
 
 ## 8. Cấu hình và lưu trữ bền vững
+
+> **Thay bởi D40 (§21.3):** thư mục dữ liệu là thư mục chứa `raumakey.exe`, với các tệp
+> `raumakey.toml`, `raumakey-macros.toml`, …; `%LOCALAPPDATA%\Raumakey` chỉ dùng khi thư mục đó
+> không ghi được. Chế độ portable bằng tệp đánh dấu bị bỏ. Phần còn lại của mục này (revision, ghi
+> nguyên tử, xung đột) vẫn áp dụng.
 
 Thư mục dữ liệu gốc mặc định:
 
@@ -175,6 +189,9 @@ Wire codec cũ (legacy) của EVKey là một Cargo feature tuỳ chọn tên `e
 
 ## 11. Controller native và UI
 
+> **Thay đổi ngày 2026-10-17 (D42, §21.5):** release đầu tiên chỉnh tuỳ chọn bằng menu khay; bảng
+> cài đặt và các tab được hoãn lại.
+
 Controller dùng một cửa sổ Win32 ẩn, một icon tray, và các hộp thoại native dạng modeless/modal. Bảng thu gọn hiển thị chế độ tiếng Việt, kiểu gõ, kiểu đặt dấu, và nút mở rộng/thu gọn. Các tab mở rộng bao gồm nhập liệu, phím tắt, macro, quy tắc ứng dụng, chuyển đổi, hành vi hệ thống, và thông tin sản phẩm.
 
 Thread UI không thực hiện công việc engine, tệp, mạng, hay IPC chặn (blocking). Công việc nền gửi (post) các kết quả có kiểu về cửa sổ ẩn. `TaskbarCreated` tạo lại icon tray mà không thay đổi chế độ. Mọi resource và icon mà người dùng nhìn thấy đều được tạo mới cho Raumakey.
@@ -183,6 +200,9 @@ Phím tắt được phân loại trước khi vào engine và bao gồm phím b
 
 ## 12. Đăng ký COM/TSF và vòng đời
 
+> **Thay đổi ngày 2026-10-17 (D38, §21.1):** TIP không còn được phát hành hay đăng ký. Mục này áp
+> dụng khi TIP được phát hành trở lại.
+
 TIP là một `cdylib` Rust chỉ export các hàm COM bắt buộc. Mọi entry point FFI và COM đều bắt panic và chuyển lỗi thành giá trị HRESULT; không có unwind nào vượt qua ranh giới ABI.
 
 Việc đăng ký dùng CLSID/GUID profile cố định của Raumakey, registry view WOW64 đúng với bitness của DLL, các category TIP bàn phím, và các khả năng đã khai báo. Trình tự của installer là đăng ký COM, cài đặt profile ngôn ngữ, kiểm chứng trạng thái registry/profile, rồi commit trạng thái installer. Khi thất bại, chỉ các mục thuộc sở hữu của Raumakey được hoàn tác (rollback).
@@ -190,6 +210,11 @@ Việc đăng ký dùng CLSID/GUID profile cố định của Raumakey, registry
 Việc kích hoạt tạo trạng thái riêng cho từng tài liệu và advise các sink cần thiết. Việc huỷ kích hoạt kết thúc composition, unadvise các sink, gỡ các hook, huỷ các công việc có giới hạn, và giải phóng mọi tài nguyên. Điều kiện cho phép unload DLL phản ánh số lượng COM object và lock còn tồn tại.
 
 ## 13. Ranh giới khởi động, installer và cập nhật
+
+> **Thay bởi D38 và D41 (§21.1, §21.4):** không có installer, MSI hay script cài đặt; package x86_64
+> chỉ chứa `raumakey.exe` và tài liệu. Khởi động cùng Windows là một mục của menu khay, tạo
+> shortcut trong thư mục Startup. Phần về manifest `asInvoker`, CRT tĩnh, ARM64 compile-gated và
+> updater vẫn áp dụng.
 
 Manifest mặc định của tệp thực thi là `asInvoker` với `uiAccess=false`. Tự khởi động thông thường dùng một shortcut trong thư mục Startup. Một scheduled task được nâng quyền chỉ được tạo sau khi người dùng chọn tường minh, và được gỡ bỏ một cách idempotent khi bị tắt.
 
@@ -528,3 +553,130 @@ Xem `docs/superpowers/plans/2026-10-17-review-followup.md` để biết phạm v
 trên Windows: 1,241 test với feature mặc định và 1,315 test với mọi feature tương thích; 8 test
 thủ công hiện có vẫn bị bỏ qua trong mỗi lần chạy. `xtask` có 102 test đạt. Các đường thất bại
 của CI mặc định và release-gate đã được thực thi và ghi nhận đúng `not verified`.
+
+## 21. Bản portable một file (thay đổi thiết kế ngày 2026-10-17)
+
+Chủ dự án quyết định đổi cách phát hành. Với TIP TSF, người dùng phải đăng ký COM vào `HKLM`, chạy
+script cài đặt bằng quyền quản trị, rồi thêm bàn phím trong Settings. Cách đó quá phức tạp so với
+các bộ gõ tương đương như UniKey và EVKey, vốn chỉ cần một tệp exe. Mục này mô tả thiết kế mới.
+Kế hoạch §15 ghi các quyết định D38–D42, còn kế hoạch §16 ghi các task và trạng thái của chúng.
+Khi mục này mâu thuẫn với các mục trước, mục này thắng.
+
+### 21.1 Phát hành (D38)
+
+- Raumakey phát hành dưới dạng **một tệp `raumakey.exe`** (x86_64, CRT tĩnh, manifest
+  `asInvoker`). Người dùng chép tệp vào thư mục bất kỳ và chạy trực tiếp. Không có installer,
+  không cần quyền quản trị, không đăng ký COM/TSF và không ghi registry.
+- Package x86_64 chỉ gồm `raumakey.exe`, `README.txt`, `LICENSE`, `THIRD_PARTY.md`, `SHA256SUMS`
+  và `manifest.json`. TIP, script cài đặt, test runner và MSI không còn nằm trong package. Package
+  ARM64 vẫn chỉ được kiểm tra biên dịch (compile-gated).
+- Mã của TIP (`raumakey-tsf`), các lệnh `install`/`uninstall` và các khối đăng ký TSF vẫn ở lại kho
+  mã, vẫn được build và kiểm tra (`cross`, `inspect`), nhưng không được phát hành. Chúng có thể
+  quay lại sau này dưới dạng một chế độ nâng cao.
+- Bước `installer-dry-run` của cổng phát hành được thay bằng `portable-check`: package chứa đúng
+  các tệp trên, và `raumakey.exe --version` chạy được.
+
+### 21.2 Đường gõ: hook bàn phím (D39)
+
+```text
+phím vật lý
+  -> WH_KEYBOARD_LL trên luồng hook của raumakey.exe
+  -> KeyStroke: phím ảo, scan code, phím bổ trợ, văn bản theo layout của cửa sổ foreground
+  -> ServiceCore (crate raumakey-session, dùng chung với TIP) -> VietnameseEngine
+  -> EditTransaction
+  -> SendInput: Backspace × delete_before, rồi ký tự Unicode (KEYEVENTF_UNICODE),
+     gắn RAUMAKEY_INJECTED_TAG
+  -> phím gốc bị chặn (hook trả về khác 0) khi transaction tiêu thụ nó
+```
+
+- Engine chạy trong `raumakey.exe`. Hook không đọc được văn bản của ứng dụng, nên mọi sửa đổi là
+  sửa "mù" dựa trên phần văn bản mà engine tự sở hữu, như UniKey và EVKey vẫn làm.
+- Lõi phiên của TIP được tách thành crate `raumakey-session`, không phụ thuộc Windows, để TIP và
+  hook dùng chung một bộ quy tắc: phân loại phím tắt (D24), bỏ qua phím do Raumakey gửi (ma trận
+  #39), kết thúc từ, macro, chính sách ô bảo mật (D25).
+- Mỗi tài liệu có trạng thái engine riêng, xác định bằng cặp (cửa sổ foreground, cửa sổ có focus).
+  Từ kết thúc khi click chuột (`WH_MOUSE_LL`), khi đổi cửa sổ foreground hoặc focus, khi gõ phím
+  điều hướng, và khi gõ tổ hợp Ctrl/Alt/Win.
+- Phím do Raumakey gửi mang `RAUMAKEY_INJECTED_TAG` nên hook cho chúng đi qua.
+- Phím tắt bật/tắt tiếng Việt (mặc định Ctrl+Shift, D5) do lõi phiên phân loại, như ở TIP (D24).
+- Với cửa sổ của tiến trình chạy quyền cao hơn, UIPI chặn `SendInput`, nên hook cho phím đi qua mà
+  không biến đổi. Muốn gõ tiếng Việt ở đó, người dùng chạy `raumakey.exe` bằng quyền quản trị.
+- Về ô mật khẩu, hook chỉ nhận ra Edit control có `ES_PASSWORD` và áp dụng chế độ ô bảo mật của
+  chính sách cho nó (D25). Hook không nhận ra được các ô mật khẩu khác, ví dụ ô mật khẩu trên trình
+  duyệt.
+- Callback của hook phải trả lời nhanh, dưới `LowLevelHooksTimeout`. Engine và `SendInput` chạy
+  ngay trong callback, không có I/O và không chờ khoá của luồng khác. Thay đổi cấu hình được chuyển
+  tới luồng hook và áp dụng ở phím kế tiếp.
+- D39 thay thế D26: hook giờ là transport gõ, không chỉ đọc phím tắt.
+- Rủi ro đã biết:
+  - Ứng dụng có tự hoàn thành (thanh địa chỉ trình duyệt, Excel) có thể làm lệch các phím
+    Backspace.
+  - Phần mềm diệt virus hoặc chống gian lận có thể cảnh báo một hook bàn phím toàn cục.
+  - Hai bộ gõ cùng chạy (UniKey và Raumakey) sẽ biến đổi cùng một phím.
+
+### 21.3 Cấu hình (D40)
+
+- Thư mục dữ liệu là **thư mục chứa `raumakey.exe`**. Các tệp:
+  - `raumakey.toml`: cấu hình;
+  - `raumakey-macros.toml`: macro, tuỳ chọn;
+  - `raumakey-app-rules.toml` và `raumakey-migration.json`;
+  - thư mục `raumakey-logs\`.
+
+  Tên có tiền tố vì các tệp nằm chung với tệp khác của người dùng. Mỗi tệp store có thêm một tệp
+  khoá `<tệp>.lock`.
+- Lần chạy đầu, khi chưa có `raumakey.toml`, Raumakey ghi cấu hình mặc định vào đó. Từ lần chạy thứ
+  hai, Raumakey đọc lại tệp này. Một tệp không đọc được không làm controller dừng: controller chạy
+  với cấu hình mặc định, báo lỗi, và không âm thầm ghi đè tệp hỏng.
+- Raumakey chọn thư mục theo thứ tự sau:
+  1. Nếu đã có `raumakey.toml` cạnh exe, dùng thư mục của exe, kể cả khi thư mục đó không ghi được.
+     Khi đó việc lưu thất bại và Raumakey báo lỗi.
+  2. Nếu chưa có, dùng thư mục của exe khi nó ghi được và không nằm trong một thư mục được bảo vệ:
+     Program Files, Program Files (x86), thư mục Windows, hoặc thư mục tạm của người dùng
+     (`%TEMP%`). Explorer chạy exe nằm trong tệp ZIP từ `%TEMP%` rồi xoá đi.
+  3. Ngoài ra, dùng `%LOCALAPPDATA%\Raumakey`.
+
+  Nhờ vậy, một bản trong Program Files dùng cùng một tệp `%LOCALAPPDATA%` dù chạy bằng quyền thường
+  hay quyền quản trị. Rủi ro được chấp nhận: khi chạy bằng quyền quản trị, Raumakey đọc một tệp mà
+  chương trình chạy quyền thường ghi được. Chế độ portable bằng tệp đánh dấu `raumakey.portable` bị
+  bỏ. D40 thay thế D9 và đoạn đầu của §8.
+- Khi Raumakey ghi lại tệp, các dòng comment và cách trình bày trong tệp không được giữ, và một giá
+  trị không hợp lệ được thay bằng giá trị mặc định.
+- Thay đổi từ menu được ghi ngay. Tệp sửa bằng tay được nạp lại trong vòng vài giây, vì
+  controller kiểm tra tệp mỗi 2 giây.
+
+### 21.4 Khởi động cùng Windows (D41)
+
+- Mục menu "Khởi động cùng Windows": khi bật, Raumakey tạo shortcut `Raumakey.lnk` trỏ tới
+  `raumakey.exe` đang chạy, đặt trong thư mục Startup của người dùng; khi tắt, Raumakey xoá
+  shortcut đó. Trạng thái được lưu ở `[system] startup` (`shortcut` hoặc `none`). Nếu exe bị
+  chuyển sang chỗ khác, lần chạy kế tiếp sửa lại shortcut.
+- Việc này không cần quyền quản trị. Chế độ `elevated-task` chỉ còn dùng được qua dòng lệnh
+  (`raumakey startup elevated-task`).
+
+### 21.5 Giao diện (D42)
+
+- Click vào biểu tượng V/E để đổi chế độ. Menu khay có các mục:
+  - "Gõ tiếng Việt (Ctrl+Shift)";
+  - "Telex", "VNI", "VIQR";
+  - "Kiểm tra chính tả";
+  - "Đặt dấu kiểu mới (oà, uý)";
+  - "Gõ tắt (macro)";
+  - "Khởi động cùng Windows";
+  - "Mở file cấu hình", mở `raumakey.toml` bằng Notepad;
+  - "Giới thiệu", hiện phiên bản và đường dẫn của tệp cấu hình;
+  - "Thoát".
+- Bảng cài đặt và các tab của §11 được hoãn lại.
+
+### 21.6 Những phần bị thay thế hoặc hoãn
+
+| Phần | Trước | Từ 2026-10-17 |
+|---|---|---|
+| §5.2 Đường TSF | Đường gõ mặc định | Không phát hành; mã giữ trong kho |
+| §5.3 Đường dự phòng | Chỉ cho host đặc biệt | Đường gõ duy nhất (D39) |
+| §8 Thư mục dữ liệu | `%LOCALAPPDATA%\Raumakey`, portable bằng tệp đánh dấu | Thư mục của exe (D40) |
+| §10 IPC giữa TIP và controller | Kênh điều khiển có kiểu | Không cần khi không có TIP; hoãn lại |
+| §11 Bảng cài đặt | Bảng thu gọn và các tab | Menu khay (D42); bảng hoãn lại |
+| §12 Đăng ký COM/TSF | Bước cài đặt | Không phát hành |
+| §13 Installer, MSI, script | Có | Không có (D38); khởi động cùng Windows qua menu (D41) |
+| §2 tiêu chí 5 | Đăng ký danh tính COM/TSF mới | Hoãn lại cùng TIP |
+| Kế hoạch D9, D26, D33 | Thư mục dữ liệu, hook chỉ đọc phím tắt, nội dung package | Thay bởi D40, D39, D38 |

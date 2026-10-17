@@ -1,8 +1,9 @@
 # Kế hoạch triển khai Raumakey
 
 **Ngày:** 2026-10-16 (cập nhật lần cuối 2026-10-17: hợp đồng bằng chứng cho cổng phát hành ở §12,
-trạng thái triển khai ở §14, các quyết định ở §15)
-**Trạng thái:** Đang áp dụng; việc triển khai đang được tiến hành (xem §14)
+trạng thái triển khai ở §14, các quyết định ở §15, bản portable một tệp ở D38–D42 và §16)
+**Trạng thái:** Đang áp dụng; việc triển khai đang được tiến hành (xem §14 và §16). D38–D42 thay
+thế các phần nói về TIP, installer và thư mục dữ liệu (thiết kế §21).
 **Đầu vào:** `docs/superpowers/specs/2026-10-16-raumakey-design.md` (thiết kế, có thẩm quyền),
 `docs/reference/evkey_clean_room_spec.md` (tài liệu tham chiếu hành vi clean-room),
 `docs/reference/evkey_compatibility_test_matrix.md` (các vector tương thích).
@@ -649,7 +650,8 @@ VIQR: tie^'ng→tiếng  vie^.t→việt  ngu+o+`i→người  \'→'  dd→đ
 
 - `DataRoot::resolve(exe_dir, local_app_data) -> DataRoot`: portable khi và chỉ khi
   `exe_dir/raumakey.portable` tồn tại → `exe_dir/data/`; nếu không thì `%LOCALAPPDATA%/Raumakey/`
-  (D9). Không bao giờ suy ra từ quyền ghi.
+  (D9). Không bao giờ suy ra từ quyền ghi. (Thay bởi D40: thư mục dữ liệu là thư mục của exe khi
+  ghi được, ngược lại là `%LOCALAPPDATA%\Raumakey`.)
 - Các tài liệu (mỗi tài liệu có `version: u32`, `revision: u64`, và một map `extensions` giữ lại
   các khoá không xác định):
   - `ConfigDocument` → `config.toml` (các phần `input`, `macros`, `hotkeys`, `system`,
@@ -1288,7 +1290,8 @@ merge, code vẫn có thể theo văn bản trước đó.
   này thay thế hàng của §3.8 vốn khiến engine bỏ qua mọi ô bảo mật. Một host không bảo mật mà quy
   tắc của nó tắt tiếng Việt vẫn chạy engine ở chế độ tiếng Anh, nên `macros_when_disabled` vẫn hoạt
   động ở đó.
-- **D26 — Quyền riêng tư của keyboard hook trong controller (sửa đổi D24).** Keyboard hook mức thấp
+- **D26 — Quyền riêng tư của keyboard hook trong controller (sửa đổi D24; thay bởi D39 cho bản
+  portable, nơi hook chạy engine cho mọi host).** Keyboard hook mức thấp
   toàn cục vẫn là nơi duy nhất sở hữu phím tắt khi có TIP đang kết nối. Handler của nó phân loại
   phím tắt chỉ từ virtual key và trạng thái phím bổ trợ (modifier), không lưu phím nào, không ghi
   log gì, và chỉ chạy engine cho các host có transport đã phân giải là `SyntheticKey` hoặc
@@ -1329,7 +1332,8 @@ merge, code vẫn có thể theo văn bản trước đó.
   bản macro. Thiết kế §9 cần được đồng bộ với điều này.
 - **D32 — Thứ tự ưu tiên của quy tắc ứng dụng.** Trong cùng một tầng của §6, tập có tên hoặc quy
   tắc được khai báo đầu tiên quyết định từng trường.
-- **D33 — Nội dung package.** Ngoài các tệp nhị phân của thiết kế §13, package x64 còn kèm theo
+- **D33 — Nội dung package (thay bởi D38).** Ngoài các tệp nhị phân của thiết kế §13, package x64
+  còn kèm theo
   `tools/raumakey-test-runner.exe`, `install.ps1`, `uninstall.ps1` và một README. README viết bằng
   tiếng Việt, mã hoá UTF-8 có BOM để mọi trình soạn thảo trên Windows nhận đúng bảng mã; hai script
   vẫn là ASCII vì Windows PowerShell 5.1 đọc file không có BOM theo bảng mã ANSI.
@@ -1347,3 +1351,62 @@ merge, code vẫn có thể theo văn bản trước đó.
   người dùng có quyền ghi, và in ra một cảnh báo trong trường hợp đó. Rủi ro được chấp nhận: một
   tiến trình của người dùng có quyền ghi vào thư mục đó có thể thay thế một DLL mà sau đó mọi ứng
   dụng đều nạp.
+- **D38 — Bản portable một tệp (thay thế D33 và phần cài đặt của thiết kế §12–§13).** Raumakey
+  phát hành dưới dạng một tệp `raumakey.exe` x86_64. Người dùng chạy tệp trực tiếp, không cần
+  installer, quyền quản trị hay đăng ký COM/TSF. Package x64 chỉ gồm `raumakey.exe`, `README.txt`,
+  `LICENSE`, `THIRD_PARTY.md`, `SHA256SUMS` và `manifest.json`. TIP, `install.ps1`,
+  `uninstall.ps1`, test runner và WiX/MSI không còn được phát hành, nhưng mã của chúng vẫn ở lại
+  kho. Cổng phát hành thay `installer-dry-run` bằng `portable-check` (thiết kế §21.1).
+- **D39 — Hook bàn phím là transport gõ (thay thế D26).** `raumakey.exe` gõ bằng
+  `WH_KEYBOARD_LL` và `WH_MOUSE_LL` trên luồng hook riêng. Mỗi phím được dịch theo layout của cửa
+  sổ foreground rồi đưa qua `ServiceCore` của crate mới `raumakey-session`, tách ra từ TIP. Văn bản
+  được sửa bằng `SendInput`: gửi Backspace, rồi ký tự Unicode, tất cả gắn `RAUMAKEY_INJECTED_TAG`.
+  Cửa sổ chạy quyền cao hơn nhận phím nguyên vẹn. Hook chỉ nhận ra ô mật khẩu là Edit control
+  `ES_PASSWORD` (thiết kế §21.2).
+- **D40 — Cấu hình nằm cạnh exe (thay thế D9).** Thư mục dữ liệu là thư mục chứa `raumakey.exe`
+  khi đã có `raumakey.toml` ở đó, hoặc khi thư mục đó ghi được và không nằm trong Program Files,
+  Program Files (x86), thư mục Windows hay `%TEMP%`. Ngoài ra Raumakey dùng
+  `%LOCALAPPDATA%\Raumakey`, nên chạy bằng quyền thường hay quyền quản trị cũng dùng cùng một tệp.
+  Tên tệp:
+  `raumakey.toml`, `raumakey-macros.toml`, `raumakey-app-rules.toml`, `raumakey-migration.json`,
+  `raumakey-logs\`. Lần chạy đầu ghi cấu hình mặc định; các lần sau đọc lại. Tệp sửa bằng tay được
+  nạp lại sau tối đa khoảng 2 giây. Chế độ portable bằng tệp đánh dấu bị bỏ (thiết kế §21.3).
+- **D41 — Khởi động cùng Windows qua menu khay.** Bật mục này thì Raumakey tạo shortcut
+  `Raumakey.lnk` trong thư mục Startup của người dùng, trỏ tới exe đang chạy; tắt thì xoá shortcut.
+  Trạng thái lưu ở `[system] startup`. Nếu exe bị chuyển chỗ, lần chạy kế tiếp sửa lại shortcut.
+  `elevated-task` chỉ còn qua dòng lệnh (thiết kế §21.4).
+- **D42 — Menu khay thay cho bảng cài đặt.** Menu có các mục:
+  - "Gõ tiếng Việt (Ctrl+Shift)";
+  - "Telex", "VNI", "VIQR";
+  - "Kiểm tra chính tả";
+  - "Đặt dấu kiểu mới (oà, uý)";
+  - "Gõ tắt (macro)";
+  - "Khởi động cùng Windows";
+  - "Mở file cấu hình";
+  - "Giới thiệu";
+  - "Thoát".
+
+  Mỗi thay đổi được ghi ngay vào `raumakey.toml`. Bảng cài đặt của §10.2 được hoãn lại (thiết kế
+  §21.5).
+
+---
+
+## 16. Bản portable một tệp (2026-10-17)
+
+Mục này theo dõi các task của D38–D42. Thứ tự §14.5 vẫn đúng với những phần không bị thay thế:
+TIP (bước 4) và IPC hub (một phần của bước 5) được hoãn lại vì bản phát hành không có TIP.
+
+### 16.1 Task
+
+| # | Task | Phạm vi |
+|---|---|---|
+| P1 | Tách lõi phiên | Crate `raumakey-session`, chuyển nguyên `crates/raumakey-tsf/src/session/` cùng test; TIP re-export |
+| P2 | Cấu hình portable | `DataRoot` theo thư mục exe, có đường dự phòng `%LOCALAPPDATA%`; tên tệp mới; module `settings` của controller (lần chạy đầu, nạp lại, snapshot cho lõi phiên, thay đổi từ menu, phát hiện sửa tay) |
+| P3 | Package portable | `xtask package`: chỉ exe và tài liệu; bỏ WiX/MSI và script; `README.txt` mới; bước `portable-check` |
+| P4 | Gõ bằng hook | Module `typing` của controller: `ServiceCore` ở vai trò hook, theo dõi phím bổ trợ, phím lặp và Caps Lock từ sự kiện hook, tài liệu theo cửa sổ foreground, sửa mù bằng `SendInput`, bỏ qua cửa sổ quyền cao hơn |
+| P5 | Ghép nối | Chế độ chạy: nạp cấu hình, khởi động luồng hook, menu khay D42, khởi động cùng Windows D41, nạp lại khi tệp bị sửa, mục Giới thiệu |
+| P6 | Tài liệu và bản phát hành | Thiết kế §21, kế hoạch §15–§16, `GUIDE.md`, `README.md`, bản build trong `release\` |
+
+### 16.2 Trạng thái
+
+Mục này được cập nhật khi các task được merge.
