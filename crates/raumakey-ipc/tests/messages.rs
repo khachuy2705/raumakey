@@ -11,7 +11,7 @@ use raumakey_model::hotkey::{Hotkey, HotkeyConfig, HotkeyKey};
 use raumakey_model::input::vk;
 use raumakey_model::keymap::{KEYMAP_SCHEMA_VERSION, KeyAction, KeyBinding, KeyMap, Tone};
 use raumakey_model::macros::{BoundaryPolicy, CasePolicy, MacroEntry, MacroId};
-use raumakey_model::options::EngineOptions;
+use raumakey_model::options::{EngineOptions, InputMethod};
 use raumakey_model::policy::{AppRule, CompatibilityConfig, NamedSet, ProbeRecord, RuleAction};
 use serde_json::json;
 
@@ -481,6 +481,30 @@ fn invalid_options_and_keymaps_are_malformed() {
     assert_eq!(
         s.validate(),
         Err(IpcError::Malformed(MalformedReason::InvalidKeymap))
+    );
+}
+
+#[test]
+fn a_user_defined_method_needs_its_key_map_in_the_snapshot() {
+    let mut s = RuntimeSnapshot::defaults_v1();
+    s.options.input_method = InputMethod::UserDefined;
+    s.options.user_keymap_id = Some("mine".to_owned());
+    let missing = Err(IpcError::Malformed(MalformedReason::InvalidKeymap));
+    assert_eq!(s.validate(), missing, "no key maps at all");
+
+    s.keymaps.push(keymap("other"));
+    assert_eq!(s.validate(), missing, "only another key map");
+
+    s.keymaps.push(keymap("mine"));
+    assert_eq!(s.validate(), Ok(()));
+    assert!(decodes_back(&Message::RuntimeSnapshot(s.clone())));
+
+    s.options.input_method = InputMethod::Telex;
+    s.keymaps.clear();
+    assert_eq!(
+        s.validate(),
+        Ok(()),
+        "built-in methods need no carried key map"
     );
 }
 

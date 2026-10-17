@@ -12,7 +12,7 @@ use raumakey_model::host::ExeName;
 use raumakey_model::hotkey::{Hotkey, HotkeyConfig};
 use raumakey_model::keymap::KeyMap;
 use raumakey_model::macros::MacroEntry;
-use raumakey_model::options::EngineOptions;
+use raumakey_model::options::{EngineOptions, InputMethod};
 use raumakey_model::policy::{CompatibilityConfig, ProbeRecord};
 use serde::{Deserialize, Serialize};
 
@@ -270,8 +270,9 @@ impl RuntimeSnapshot {
         }
     }
 
-    /// Checks entry-count limits first, then option and key map invariants, then that every
-    /// hotkey and executable name reads back as itself
+    /// Checks entry-count limits first, then option and key map invariants (including that a
+    /// user-defined input method names one of the snapshot's key maps, which the engine needs
+    /// for every key), then that every hotkey and executable name reads back as itself
     /// ([`MalformedReason::InvalidHotkey`], [`MalformedReason::InvalidExeName`]), so that a
     /// snapshot that passes also decodes on every client.
     pub fn validate(&self) -> Result<(), IpcError> {
@@ -292,6 +293,16 @@ impl RuntimeSnapshot {
             keymap
                 .validate()
                 .map_err(|_| IpcError::Malformed(MalformedReason::InvalidKeymap))?;
+        }
+        if self.options.input_method == InputMethod::UserDefined {
+            let selected = self.options.user_keymap_id.as_deref();
+            if !self
+                .keymaps
+                .iter()
+                .any(|keymap| Some(keymap.id.as_str()) == selected)
+            {
+                return Err(IpcError::Malformed(MalformedReason::InvalidKeymap));
+            }
         }
         let hotkeys = &self.hotkeys;
         for hotkey in hotkeys.toggle_mode.iter().chain(&hotkeys.hard_reset) {

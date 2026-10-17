@@ -1020,7 +1020,7 @@ behavior was verified in a Windows host application (§0 rule 6).
 | 1 | Done | Workspace, toolchain pin (Rust 1.99.1, three MSVC targets), `LICENSE`, `THIRD_PARTY.md`, `deny.toml`, `raumakey-model` | `THIRD_PARTY.md` corrections (design §20.6 item 9); §1.1 and §1.3 do not match the manifests |
 | 2 | Done (library) | `raumakey-engine` with every §3.10 golden vector; `raumakey-macro` | No test runs the engine with the real `MacroTable`; the Circumflex fallback with spell checking off has no test (design §20.8 item 9); the macro defects in §14.4 items 1, 2, and 4 |
 | 3 | Mostly done (library) | `raumakey-config`, `raumakey-converter`, `raumakey-migrate` (sources, parsing, commit with rollback, idempotence) | Commit durability (design §20.7); a Windows `LegacyRegistry` adapter; default EVKey folder discovery; the `migrate` and `convert` commands |
-| 4 | Done (library) | `raumakey-policy`; `raumakey-ipc` with frames, messages, client and server sessions, backoff, and the `evkey-compat` codec | The controller's server hub and snapshot builder; `RuntimeSnapshot::validate` (§14.4 item 3); the policy and the engine disagree on `Restricted` secure fields (design §20.8 item 1) |
+| 4 | Done (library) | `raumakey-policy`; `raumakey-ipc` with frames, messages, client and server sessions, backoff, and the `evkey-compat` codec | The controller's server hub and snapshot builder; the policy and the engine disagree on `Restricted` secure fields (design §20.8 item 1) |
 | 5 | Building blocks only | `raumakey-resources`; `raumakey-windows` wrappers for errors, panic guards, strings, handles, SIDs, object names, security, pipes, registry, known folders, file replacement, clipboard, input, hooks, foreground, keyboard, processes, shell, task scheduler, COM apartments, single instance, and legacy objects | No `build.rs` calls `raumakey-resources`; wrappers for windows, message-only windows, the message loop and `PostMessageW`, dialogs, icons, the module, and `GetMessageExtraInfo` (most are in §14.3), and the building blocks of §14.5 item 3; `raumakey-controller` is `fn main() {}` |
 | 6 | Registration code only | TSF registration planner, executor, and verification in `raumakey-windows`, tested with fakes | `raumakey-tsf` is a doc comment; verification does not enumerate the profile (§10.4); D17 and D21 have no decision text |
 | 7 | Partial | `xtask` commands `ci`, `cross`, `inspect`, `package`, `audit`, `notices`, and `release-gate` | `raumakey-tests` (fixtures, contract suites, fuzz targets, `fuzz_smoke`, runner); `fuzz/`; PowerShell suite; manual checklist; the `xtask` items of design §20.6 item 7 that the follow-up left open (§14.5 item 7); documentation (§14.5 item 8) |
@@ -1059,8 +1059,8 @@ Once this work is merged, `xtask ci` can run its fuzz step, and this section mus
 ### 14.4 Defects found after design §20
 
 The work in §14.3 found these defects; item 4 shows that the "Silent fallback" risk of design
-§20.7 is reachable with valid input. Each was confirmed against the code in this revision, and
-none is fixed yet.
+§20.7 is reachable with valid input. Each was confirmed against the code of `4507b1b`. Item 3 is
+fixed; items 1, 2, and 4 wait for the decisions of §14.5 step 2.
 
 1. `MacroTable` accepts triggers that contain boundary punctuation, such as `v.v`. When no
    input-method action consumes the punctuation key, the engine commits the word at it (§3.8),
@@ -1073,10 +1073,10 @@ none is fixed yet.
    With the defaults no trigger of 33–64 scalars expands. Marks and tones can add up to four
    keys (Telex `dduwowngf` types the five-scalar `đường` in nine keys), so some triggers of
    29–32 scalars fail too, and a lower limit fails shorter triggers.
-3. `RuntimeSnapshot::validate` accepts `UserDefined` with a `user_keymap_id` that is not among the
-   snapshot's key maps. The engine then returns `UnsupportedInputMethod` for every character, so
-   an adapter that relies on `validate` alone passes every key through. The session core in
-   §14.3 checks the key map itself.
+3. Fixed on 2026-10-17. `RuntimeSnapshot::validate` accepted `UserDefined` with a
+   `user_keymap_id` that was not among the snapshot's key maps, and the engine then returned
+   `UnsupportedInputMethod` for every character. `validate` now rejects such a snapshot with
+   `InvalidKeymap` (test `a_user_defined_method_needs_its_key_map_in_the_snapshot`).
 4. The 4,096-scalar replacement limit (§4) does not keep a macro's insert within the 8,192-unit
    insert limit (§2.7). The insert is the replacement in the configured normalization plus a
    printable delimiter, so 4,096 astral scalars, or more than 2,730 letters such as `ệ` with NFD
@@ -1090,8 +1090,7 @@ revision commits the `xtask` fixes of the 2026-10-17 follow-up. Steps 7 and 8 do
 steps 3–6 and may run in parallel with them (§13). Every step records its failing test runs and
 its independent review (§0 rule 1, §13).
 
-1. Review and merge the work in §14.3. Fix §14.4 item 3 test-first: `RuntimeSnapshot::validate`
-   must reject `UserDefined` when `user_keymap_id` names no key map in the snapshot.
+1. Review and merge the work in §14.3.
 2. Decide design §20.8 items 1–9 and §14.4 items 1, 2, and 4, record the answers as decisions
    (item 5 is answered by writing D17 and D21), and align the code and tests with them.
 3. Add the `build.rs` files and the remaining `raumakey-windows` building blocks: dialogs and
@@ -1133,8 +1132,8 @@ Run on 2026-10-17 on the Windows 11 x86_64 development host (Rust 1.99.1, `rust-
 |---|---|
 | `cargo fmt --all --check` | Pass |
 | `cargo xtask ci --no-fuzz`: Clippy with `-D warnings`, default features and all five `evkey-compat` features | Pass |
-| `cargo xtask ci --no-fuzz`: `cargo test --locked --workspace` | 1,241 passed, 0 failed, 8 ignored |
-| The same tests with all five `evkey-compat` features | 1,315 passed, 0 failed, 8 ignored |
+| `cargo xtask ci --no-fuzz`: `cargo test --locked --workspace` | 1,242 passed, 0 failed, 8 ignored |
+| The same tests with all five `evkey-compat` features | 1,316 passed, 0 failed, 8 ignored |
 
 The 8 ignored tests are the manual `raumakey-windows` tests (design §15.1). `cargo xtask ci`
 without `--no-fuzz` was not rerun: the follow-up observed its intended failure at the missing
