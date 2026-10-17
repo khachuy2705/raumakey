@@ -15,10 +15,11 @@ use core::fmt;
 /// 4. replace the covered units with [`insert`](Self::insert) and collapse the selection to
 ///    the end of the inserted text.
 ///
-/// Nothing may change in the document when the edit fails. The request is built by the core
-/// only: `expected` always holds exactly `delete_before` units, the cut never splits a
-/// surrogate pair, and `insert` is well-formed UTF-16 within
+/// Nothing may change in the document when the edit fails. A port receives requests from the
+/// core only, and in those `expected` always holds exactly `delete_before` units, the cut
+/// never splits a surrogate pair, and `insert` is well-formed UTF-16 within
 /// [`MAX_INSERT_UNITS`](raumakey_model::transaction::MAX_INSERT_UNITS).
+/// ([`new`](Self::new) is public so that tests of a port can build requests of their own.)
 ///
 /// `Debug` shows only the unit counts: the request carries document text.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,7 +32,11 @@ pub struct EditRequest<'a> {
 impl<'a> EditRequest<'a> {
     /// A request that replaces `expected` (the units right before the caret) by `insert`.
     /// The caller guarantees that `expected` holds at most `u32::MAX` units.
-    pub(crate) fn new(expected: &'a [u16], insert: &'a [u16]) -> Self {
+    ///
+    /// The core builds every request it hands to a port with this function. It is public
+    /// only for the tests of a port, and it checks nothing else: a request built elsewhere
+    /// keeps the promises listed on [`EditRequest`] only as far as its caller does.
+    pub fn new(expected: &'a [u16], insert: &'a [u16]) -> Self {
         Self {
             delete_before: u32::try_from(expected.len()).unwrap_or(u32::MAX),
             expected,
@@ -98,7 +103,7 @@ impl std::error::Error for EditError {}
 
 /// A change of a document that Raumakey's own edit sessions did not make, as the COM layer
 /// reads it from the edit record of `ITfTextEditSink::OnEndEdit` and reports it to
-/// [`ServiceCore::selection_changed`](crate::session::ServiceCore::selection_changed).
+/// [`ServiceCore::selection_changed`](crate::ServiceCore::selection_changed).
 ///
 /// [`Inserted`](Self::Inserted) and [`Deleted`](Self::Deleted) describe what a key let
 /// through to the application does when it arrives in a plain text control; the core compares
@@ -141,9 +146,9 @@ impl fmt::Debug for SelectionChange<'_> {
 /// The edit-session abstraction of one document.
 ///
 /// The TSF implementation of the COM layer requests one synchronous read-write edit session
-/// per call and performs the steps described on [`EditRequest`] inside it
-/// ([`crate::adapter::edit`]). Tests use a fake
-/// document. Implementations must not call back into the core.
+/// per call and performs the steps described on [`EditRequest`] inside it (the
+/// `adapter::edit` module of `raumakey_tip`). Tests use a fake document. Implementations must
+/// not call back into the core.
 pub trait DocumentPort {
     /// Performs `request` in one edit session, or changes nothing and says why not.
     fn replace_before_caret(&mut self, request: &EditRequest<'_>) -> Result<(), EditError>;

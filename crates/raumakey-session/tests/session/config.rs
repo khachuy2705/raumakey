@@ -14,7 +14,7 @@ use raumakey_model::keymap::{KEYMAP_SCHEMA_VERSION, KeyAction, KeyBinding, KeyMa
 use raumakey_model::macros::{BoundaryPolicy, CasePolicy, MacroEntry, MacroId};
 use raumakey_model::options::{EngineOptions, InputMethod};
 use raumakey_model::policy::{AppRule, CompatibilityConfig, RuleAction, SecureFieldMode};
-use raumakey_tip::session::{ServiceCore, SnapshotError, build_macro_table};
+use raumakey_session::{ServiceCore, SnapshotError, build_macro_table};
 
 use crate::support::{Behavior, FakeDocument, edit, host};
 
@@ -89,7 +89,7 @@ fn the_core_and_its_configuration_can_move_between_threads() {
     fn sendable<T: Send>() {}
     fn shareable<T: Send + Sync>() {}
     sendable::<ServiceCore>();
-    shareable::<raumakey_tip::session::RuntimeConfig>();
+    shareable::<raumakey_session::RuntimeConfig>();
     sendable::<SnapshotError>();
 }
 

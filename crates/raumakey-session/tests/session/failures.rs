@@ -1,7 +1,7 @@
 //! Apply failures (matrix #41): the core never commits the next state when the edit session
 //! fails; it resets the word and lets the key reach the application.
 
-use raumakey_tip::session::{EditError, ServiceCore};
+use raumakey_session::{EditError, ServiceCore};
 
 use crate::support::{Behavior, FakeDocument};
 

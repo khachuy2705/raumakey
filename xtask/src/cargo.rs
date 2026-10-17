@@ -9,7 +9,7 @@ use crate::runner::CommandSpec;
 use crate::targets::{Artifact, Profile, Target};
 
 /// Features that enable the legacy EVKey codec in every crate that has it.
-pub const EVKEY_COMPAT_FEATURES: &str = "raumakey-ipc/evkey-compat,raumakey-windows/evkey-compat,raumakey-controller/evkey-compat,raumakey-tsf/evkey-compat,raumakey-tests/evkey-compat";
+pub const EVKEY_COMPAT_FEATURES: &str = "raumakey-ipc/evkey-compat,raumakey-windows/evkey-compat,raumakey-controller/evkey-compat,raumakey-session/evkey-compat,raumakey-tsf/evkey-compat,raumakey-tests/evkey-compat";
 
 /// Package and test target of the deterministic fuzz smoke suite.
 pub const FUZZ_SMOKE: (&str, &str) = ("raumakey-tests", "fuzz_smoke");
@@ -243,6 +243,7 @@ mod tests {
             "raumakey-ipc",
             "raumakey-windows",
             "raumakey-controller",
+            "raumakey-session",
             "raumakey-tsf",
             "raumakey-tests",
         ] {
@@ -285,10 +286,10 @@ mod tests {
             "cargo fmt --all --check",
             "cargo clippy --locked --workspace --all-targets -- -D warnings",
             "cargo clippy --locked --workspace --all-targets --features \
-             raumakey-ipc/evkey-compat,raumakey-windows/evkey-compat,raumakey-controller/evkey-compat,raumakey-tsf/evkey-compat,raumakey-tests/evkey-compat -- -D warnings",
+             raumakey-ipc/evkey-compat,raumakey-windows/evkey-compat,raumakey-controller/evkey-compat,raumakey-session/evkey-compat,raumakey-tsf/evkey-compat,raumakey-tests/evkey-compat -- -D warnings",
             "cargo test --locked --workspace",
             "cargo test --locked --workspace --features \
-             raumakey-ipc/evkey-compat,raumakey-windows/evkey-compat,raumakey-controller/evkey-compat,raumakey-tsf/evkey-compat,raumakey-tests/evkey-compat",
+             raumakey-ipc/evkey-compat,raumakey-windows/evkey-compat,raumakey-controller/evkey-compat,raumakey-session/evkey-compat,raumakey-tsf/evkey-compat,raumakey-tests/evkey-compat",
         ];
         assert_eq!(displays(&ci_commands(false)), expected);
         let with_fuzz = displays(&ci_commands(true));

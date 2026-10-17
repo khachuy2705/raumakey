@@ -17,14 +17,16 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
-evkey-compat = ["raumakey-ipc/evkey-compat", "raumakey-windows/evkey-compat"]
+evkey-compat = [
+    "raumakey-ipc/evkey-compat",
+    "raumakey-session/evkey-compat",
+    "raumakey-windows/evkey-compat",
+]
 
 [dependencies]
 raumakey-model.workspace = true
-raumakey-engine.workspace = true
-raumakey-macro.workspace = true
-raumakey-policy.workspace = true
 raumakey-ipc.workspace = true
+raumakey-session.workspace = true
 raumakey-windows.workspace = true
 
 [target.'cfg(windows)'.dependencies]
@@ -32,7 +34,6 @@ windows.workspace = true
 windows-core.workspace = true
 
 [dev-dependencies]
-proptest.workspace = true
 # tests/resources.rs compares the profile icon index with the resources build.rs embeds.
 raumakey-resources.workspace = true
 

@@ -8,7 +8,7 @@ use raumakey_model::host::ExeName;
 use raumakey_model::macros::{BoundaryPolicy, CasePolicy, MacroEntry, MacroId};
 use raumakey_model::options::Normalization;
 use raumakey_model::policy::{AppRule, RuleAction};
-use raumakey_tip::session::ServiceCore;
+use raumakey_session::ServiceCore;
 
 use crate::support::{FakeDocument, edit};
 

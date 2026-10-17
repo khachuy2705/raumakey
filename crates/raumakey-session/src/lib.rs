@@ -1,11 +1,16 @@
-//! Platform-independent core of the TSF text service (plan §10.3, design §5.2).
+//! Platform-independent session core of Raumakey (plan §10.3, design §5.2).
 //!
-//! [`ServiceCore`] makes every decision of the text input processor. The COM layer
-//! (`crate::server` describes it) translates TSF callbacks into calls on it and carries out
-//! what it returns; it reaches a document only through the [`DocumentPort`] edit-session
-//! abstraction. Nothing in
-//! this module uses Win32 or COM types, so it is tested with fakes on any host (design
-//! §15.1). Those tests say nothing about behavior inside a real Windows application.
+//! The TSF text service (`raumakey_tip.dll`, crate `raumakey-tsf`) runs on it, and so will,
+//! next, the keyboard-hook transport of the controller (plan D39). It lives in its own crate
+//! so that the controller executable can link it without the DLL's exports and resources.
+//! The rest of this documentation describes the core as the text service drives it.
+//!
+//! [`ServiceCore`] makes every decision of the text input processor. The COM layer (the
+//! `server` module of `raumakey_tip` describes it) translates TSF callbacks into calls on it
+//! and carries out what it returns; it reaches a document only through the [`DocumentPort`]
+//! edit-session abstraction. Nothing in this crate uses Win32 or COM types, and it has no
+//! `unsafe` code, so it is tested with fakes on any host (design §15.1). Those tests say
+//! nothing about behavior inside a real Windows application.
 //!
 //! | TSF callback, host event, or controller message | Core call |
 //! |---|---|
@@ -86,7 +91,7 @@
 //! off: a click can move the caret before the host reports the move, or without the host
 //! ever reporting it.
 //!
-//! There is one exception, a decision of this module that plan §10.3 does not record yet. A
+//! There is one exception, a decision of this crate that plan §10.3 does not record yet. A
 //! key that the core lets through to the application while its document has a word state (a
 //! letter that extends the word, or any key typed while an overlong word is skipped) changes
 //! the document when it arrives, and the host reports that change too. The COM layer reports
@@ -189,12 +194,12 @@
 //! - After a key call while disconnected, compare [`ServiceCore::vietnamese_mode`] with the
 //!   keyboard open/close compartment and the language bar: a local toggle changes the mode
 //!   without any other signal. After a reconnect the controller's snapshot sets the mode.
-//! - Never log keys or text; the `Debug` output of this module's types hides them.
+//! - Never log keys or text; the `Debug` output of this crate's types hides them.
 //!
 //! # Not covered here
 //!
 //! The probe edit itself, opt-in diagnostics, and the `evkey-compat` legacy path are not part
-//! of this module yet; that path must bypass keys tagged with the legacy sentinel
+//! of this crate yet; that path must bypass keys tagged with the legacy sentinel
 //! `0xEBCA1234` (clean-room spec §3.1), which the core still treats as ordinary input. How
 //! real TSF hosts report a key that was let through must be checked on Windows: the word
 //! survives only when the edit record shows exactly that key arriving before the next
@@ -202,6 +207,7 @@
 //! report the text change and the caret move separately, may not do that.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 mod config;
 mod document;

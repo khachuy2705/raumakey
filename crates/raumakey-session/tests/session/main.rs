@@ -1,4 +1,4 @@
-//! Integration tests of the platform-independent TSF service core (`raumakey_tip::session`).
+//! Integration tests of the platform-independent service core (`raumakey_session`).
 //!
 //! Everything runs against fakes on any host (design §15.1): a fake document stands in for
 //! the TSF edit session and plays the application, and the drivers call the core in the

@@ -40,7 +40,7 @@ impl fmt::Display for SnapshotError {
 impl std::error::Error for SnapshotError {}
 
 /// Validates a macro snapshot and indexes its entries into a [`MacroTable`], for
-/// [`ServiceCore::install_macro_table`](crate::session::ServiceCore::install_macro_table).
+/// [`ServiceCore::install_macro_table`](crate::ServiceCore::install_macro_table).
 ///
 /// It touches no core, so the COM layer runs it on its IPC thread: a snapshot can hold
 /// [`MAX_MACROS`](raumakey_ipc::message::MAX_MACROS) entries, too many to index on the host

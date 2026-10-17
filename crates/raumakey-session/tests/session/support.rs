@@ -21,7 +21,7 @@ use raumakey_model::host::{DocumentId, ExeName, HostContext, SessionId};
 use raumakey_model::identity::RAUMAKEY_INJECTED_TAG;
 use raumakey_model::input::{Modifiers, ReplayKey, vk};
 use raumakey_model::utf16;
-use raumakey_tip::session::{
+use raumakey_session::{
     DocumentPort, EditError, EditRequest, KeyDownOutcome, KeyStroke, SelectionChange, ServiceCore,
 };
 

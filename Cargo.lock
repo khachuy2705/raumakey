@@ -480,6 +480,18 @@ name = "raumakey-resources"
 version = "0.1.0"
 
 [[package]]
+name = "raumakey-session"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "raumakey-engine",
+ "raumakey-ipc",
+ "raumakey-macro",
+ "raumakey-model",
+ "raumakey-policy",
+]
+
+[[package]]
 name = "raumakey-tests"
 version = "0.1.0"
 dependencies = [
@@ -504,13 +516,10 @@ dependencies = [
 name = "raumakey-tsf"
 version = "0.1.0"
 dependencies = [
- "proptest",
- "raumakey-engine",
  "raumakey-ipc",
- "raumakey-macro",
  "raumakey-model",
- "raumakey-policy",
  "raumakey-resources",
+ "raumakey-session",
  "raumakey-windows",
  "windows",
  "windows-core",

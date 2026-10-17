@@ -6,7 +6,7 @@
 use raumakey_ipc::message::RuntimeSnapshot;
 use raumakey_model::identity::RAUMAKEY_INJECTED_TAG;
 use raumakey_model::input::vk;
-use raumakey_tip::session::{KeyStroke, SelectionChange, ServiceCore};
+use raumakey_session::{KeyStroke, SelectionChange, ServiceCore};
 
 use crate::support::{Down, FakeDocument, host, release, stroke};
 

@@ -5,7 +5,7 @@ use raumakey_ipc::message::MacroSnapshot;
 use raumakey_model::input::vk;
 use raumakey_model::macros::{BoundaryPolicy, CasePolicy, MacroEntry, MacroId};
 use raumakey_model::utf16;
-use raumakey_tip::session::{SelectionChange, ServiceCore};
+use raumakey_session::{SelectionChange, ServiceCore};
 
 use crate::support::FakeDocument;
 

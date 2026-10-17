@@ -17,10 +17,10 @@ use raumakey_model::transaction::EditTransaction;
 use raumakey_model::utf16;
 use raumakey_policy::{CompatibilityPolicy, HotkeyClassifier, KeyVerdict, PolicyError};
 
-use crate::session::config::{RuntimeConfig, SnapshotError, build_macro_table, check_runtime};
-use crate::session::document::{DocumentPort, EditRequest, SelectionChange};
-use crate::session::keystroke::KeyStroke;
-use crate::session::states::DocumentStates;
+use crate::config::{RuntimeConfig, SnapshotError, build_macro_table, check_runtime};
+use crate::document::{DocumentPort, EditRequest, SelectionChange};
+use crate::keystroke::KeyStroke;
+use crate::states::DocumentStates;
 
 /// What `OnKeyDown` reports and what the COM layer must do afterwards.
 ///
@@ -215,8 +215,8 @@ struct Rejected;
 ///
 /// It owns the engine, the immutable runtime configuration, the engine state of each
 /// document, whether the controller connection is up, the hotkey classifier used while it
-/// is down (D24), and the decision of the last test call. The [module
-/// documentation](crate::session) describes the rules.
+/// is down (D24), and the decision of the last test call. The [crate
+/// documentation](crate) describes the rules.
 ///
 /// One core serves one text service activation and is called from the thread that owns
 /// it; it is `Send`, so the COM layer may move it there. It is written not to panic on any
@@ -275,13 +275,13 @@ impl ServiceCore {
     }
 
     /// Number of documents whose engine state the core holds (at most
-    /// [`MAX_DOCUMENTS`](crate::session::MAX_DOCUMENTS)).
+    /// [`MAX_DOCUMENTS`](crate::MAX_DOCUMENTS)).
     pub fn document_count(&self) -> usize {
         self.states.len()
     }
 
     /// `OnTestKeyDown`: whether TSF must call [`key_down`](Self::key_down) for `key` (the
-    /// rules are in the [module documentation](crate::session)). It never edits the document
+    /// rules are in the [crate documentation](crate)). It never edits the document
     /// and commits no engine result; the decision is kept for `key_down`. A key from another
     /// document than the last one is a document change, though: the words of both documents
     /// end and the hotkey classifier starts again already here.

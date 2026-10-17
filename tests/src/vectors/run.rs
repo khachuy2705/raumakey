@@ -313,8 +313,8 @@ fn execute(vector: &Vector) -> Result<ScriptOutcome, Failure> {
     })
 }
 
-/// Runs `tokens` in `host` from a document holding `initial_text`, as the TIP's session core
-/// does (`raumakey_tip::session`, D25): the compatibility policy is resolved for each key.
+/// Runs `tokens` in `host` from a document holding `initial_text`, as the session core does
+/// (`raumakey_session`, D25): the compatibility policy is resolved for each key.
 ///
 /// - A key of a secure field whose policy does not allow Vietnamese (`Bypass`, the default)
 ///   never reaches the engine: it passes through and ends the word

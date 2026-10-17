@@ -5,7 +5,7 @@ use raumakey_ipc::message::RuntimeSnapshot;
 use raumakey_model::host::SessionId;
 use raumakey_model::input::vk;
 use raumakey_model::utf16;
-use raumakey_tip::session::{EditError, MAX_DOCUMENTS, SelectionChange, ServiceCore};
+use raumakey_session::{EditError, MAX_DOCUMENTS, SelectionChange, ServiceCore};
 
 use crate::support::{FakeDocument, edit, host, release};
 

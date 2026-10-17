@@ -14,9 +14,7 @@ use raumakey_model::macros::{BoundaryPolicy, CasePolicy, MacroEntry, MacroId};
 use raumakey_model::options::{InputMethod, Normalization};
 use raumakey_model::policy::{AppRule, ProbeResult, RuleAction};
 use raumakey_model::utf16;
-use raumakey_tip::session::{
-    KeyDownOutcome, KeyStroke, MAX_DOCUMENTS, SelectionChange, ServiceCore,
-};
+use raumakey_session::{KeyDownOutcome, KeyStroke, MAX_DOCUMENTS, SelectionChange, ServiceCore};
 
 use crate::support::{Behavior, FakeDocument, release, replay_stroke};
 

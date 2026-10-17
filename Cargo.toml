@@ -10,6 +10,7 @@ members = [
     "crates/raumakey-converter",
     "crates/raumakey-migrate",
     "crates/raumakey-resources",
+    "crates/raumakey-session",
     "crates/raumakey-windows",
     "crates/raumakey-controller",
     "crates/raumakey-tsf",
@@ -36,6 +37,7 @@ raumakey-ipc = { path = "crates/raumakey-ipc" }
 raumakey-converter = { path = "crates/raumakey-converter" }
 raumakey-migrate = { path = "crates/raumakey-migrate" }
 raumakey-resources = { path = "crates/raumakey-resources" }
+raumakey-session = { path = "crates/raumakey-session" }
 raumakey-windows = { path = "crates/raumakey-windows" }
 
 serde = { version = "1.0.229", features = ["derive"] }

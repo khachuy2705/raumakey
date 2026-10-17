@@ -2,7 +2,7 @@
 //! and semantic backspace (matrix #1, #3, #15, #17, #40).
 
 use raumakey_model::input::vk;
-use raumakey_tip::session::ServiceCore;
+use raumakey_session::ServiceCore;
 
 use crate::support::{FakeDocument, edit};
 

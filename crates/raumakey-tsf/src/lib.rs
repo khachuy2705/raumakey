@@ -1,10 +1,11 @@
 //! Raumakey COM in-process TSF text input processor (`raumakey_tip.dll`, plan §10.3).
 //!
-//! - [`session`]: the platform-independent core of the text service. It owns the engine, the
-//!   runtime configuration, the per-document engine states, and the `OnTestKeyDown` /
-//!   `OnKeyDown` decision logic, and it reaches the document only through the
-//!   [`session::DocumentPort`] edit-session abstraction. It contains no Win32 or COM types and
-//!   no `unsafe` code, so its behavior is tested with fakes on any host (design §15.1).
+//! - [`session`]: the platform-independent core of the text service, the `raumakey_session`
+//!   crate re-exported (the controller's keyboard-hook transport is to share it, plan D39).
+//!   It owns the engine, the runtime configuration, the per-document engine states, and the
+//!   `OnTestKeyDown` / `OnKeyDown` decision logic, and it reaches the document only through
+//!   the [`session::DocumentPort`] edit-session abstraction. It contains no Win32 or COM types
+//!   and no `unsafe` code, so its behavior is tested with fakes on any host (design §15.1).
 //! - [`activation`]: the sinks a text service activation advises, in order, and how they are
 //!   undone after a failure and at `Deactivate`, apart from COM so that the rules are tested
 //!   with fakes on any host.
@@ -36,9 +37,11 @@ pub mod adapter;
 pub mod mouse_hook;
 #[cfg(windows)]
 pub mod server;
-pub mod session;
 #[cfg(windows)]
 mod text_service;
+
+/// The session core of the text service (crate `raumakey-session`).
+pub use raumakey_session as session;
 
 #[cfg(windows)]
 pub use server::{DllCanUnloadNow, DllGetClassObject, DllRegisterServer, DllUnregisterServer};

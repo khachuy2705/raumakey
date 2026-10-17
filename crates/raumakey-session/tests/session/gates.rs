@@ -6,7 +6,7 @@ use raumakey_model::host::ExeName;
 use raumakey_model::identity::RAUMAKEY_INJECTED_TAG;
 use raumakey_model::input::vk;
 use raumakey_model::policy::{PROBE_VERSION, ProbeRecord, ProbeResult};
-use raumakey_tip::session::{KeyDownOutcome, ServiceCore};
+use raumakey_session::{KeyDownOutcome, ServiceCore};
 
 use crate::support::{FakeDocument, host};
 
