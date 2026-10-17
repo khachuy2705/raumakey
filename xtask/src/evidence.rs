@@ -101,8 +101,11 @@ impl Evidence {
         steps: Vec<StepEvidence>,
         artifacts: Vec<ArtifactEvidence>,
     ) -> Self {
-        let passed =
-            !steps.is_empty() && steps.iter().all(|step| step.status == StepStatus::Passed);
+        let passed = steps.len() == crate::gate::STEPS.len()
+            && steps
+                .iter()
+                .zip(crate::gate::STEPS)
+                .all(|(step, expected)| step.name == expected && step.status == StepStatus::Passed);
         Self {
             schema_version: 1,
             product: PRODUCT_NAME,
@@ -198,18 +201,10 @@ mod tests {
             "0.1.0".to_owned(),
             1_792_000_000,
             Some("abc123".to_owned()),
-            vec![
-                step(
-                    "ci",
-                    StepStatus::Passed,
-                    vec![record("cargo fmt --all --check", Some(0))],
-                ),
-                step(
-                    "audit",
-                    StepStatus::Passed,
-                    vec![record("cargo deny check", Some(0))],
-                ),
-            ],
+            crate::gate::STEPS
+                .into_iter()
+                .map(|name| step(name, StepStatus::Passed, Vec::new()))
+                .collect(),
             vec![artifact()],
         );
         assert!(evidence.passed);
@@ -220,6 +215,31 @@ mod tests {
         assert_eq!(evidence.product, "Raumakey");
         assert_eq!(evidence.host.os, std::env::consts::OS);
         assert_eq!(evidence.host.arch, std::env::consts::ARCH);
+    }
+
+    #[test]
+    fn incomplete_duplicate_or_reordered_gates_cannot_claim_verification() {
+        let complete: Vec<_> = crate::gate::STEPS
+            .into_iter()
+            .map(|name| step(name, StepStatus::Passed, Vec::new()))
+            .collect();
+        let mut invalid = Vec::new();
+        for index in 0..complete.len() {
+            let mut missing = complete.clone();
+            missing.remove(index);
+            invalid.push(missing);
+        }
+        let mut duplicate = complete.clone();
+        duplicate.push(complete[0].clone());
+        invalid.push(duplicate);
+        let mut reordered = complete.clone();
+        reordered.swap(0, 1);
+        invalid.push(reordered);
+        for steps in invalid {
+            let evidence = Evidence::new("0.1.0".to_owned(), 1, None, steps, Vec::new());
+            assert!(!evidence.passed, "{:?}", evidence.steps);
+            assert_eq!(evidence.verification_level, NOT_VERIFIED);
+        }
     }
 
     #[test]

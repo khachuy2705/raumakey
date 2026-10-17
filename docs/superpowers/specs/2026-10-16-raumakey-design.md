@@ -279,6 +279,10 @@ The project may be reported as **cross-build verified** only after all host-inde
 
 ## 20. Implementation status (as of 2026-10-17)
 
+The follow-up in §20.11 supersedes the Git and `xtask` status below. Other entries remain a
+historical snapshot, not evidence that their checks were repeated by the follow-up. Plan §14
+tracks the current status by task; plan §14.5 replaces the next steps in §20.10.
+
 This section is a dated snapshot of what the repository contains and what is still outstanding. It does not change the requirements in §1–§19. The evidence was gathered on 2026-10-17 on the Windows 11 x86_64 development host (Rust 1.99.1, `rust-lld` + `xwin`, plan D1). It comes from running the gates in §20.2 and from a read-only audit of every crate against the implementation plan, with each finding checked a second time against the code. Nothing here was derived from `restricted_evidence/`.
 
 On the same date, §2, §5, §13, §15, and §19 were aligned with plan decisions D1 and D23 and with the `raumakey-resources` crate that the plan added. No requirement changed.
@@ -494,3 +498,29 @@ The code also makes decisions that the plan does not record yet:
 4. Implement the controller: first the GUI subsystem and the CLI with `install`/`uninstall --dry-run`, which together with step 3 let `xtask inspect` and the installer dry-run pass; then the IPC hub, tray, hook thread, and panel.
 5. Build `raumakey-tests` and the acceptance runner, then the PowerShell suite and the manual checklist, and run the 8 manual tests.
 6. Settle the remaining §20.8 questions (items 7–9) and refresh this section.
+
+### 20.11 Review follow-up (2026-10-17)
+
+A targeted review against the current source confirmed that the controller, TIP, and shared
+test runner remain stubs. The initial tree was clean at `24ba7a6`, so the earlier statement
+that implementation files were untracked no longer applies. This was not a whole-branch
+independent review.
+
+The next increment fixes the verification gaps in §20.6 B7: CI covers every workspace legacy
+feature; dependency-resolving Cargo commands use `--locked`; missing fuzz smoke tests fail CI
+and the release gate; and a revision-bound whole-branch review attestation is required before
+release-gate packaging. Evidence also rejects missing, duplicated, or reordered gate steps
+instead of treating any nonempty list of successful steps as a complete verification.
+
+The fuzz suite itself still does not exist, so default CI and the release gate are expected
+to fail until it is implemented. `ci --no-fuzz` remains available for explicit partial checks.
+The review record contract is documented in plan §12. No approval record was manufactured.
+Package contents, standalone packaging checks, Windows acceptance, and product implementation
+remain outstanding. The policy/engine disagreement about `Restricted` secure fields was
+reconfirmed in source and remains unresolved (§20.8 item 1).
+
+See `docs/superpowers/plans/2026-10-17-review-followup.md` for scope and TDD evidence.
+The follow-up passed formatting, Clippy with warnings denied, and workspace tests on Windows:
+1,241 tests with default features and 1,315 with all compatibility features; 8 existing
+manual tests remained ignored in each run. `xtask` has 102 passing tests. The default CI and
+release-gate failure paths were exercised and correctly recorded `not verified`.

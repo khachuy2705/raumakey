@@ -9,7 +9,7 @@ use crate::runner::CommandSpec;
 use crate::targets::{Artifact, Profile, Target};
 
 /// Features that enable the legacy EVKey codec in every crate that has it.
-pub const EVKEY_COMPAT_FEATURES: &str = "raumakey-ipc/evkey-compat,raumakey-tests/evkey-compat";
+pub const EVKEY_COMPAT_FEATURES: &str = "raumakey-ipc/evkey-compat,raumakey-windows/evkey-compat,raumakey-controller/evkey-compat,raumakey-tsf/evkey-compat,raumakey-tests/evkey-compat";
 
 /// Package and test target of the deterministic fuzz smoke suite.
 pub const FUZZ_SMOKE: (&str, &str) = ("raumakey-tests", "fuzz_smoke");
@@ -40,6 +40,7 @@ pub fn ci_commands(fuzz_smoke: bool) -> Vec<CommandSpec> {
         CommandSpec::cargo(["fmt", "--all", "--check"]),
         CommandSpec::cargo([
             "clippy",
+            "--locked",
             "--workspace",
             "--all-targets",
             "--",
@@ -48,6 +49,7 @@ pub fn ci_commands(fuzz_smoke: bool) -> Vec<CommandSpec> {
         ]),
         CommandSpec::cargo([
             "clippy",
+            "--locked",
             "--workspace",
             "--all-targets",
             "--features",
@@ -56,12 +58,20 @@ pub fn ci_commands(fuzz_smoke: bool) -> Vec<CommandSpec> {
             "-D",
             "warnings",
         ]),
-        CommandSpec::cargo(["test", "--workspace"]),
-        CommandSpec::cargo(["test", "--workspace", "--features", EVKEY_COMPAT_FEATURES]),
+        CommandSpec::cargo(["test", "--locked", "--workspace"]),
+        CommandSpec::cargo([
+            "test",
+            "--locked",
+            "--workspace",
+            "--features",
+            EVKEY_COMPAT_FEATURES,
+        ]),
     ];
     if fuzz_smoke {
         let (package, test) = FUZZ_SMOKE;
-        commands.push(CommandSpec::cargo(["test", "-p", package, "--test", test]));
+        commands.push(CommandSpec::cargo([
+            "test", "--locked", "-p", package, "--test", test,
+        ]));
     }
     commands
 }
@@ -82,6 +92,7 @@ pub fn cross_command(target: Target, profile: Profile, host: Host) -> CommandSpe
         args.push("xwin".to_owned());
     }
     args.extend(["build", "--target", target.triple()].map(str::to_owned));
+    args.push("--locked".to_owned());
     if profile.is_release() {
         args.push("--release".to_owned());
     }
@@ -114,6 +125,7 @@ pub fn check_rustflags_env(lookup: impl Fn(&str) -> Option<String>) -> Result<()
 pub fn metadata_command(no_deps: bool, platform: Option<Target>) -> CommandSpec {
     let mut args = vec![
         "metadata".to_owned(),
+        "--locked".to_owned(),
         "--format-version".to_owned(),
         "1".to_owned(),
     ];
@@ -224,6 +236,45 @@ impl Metadata {
 mod tests {
     use super::*;
 
+    #[test]
+    fn compat_ci_covers_every_workspace_legacy_adapter() {
+        let features: Vec<_> = EVKEY_COMPAT_FEATURES.split(',').collect();
+        for package in [
+            "raumakey-ipc",
+            "raumakey-windows",
+            "raumakey-controller",
+            "raumakey-tsf",
+            "raumakey-tests",
+        ] {
+            assert!(
+                features.contains(&format!("{package}/evkey-compat").as_str()),
+                "{package}"
+            );
+        }
+    }
+
+    #[test]
+    fn dependency_resolving_commands_preserve_the_lockfile() {
+        let mut commands = ci_commands(true);
+        commands.remove(0); // rustfmt does not resolve dependencies or accept --locked.
+        for host in [Host::Windows, Host::Other] {
+            for target in Target::ALL {
+                for profile in [Profile::Debug, Profile::Release] {
+                    commands.push(cross_command(target, profile, host));
+                }
+            }
+        }
+        commands.push(metadata_command(true, None));
+        commands.push(metadata_command(false, Some(Target::I686)));
+        for command in commands {
+            assert!(
+                command.args.iter().any(|arg| arg == "--locked"),
+                "{}",
+                command.display()
+            );
+        }
+    }
+
     fn displays(specs: &[CommandSpec]) -> Vec<String> {
         specs.iter().map(CommandSpec::display).collect()
     }
@@ -232,19 +283,19 @@ mod tests {
     fn ci_runs_fmt_clippy_and_tests_with_and_without_compat_features() {
         let expected = [
             "cargo fmt --all --check",
-            "cargo clippy --workspace --all-targets -- -D warnings",
-            "cargo clippy --workspace --all-targets --features \
-             raumakey-ipc/evkey-compat,raumakey-tests/evkey-compat -- -D warnings",
-            "cargo test --workspace",
-            "cargo test --workspace --features \
-             raumakey-ipc/evkey-compat,raumakey-tests/evkey-compat",
+            "cargo clippy --locked --workspace --all-targets -- -D warnings",
+            "cargo clippy --locked --workspace --all-targets --features \
+             raumakey-ipc/evkey-compat,raumakey-windows/evkey-compat,raumakey-controller/evkey-compat,raumakey-tsf/evkey-compat,raumakey-tests/evkey-compat -- -D warnings",
+            "cargo test --locked --workspace",
+            "cargo test --locked --workspace --features \
+             raumakey-ipc/evkey-compat,raumakey-windows/evkey-compat,raumakey-controller/evkey-compat,raumakey-tsf/evkey-compat,raumakey-tests/evkey-compat",
         ];
         assert_eq!(displays(&ci_commands(false)), expected);
         let with_fuzz = displays(&ci_commands(true));
         assert_eq!(with_fuzz[..5], expected);
         assert_eq!(
             with_fuzz[5],
-            "cargo test -p raumakey-tests --test fuzz_smoke"
+            "cargo test --locked -p raumakey-tests --test fuzz_smoke"
         );
         assert_eq!(with_fuzz.len(), 6);
     }
@@ -253,12 +304,12 @@ mod tests {
     fn cross_builds_the_three_packages_natively_on_windows() {
         assert_eq!(
             cross_command(Target::I686, Profile::Debug, Host::Windows).display(),
-            "cargo build --target i686-pc-windows-msvc -p raumakey-controller -p raumakey-tsf \
+            "cargo build --target i686-pc-windows-msvc --locked -p raumakey-controller -p raumakey-tsf \
              -p raumakey-tests"
         );
         assert_eq!(
             cross_command(Target::X86_64, Profile::Release, Host::Windows).display(),
-            "cargo build --target x86_64-pc-windows-msvc --release -p raumakey-controller \
+            "cargo build --target x86_64-pc-windows-msvc --locked --release -p raumakey-controller \
              -p raumakey-tsf -p raumakey-tests --config \
              \"target.x86_64-pc-windows-msvc.rustflags=['-Ctarget-feature=+crt-static',\
              '-Clink-arg=/ignore:4099']\""
@@ -311,11 +362,11 @@ mod tests {
     fn metadata_commands() {
         assert_eq!(
             metadata_command(true, None).display(),
-            "cargo metadata --format-version 1 --no-deps"
+            "cargo metadata --locked --format-version 1 --no-deps"
         );
         assert_eq!(
             metadata_command(false, Some(Target::I686)).display(),
-            "cargo metadata --format-version 1 --filter-platform i686-pc-windows-msvc"
+            "cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc"
         );
     }
 

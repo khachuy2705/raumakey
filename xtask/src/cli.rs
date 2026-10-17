@@ -12,7 +12,7 @@ Usage: cargo xtask <command> [options]
 Commands:
   ci [--no-fuzz]
       cargo fmt --check; clippy -D warnings with default and evkey-compat features;
-      workspace tests with both feature sets; the fuzz smoke suite
+      workspace tests with both feature sets; the fuzz smoke suite (required unless --no-fuzz)
   cross [--release] [--target <TRIPLE>]...
       build raumakey.exe, raumakey_tip.dll and raumakey-test-runner.exe;
       --release links the CRT statically (D23)
@@ -27,8 +27,10 @@ Commands:
   notices
       list third-party crates and licenses for the Windows targets
   release-gate
-      ci, audit, cross --release, inspect --release, package --release and the
-      installer dry-run contract; writes release evidence JSON
+      ci, audit, cross --release, inspect --release, whole-branch review,
+      package --release and the installer dry-run contract; writes release evidence JSON
+      requires release-evidence/whole-branch-review.json under the Cargo target directory,
+      approving the current clean Git revision with no unresolved findings
   help
       show this help
 

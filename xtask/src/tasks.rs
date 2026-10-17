@@ -10,13 +10,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::cargo::{
     FUZZ_SMOKE, Host, Metadata, check_rustflags_env, ci_commands, cross_command, metadata_command,
 };
-use crate::checksum::sha256_file;
+use crate::checksum::{sha256_file, sha256_hex};
 use crate::cli::{BuildSelection, CiOptions, Command, USAGE};
 use crate::error::{Error, Result};
 use crate::evidence::{
     ArtifactEvidence, CROSS_BUILD_VERIFIED, Evidence, StepEvidence, StepStatus, evidence_file_name,
 };
-use crate::gate::{STEPS, dry_run_commands, dry_run_problems};
+use crate::gate::{STEPS, dry_run_commands, dry_run_problems, validate_review};
 use crate::inspect::{format_table, inspect_file};
 use crate::notices;
 use crate::package::{
@@ -153,10 +153,11 @@ fn ci(ctx: &mut Context, options: CiOptions, output: &mut TaskOutput) -> Result<
     } else if ctx.workspace()?.has_test_target(package, test) {
         true
     } else {
-        output.notes.push(format!(
-            "fuzz smoke suite skipped: package `{package}` has no `{test}` test target yet"
-        ));
-        false
+        return Err(Error::new(format!(
+            "required fuzz smoke suite missing: package `{package}` has no `{test}` test target; \
+             implement the suite before running CI or the release gate. \
+             Use `ci --no-fuzz` only for partial local checks."
+        )));
     };
     for note in &output.notes {
         eprintln!("notice: {note}");
@@ -381,13 +382,29 @@ fn source_revision(ctx: &mut Context) -> Option<String> {
     let dirty = ctx
         .runner
         .capture(&CommandSpec::new("git", ["status", "--porcelain"]))
-        .map(|status| !status.trim().is_empty())
-        .unwrap_or(false);
+        .ok()?;
     Some(format!(
         "{}{}",
         head.trim(),
-        if dirty { "-dirty" } else { "" }
+        if dirty.trim().is_empty() {
+            ""
+        } else {
+            "-dirty"
+        }
     ))
+}
+
+fn whole_branch_review(ctx: &mut Context, output: &mut TaskOutput) -> Result<()> {
+    let path = ctx
+        .target_dir()?
+        .join("release-evidence/whole-branch-review.json");
+    let bytes = fs::read(&path).map_err(|error| Error::io("read required review", &path, error))?;
+    validate_review(&bytes, source_revision(ctx).as_deref())?;
+    output.notes.push(format!(
+        "whole-branch-review.json SHA-256: {}",
+        sha256_hex(&bytes)
+    ));
+    Ok(())
 }
 
 fn release_gate(ctx: &mut Context) -> Result<()> {
@@ -423,6 +440,7 @@ fn release_gate(ctx: &mut Context) -> Result<()> {
             "audit" => audit(ctx),
             "cross" => cross(ctx, &release, &mut output),
             "inspect" => inspect(ctx, &release),
+            "whole-branch-review" => whole_branch_review(ctx, &mut output),
             "package" => package(ctx, Profile::Release, &mut output),
             "installer-dry-run" => installer_dry_run(ctx),
             other => Err(Error::new(format!("unknown gate step `{other}`"))),
@@ -491,6 +509,28 @@ fn release_gate(ctx: &mut Context) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_fuzz_suite_fails_before_starting_ci_commands() {
+        let mut ctx = Context {
+            runner: Runner::new(workspace_root(), OsString::from("raumakey-no-such-cargo")),
+            host: Host::current(),
+            workspace: Some(Metadata {
+                packages: Vec::new(),
+                workspace_members: Vec::new(),
+                target_directory: PathBuf::from("target"),
+                resolve: None,
+            }),
+        };
+        let mut output = TaskOutput::default();
+        let error = ci(&mut ctx, CiOptions { fuzz: true }, &mut output).expect_err("missing suite");
+        assert!(error.to_string().contains("fuzz_smoke"), "{error}");
+        assert!(ctx.runner.records().is_empty());
+        assert!(
+            output.notes.is_empty(),
+            "required tests must not become a skip note"
+        );
+    }
 
     #[test]
     fn workspace_root_contains_the_workspace_manifest() {

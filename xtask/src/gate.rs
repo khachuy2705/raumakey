@@ -3,19 +3,58 @@
 use std::path::Path;
 
 use raumakey_model::identity::{TIP_CLSID, TIP_PROFILE_GUID};
+use serde::Deserialize;
 
+use crate::error::{Error, Result};
 use crate::pe::{LEGACY_EVKEY_GUIDS, contains_guid_text};
 use crate::runner::CommandSpec;
 
 /// Gate steps in execution order.
-pub const STEPS: [&str; 6] = [
+pub const STEPS: [&str; 7] = [
     "ci",
     "audit",
     "cross",
     "inspect",
+    "whole-branch-review",
     "package",
     "installer-dry-run",
 ];
+
+/// Reviewer-supplied attestation; xtask validates its scope and revision, not the review itself.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewRecord {
+    schema_version: u32,
+    scope: String,
+    source_revision: String,
+    reviewer: String,
+    approved: bool,
+    unresolved_findings: u32,
+}
+
+/// Reject missing, stale, incomplete, or unapproved whole-branch review evidence.
+pub fn validate_review(bytes: &[u8], source_revision: Option<&str>) -> Result<()> {
+    let revision = source_revision
+        .filter(|revision| {
+            matches!(revision.len(), 40 | 64) && revision.bytes().all(|b| b.is_ascii_hexdigit())
+        })
+        .ok_or_else(|| Error::new("whole-branch review requires a known, clean Git revision"))?;
+    let review: ReviewRecord = serde_json::from_slice(bytes)
+        .map_err(|error| Error::new(format!("invalid whole-branch review record: {error}")))?;
+    if review.schema_version != 1
+        || review.scope != "whole-branch"
+        || review.source_revision != revision
+        || review.reviewer.trim().is_empty()
+        || !review.approved
+        || review.unresolved_findings != 0
+    {
+        return Err(Error::new(
+            "whole-branch review must approve the current revision, name an independent reviewer, \
+             use schema version 1 and scope whole-branch, and have no unresolved findings",
+        ));
+    }
+    Ok(())
+}
 
 /// The `install --dry-run` and `uninstall --dry-run` invocations of the packaged x64 controller.
 pub fn dry_run_commands(package_dir: &Path) -> [CommandSpec; 2] {
@@ -74,15 +113,65 @@ mod tests {
     use crate::pe::{LEGACY_EVKEY_GUIDS, guid_text};
     use raumakey_model::identity::{TIP_CLSID, TIP_PROFILE_GUID};
 
+    fn review_record() -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 1,
+            "scope": "whole-branch",
+            "source_revision": "a".repeat(40),
+            "reviewer": "independent reviewer",
+            "approved": true,
+            "unresolved_findings": 0
+        })
+    }
+
+    #[test]
+    fn review_requires_approval_of_the_current_clean_revision() {
+        let json = serde_json::to_vec(&review_record()).unwrap();
+        let revision = "a".repeat(40);
+        assert!(validate_review(&json, Some(&revision)).is_ok());
+        assert!(validate_review(&json, None).is_err());
+        assert!(validate_review(&json, Some(&"b".repeat(40))).is_err());
+        assert!(validate_review(&json, Some(&format!("{revision}-dirty"))).is_err());
+        assert!(validate_review(b"invalid json", Some(&revision)).is_err());
+    }
+
+    #[test]
+    fn incomplete_or_unapproved_reviews_are_rejected() {
+        let revision = "a".repeat(40);
+        for (field, bad_value) in [
+            ("schema_version", serde_json::json!(2)),
+            ("scope", serde_json::json!("one-file")),
+            ("reviewer", serde_json::json!("  ")),
+            ("approved", serde_json::json!(false)),
+            ("unresolved_findings", serde_json::json!(1)),
+        ] {
+            let mut record = review_record();
+            record[field] = bad_value;
+            assert!(
+                validate_review(&serde_json::to_vec(&record).unwrap(), Some(&revision)).is_err(),
+                "{field}"
+            );
+        }
+        for field in review_record().as_object().unwrap().keys() {
+            let mut record = review_record();
+            record.as_object_mut().unwrap().remove(field);
+            assert!(
+                validate_review(&serde_json::to_vec(&record).unwrap(), Some(&revision)).is_err(),
+                "{field}"
+            );
+        }
+    }
+
     #[test]
     fn steps_follow_the_documented_order() {
         assert_eq!(
-            STEPS,
-            [
+            STEPS.as_slice(),
+            &[
                 "ci",
                 "audit",
                 "cross",
                 "inspect",
+                "whole-branch-review",
                 "package",
                 "installer-dry-run"
             ]
