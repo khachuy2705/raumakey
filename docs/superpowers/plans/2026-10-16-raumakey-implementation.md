@@ -1104,7 +1104,7 @@ None. The work started on 2026-10-17 in local worktrees is reviewed and merged;
 
 The 2026-10-17 work found these defects; item 4 shows that the "Silent fallback" risk of design
 §20.7 is reachable with valid input. Items 1–4 were confirmed against the code of `4507b1b`.
-Items 1–4 are fixed; items 5, 6, and 7 are open.
+Items 1–4 are fixed; items 5, 6, and 7 are decided (D36, D37, D35).
 
 1. `MacroTable` accepts triggers that contain boundary punctuation, such as `v.v`. When no
    input-method action consumes the punctuation key, the engine commits the word at it (§3.8),
@@ -1136,14 +1136,16 @@ Items 1–4 are fixed; items 5, 6, and 7 are open.
    profile without a substitute keyboard layout (`RegisterProfile` with a null `HKL`). If Windows
    then runs the profile on the Vietnamese language's default layout, the number row and the
    brackets produce Vietnamese characters before Raumakey sees the keys. Decide whether the
-   profile names a substitute layout, for example US (`00000409`).
+   profile names a substitute layout, for example US (`00000409`). Decided by D36: no substitute
+   layout; the manual check on Windows must look at the number row and the brackets.
 6. Open question from the controller work: `install` registers the TIPs where the package was
    extracted, usually a folder the user can write, and prints a warning. Decide whether
-   installation requires Program Files or copies the package there.
+   installation requires Program Files or copies the package there. Decided by D37: installing
+   from any folder stays allowed, with the warning.
 7. Open question from D28: a word macro on a token's first word wins at the punctuation. With
    `v` → `với` and `v.v` → `vân vân`, typing `v.v ` gives `với.với `, so `v.v` can never
    expand. Deferring word macros at punctuation would change existing punctuation behaviour.
-   Decide which macro wins.
+   Decided by D35: the word macro wins.
 
 ### 14.5 Remaining work, in order
 
@@ -1155,8 +1157,9 @@ steps 3–5 (§13). Every step records its failing test runs and its independent
 2. Done: the open questions of design §20.8 and §14.4 items 1, 2, and 4 are decided (§15).
 3. Mostly done: D25, D27 (pipe side), D28–D30, and D34 are implemented, reviewed, and merged, and
    plan §2.9, §3, §4, §6, §10.1, and design §10, §14, §20.7 are aligned. Remaining: align design
-   §9 with D31; decide §14.4 items 5, 6, and 7; give the D30 limit its own error code if the
-   configuration UI needs to tell it from the scalar cap.
+   §9 with D31; give the D30 limit its own error code if the configuration UI needs to tell it
+   from the scalar cap. §14.4 items 5, 6, and 7 are decided (D35–D37) and need no code change
+   now; the configuration UI must warn about the D35 conflict.
 4. Finish the TIP (§10.3): the IPC snapshot client thread, the range-edit probe edit and its
    `ReportProbe` (sent again after a reconnect while the session core still holds the result),
    opt-in `Diagnostic` events (only while `RuntimeSnapshot.diagnostics_enabled` is set), the
@@ -1274,3 +1277,14 @@ may still follow the earlier text.
   `tools/raumakey-test-runner.exe`, `install.ps1`, `uninstall.ps1`, and a README.
 - **D34 — Circumflex fallback.** With spell checking off, `Circumflex` applies to the rightmost
   `a`, `e`, or `o` of the cluster (§3.6).
+- **D35 — Word macro before token macro.** When a word macro matches the word that boundary
+  punctuation commits, it expands there, even if the punctuation could continue a token trigger
+  (§3.8, D28). With `v` → `với` and `v.v` → `vân vân`, typing `v.v ` gives `với.với `. The
+  configuration UI must warn when a token trigger starts with a word that is itself a trigger.
+- **D36 — No substitute keyboard layout.** The TSF profile is registered without a substitute
+  layout (`RegisterProfile` with a null `HKL`), so Windows chooses the base layout. The manual
+  check on Windows must confirm that the number row and the brackets type their US characters
+  under the Raumakey profile; if they do not, this decision is to be revisited.
+- **D37 — Install location.** `install` registers the TIPs where the package is, including a
+  folder the user can write, and prints a warning in that case. Accepted risk: a process of the
+  user that can write that folder can replace a DLL that every application then loads.
