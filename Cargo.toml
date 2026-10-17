@@ -1,0 +1,100 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/raumakey-model",
+    "crates/raumakey-engine",
+    "crates/raumakey-macro",
+    "crates/raumakey-config",
+    "crates/raumakey-policy",
+    "crates/raumakey-ipc",
+    "crates/raumakey-converter",
+    "crates/raumakey-migrate",
+    "crates/raumakey-resources",
+    "crates/raumakey-windows",
+    "crates/raumakey-controller",
+    "crates/raumakey-tsf",
+    "xtask",
+    "tests",
+]
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "GPL-3.0-or-later"
+authors = ["Raumakey contributors"]
+publish = false
+
+[workspace.dependencies]
+raumakey-model = { path = "crates/raumakey-model" }
+raumakey-engine = { path = "crates/raumakey-engine" }
+raumakey-macro = { path = "crates/raumakey-macro" }
+raumakey-config = { path = "crates/raumakey-config" }
+raumakey-policy = { path = "crates/raumakey-policy" }
+raumakey-ipc = { path = "crates/raumakey-ipc" }
+raumakey-converter = { path = "crates/raumakey-converter" }
+raumakey-migrate = { path = "crates/raumakey-migrate" }
+raumakey-resources = { path = "crates/raumakey-resources" }
+raumakey-windows = { path = "crates/raumakey-windows" }
+
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+toml = "1.1.8"
+unicode-normalization = "0.1.25"
+sha2 = "0.11.1"
+crc32fast = "1.5.2"
+object = "0.40.0"
+proptest = "1.12.0"
+tempfile = "3.27.0"
+windows-core = "0.62.2"
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Console",
+    "Win32_System_DataExchange",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Pipes",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_System_TaskScheduler",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_System_WindowsProgramming",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Controls",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_TextServices",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+[profile.release]
+lto = "thin"
+panic = "unwind"

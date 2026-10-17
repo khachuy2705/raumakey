@@ -1,0 +1,8 @@
+; Invented fixture for Raumakey migration tests. Not EVKey data.
+DO NOT DELETE THIS LINE
+ko:không
+dc:được
+vn:Việt Nam
+broken line without separator
+:no trigger
+ko:duplicate trigger

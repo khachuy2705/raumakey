@@ -1,0 +1,26 @@
+[package]
+name = "raumakey-ipc"
+description = "Raumakey typed control channel and gated legacy codec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# EVKey legacy shared-memory wire codec. Disabled by default and in release builds.
+evkey-compat = []
+
+[dependencies]
+raumakey-model.workspace = true
+crc32fast.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4ba370c659dadf5fdfcee7565857a8739d70f5232187e1314c4bec0d1db8d8bd # shrinks to start = 0, delete = 0, output = [], output_len = None, sequence = None, age = 2001, delay = 0
+cc 5ab977160e39033eec2c754ae30f72bfbc5f2acdd7743f5a49c2801802abe4a4 # shrinks to steps = [Connect { answered: true }, Key(Silent), Key(Silent), Reset { gate: 0, outcome: Answered }, Key(Silent)]
+cc 82f450eec93f5591df4a9565600d5a0032df935c08a8844ce948d459ee05b08a # shrinks to exe = ExeName("i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}i\u{307}-a-_"), diagnostic = false

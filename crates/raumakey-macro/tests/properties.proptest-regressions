@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5d8a20589baa5f98baba2efdff2a9126b8e9e21804d0101714c7d791ae360b2f # shrinks to entries = [MacroEntry { id: MacroId(0), trigger: "\u{feff}", replacement: "a", enabled: true, boundary: Delimiter, case_policy: Adapt }]
+cc f6103aebe7e42ae9b61cfb68353112d31bc84fb65b6a64d3807641f01c953801 # shrinks to entries = [MacroEntry { id: MacroId(0), trigger: ":", replacement: "a", enabled: true, boundary: Delimiter, case_policy: Adapt }]
+cc bde9f05f931e1ffbdf55cfb0be2e978cf2a0a49d00f950a93cc1040a2acebb0a # shrinks to entries = [("A", "a")], boundary = Whitespace, mode = Adaptive

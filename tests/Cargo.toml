@@ -1,0 +1,40 @@
+[package]
+name = "raumakey-tests"
+description = "Raumakey fixtures, contract suites, fuzz smoke, and acceptance runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "raumakey-test-runner"
+path = "src/bin/raumakey-test-runner.rs"
+
+[features]
+default = []
+evkey-compat = ["raumakey-ipc/evkey-compat"]
+
+[dependencies]
+raumakey-model.workspace = true
+raumakey-engine.workspace = true
+raumakey-macro.workspace = true
+raumakey-config.workspace = true
+raumakey-policy.workspace = true
+raumakey-ipc.workspace = true
+raumakey-converter.workspace = true
+raumakey-migrate.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true

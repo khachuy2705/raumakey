@@ -1,0 +1,270 @@
+//! Synthetic keyboard input for the fallback transport (plan §10.1, matrix #39).
+//!
+//! The builders are pure: they turn backspace counts, UTF-16 text, and replay keys into
+//! [`SyntheticKey`] records, all tagged with [`RAUMAKEY_INJECTED_TAG`] in `dwExtraInfo` so that
+//! Raumakey's own hooks recognize and ignore them. [`send`] (Windows only) is the only function
+//! that injects anything.
+
+use core::fmt;
+
+use raumakey_model::identity::RAUMAKEY_INJECTED_TAG;
+use raumakey_model::input::{ReplayKey, vk};
+use raumakey_model::transaction::MAX_INSERT_UNITS;
+use raumakey_model::utf16;
+
+/// Most backspaces one builder call produces.
+pub const MAX_BACKSPACES: u32 = 4096;
+/// Most UTF-16 units one builder call produces (the transaction insert limit).
+pub const MAX_TEXT_UNITS: usize = MAX_INSERT_UNITS;
+
+/// `dwExtraInfo` of every event built here. The tag fits in 32 bits (D6), so it is exact on
+/// every target.
+const TAG: usize = RAUMAKEY_INJECTED_TAG as usize;
+
+const KEYEVENTF_EXTENDEDKEY: u32 = 0x0001;
+const KEYEVENTF_KEYUP: u32 = 0x0002;
+const KEYEVENTF_UNICODE: u32 = 0x0004;
+
+/// Set-1 make code of Backspace.
+const SCAN_BACKSPACE: u16 = 0x0E;
+/// Set-1 make codes of the left modifier keys (layout independent).
+const SCAN_CONTROL: u16 = 0x1D;
+const SCAN_SHIFT: u16 = 0x2A;
+const SCAN_ALT: u16 = 0x38;
+const SCAN_LWIN: u16 = 0x5B;
+
+/// Why input could not be built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum InputError {
+    /// More events than one call may produce ([`MAX_BACKSPACES`], [`MAX_TEXT_UNITS`]).
+    TooManyEvents,
+    /// The text is not well-formed UTF-16 (a lone surrogate would corrupt the document).
+    IllFormedText,
+    /// The virtual key is not in `1..=0xFE`.
+    InvalidVirtualKey,
+    /// The scan code does not fit in 16 bits.
+    InvalidScanCode,
+}
+
+impl fmt::Display for InputError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::TooManyEvents => "too many synthetic input events",
+            Self::IllFormedText => "text is not well-formed UTF-16",
+            Self::InvalidVirtualKey => "virtual key cannot be injected",
+            Self::InvalidScanCode => "scan code does not fit in 16 bits",
+        })
+    }
+}
+
+impl std::error::Error for InputError {}
+
+/// One synthetic keyboard event, independent of the Win32 `INPUT` layout.
+///
+/// `Debug` prints the fields, which for Unicode events include the code unit; never log these
+/// records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SyntheticKey {
+    /// `wVk` (0 for Unicode events).
+    pub virtual_key: u16,
+    /// `wScan`: the scan code, or the UTF-16 code unit for Unicode events.
+    pub scan_code: u16,
+    /// `KEYEVENTF_KEYUP`.
+    pub key_up: bool,
+    /// `KEYEVENTF_UNICODE`.
+    pub unicode: bool,
+    /// `KEYEVENTF_EXTENDEDKEY`.
+    pub extended: bool,
+    /// `dwExtraInfo`.
+    pub extra_info: usize,
+}
+
+impl SyntheticKey {
+    const fn key(virtual_key: u16, scan_code: u16, extended: bool, key_up: bool) -> Self {
+        Self {
+            virtual_key,
+            scan_code,
+            key_up,
+            unicode: false,
+            extended,
+            extra_info: TAG,
+        }
+    }
+
+    const fn unicode_unit(unit: u16, key_up: bool) -> Self {
+        Self {
+            virtual_key: 0,
+            scan_code: unit,
+            key_up,
+            unicode: true,
+            extended: false,
+            extra_info: TAG,
+        }
+    }
+
+    /// The `KEYBDINPUT.dwFlags` bits.
+    pub const fn flags(&self) -> u32 {
+        let mut flags = 0;
+        if self.extended {
+            flags |= KEYEVENTF_EXTENDEDKEY;
+        }
+        if self.key_up {
+            flags |= KEYEVENTF_KEYUP;
+        }
+        if self.unicode {
+            flags |= KEYEVENTF_UNICODE;
+        }
+        flags
+    }
+
+    /// The Win32 `INPUT` record (keyboard member, time 0 = system time stamp).
+    #[cfg(windows)]
+    pub fn to_input(&self) -> windows::Win32::UI::Input::KeyboardAndMouse::INPUT {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, VIRTUAL_KEY,
+        };
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(self.virtual_key),
+                    wScan: self.scan_code,
+                    dwFlags: KEYBD_EVENT_FLAGS(self.flags()),
+                    time: 0,
+                    dwExtraInfo: self.extra_info,
+                },
+            },
+        }
+    }
+}
+
+/// `count` Backspace presses (down/up pairs).
+pub fn keyboard_inputs_for_backspaces(count: u32) -> Result<Vec<SyntheticKey>, InputError> {
+    if count > MAX_BACKSPACES {
+        return Err(InputError::TooManyEvents);
+    }
+    let backspace = vk::BACK as u16;
+    Ok((0..count)
+        .flat_map(|_| {
+            [
+                SyntheticKey::key(backspace, SCAN_BACKSPACE, false, false),
+                SyntheticKey::key(backspace, SCAN_BACKSPACE, false, true),
+            ]
+        })
+        .collect())
+}
+
+/// `KEYEVENTF_UNICODE` down/up pairs, one per UTF-16 code unit (a surrogate pair is sent as
+/// its two units). Ill-formed text is refused.
+pub fn unicode_text_inputs(units: &[u16]) -> Result<Vec<SyntheticKey>, InputError> {
+    if units.len() > MAX_TEXT_UNITS {
+        return Err(InputError::TooManyEvents);
+    }
+    if !utf16::is_well_formed(units) {
+        return Err(InputError::IllFormedText);
+    }
+    Ok(units
+        .iter()
+        .flat_map(|&unit| {
+            [
+                SyntheticKey::unicode_unit(unit, false),
+                SyntheticKey::unicode_unit(unit, true),
+            ]
+        })
+        .collect())
+}
+
+/// Replays `key`: modifier downs (Ctrl, Shift, Alt, Win), key down, key up, then modifier ups in
+/// reverse order. A missing scan code is sent as 0.
+pub fn replay_inputs(key: &ReplayKey) -> Result<Vec<SyntheticKey>, InputError> {
+    let virtual_key = u16::try_from(key.virtual_key)
+        .ok()
+        .filter(|code| (1..=0xFE).contains(code))
+        .ok_or(InputError::InvalidVirtualKey)?;
+    let scan_code =
+        u16::try_from(key.scan_code.unwrap_or(0)).map_err(|_| InputError::InvalidScanCode)?;
+    let modifiers = key.modifiers;
+    let held: Vec<(u16, u16, bool)> = [
+        (modifiers.ctrl, vk::CONTROL as u16, SCAN_CONTROL, false),
+        (modifiers.shift, vk::SHIFT as u16, SCAN_SHIFT, false),
+        (modifiers.alt, vk::MENU as u16, SCAN_ALT, false),
+        (modifiers.win, vk::LWIN as u16, SCAN_LWIN, true),
+    ]
+    .into_iter()
+    .filter(|(on, ..)| *on)
+    .map(|(_, code, scan, extended)| (code, scan, extended))
+    .collect();
+    let extended = is_extended_key(key.virtual_key);
+    let mut events = Vec::with_capacity(held.len() * 2 + 2);
+    events.extend(
+        held.iter()
+            .map(|&(code, scan, ext)| SyntheticKey::key(code, scan, ext, false)),
+    );
+    events.push(SyntheticKey::key(virtual_key, scan_code, extended, false));
+    events.push(SyntheticKey::key(virtual_key, scan_code, extended, true));
+    events.extend(
+        held.iter()
+            .rev()
+            .map(|&(code, scan, ext)| SyntheticKey::key(code, scan, ext, true)),
+    );
+    Ok(events)
+}
+
+/// Keys whose scan code carries the `E0` prefix on every keyboard: the navigation block,
+/// Print Screen, the right Ctrl/Alt, the Windows and Applications keys, numeric-pad divide,
+/// Num Lock, and the browser/media/launch keys.
+pub const fn is_extended_key(virtual_key: u32) -> bool {
+    matches!(
+        virtual_key,
+        0x21..=0x28 | 0x2C..=0x2E | 0x5B..=0x5D | 0x6F | 0x90 | 0xA3 | 0xA5 | 0xA6..=0xB7
+    )
+}
+
+/// True when `extra_info` is Raumakey's injection tag.
+pub const fn is_raumakey_extra_info(extra_info: usize) -> bool {
+    extra_info as u64 == RAUMAKEY_INJECTED_TAG
+}
+
+/// What [`send`] injected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SendReport {
+    /// Events passed in.
+    pub requested: usize,
+    /// Events the system accepted (`SendInput` return value).
+    pub sent: usize,
+}
+
+impl SendReport {
+    /// True when every event was injected.
+    pub const fn is_complete(&self) -> bool {
+        self.sent == self.requested
+    }
+}
+
+/// Injects `keys` with `SendInput`.
+///
+/// Fails when nothing could be injected (for example blocked by UIPI, or the input desktop is
+/// locked). A partial injection is reported through [`SendReport::is_complete`]; the caller must
+/// treat the host text as unknown and reset its context.
+#[cfg(windows)]
+pub fn send(keys: &[SyntheticKey]) -> crate::error::WinResult<SendReport> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{INPUT, SendInput};
+
+    if keys.is_empty() {
+        return Ok(SendReport {
+            requested: 0,
+            sent: 0,
+        });
+    }
+    let inputs: Vec<INPUT> = keys.iter().map(SyntheticKey::to_input).collect();
+    let size = i32::try_from(size_of::<INPUT>()).unwrap_or(i32::MAX);
+    // SAFETY: `inputs` is a valid slice of initialized keyboard INPUT records of `size` bytes.
+    let sent = unsafe { SendInput(&inputs, size) } as usize;
+    if sent == 0 {
+        return Err(crate::error::WinError::last("SendInput"));
+    }
+    Ok(SendReport {
+        requested: keys.len(),
+        sent,
+    })
+}

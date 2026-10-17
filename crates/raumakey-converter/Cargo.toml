@@ -1,0 +1,19 @@
+[package]
+name = "raumakey-converter"
+description = "Raumakey Vietnamese charset, clipboard, and file text conversion"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
