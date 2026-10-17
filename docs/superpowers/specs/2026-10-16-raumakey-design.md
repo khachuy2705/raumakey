@@ -607,6 +607,25 @@ phím vật lý
 - Callback của hook phải trả lời nhanh, dưới `LowLevelHooksTimeout`. Engine và `SendInput` chạy
   ngay trong callback, không có I/O và không chờ khoá của luồng khác. Thay đổi cấu hình được chuyển
   tới luồng hook và áp dụng ở phím kế tiếp.
+- Trạng thái phím được đọc từ các sự kiện hook. Chỉ hai cách đọc trực tiếp được tin cậy:
+  `GetAsyncKeyState` cho biết một phím có đang được giữ hay không, và `GetKeyState(VK_CAPITAL)` cho
+  biết trạng thái Caps Lock. Raumakey dùng chúng để:
+  - bỏ các phím mà hook không thấy lúc được thả (sau Win+L hoặc Ctrl+Alt+Del), đồng thời đặt lại
+    bộ phân loại phím tắt;
+  - đồng bộ phím bổ trợ trước mỗi phím;
+  - đọc lại Caps Lock khi đổi tài liệu, hoặc sau 1 giây không có sự kiện nào.
+
+  Khi Ctrl, Alt hoặc Win đang thực sự được giữ (ngoài trường hợp AltGr), Raumakey không sửa chữ,
+  để một Backspace không bao giờ thành Ctrl+Backspace.
+- Nhấn Alt một mình và F10 đưa cửa sổ vào chế độ menu, nên cả hai đều kết thúc từ.
+- Khi cửa sổ foreground dùng bộ gõ tiếng Trung, Nhật hoặc Hàn, mọi phím đi thẳng và từ kết thúc.
+- Windows có thể âm thầm gỡ một hook mức thấp, ví dụ khi callback quá chậm. Vì vậy cứ 2 giây
+  controller lại so nhịp sự kiện của hook với `GetLastInputInfo`. Nếu hệ thống vẫn nhận input mà
+  hook đã im hơn 1 giây, controller cài lại hook với cấu hình hiện tại.
+- Giới hạn:
+  - Việc chuyển sang một cửa sổ chạy quyền cao hơn rồi quay lại mà hook không nhận được phím nào
+    (ví dụ chỉ dùng chuột) không kết thúc từ đang gõ.
+  - Khi gõ bằng AltGr, các phím Backspace được gửi lúc phím Ctrl giả của AltGr vẫn đang được giữ.
 - D39 thay thế D26: hook giờ là transport gõ, không chỉ đọc phím tắt.
 - Rủi ro đã biết:
   - Ứng dụng có tự hoàn thành (thanh địa chỉ trình duyệt, Excel) có thể làm lệch các phím

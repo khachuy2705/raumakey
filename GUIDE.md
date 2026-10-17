@@ -184,8 +184,8 @@ Thư mục này không được đưa lên Git.
 4. Lần chạy đầu, Raumakey tạo `raumakey.toml` ngay cạnh `raumakey.exe`. Từ lần chạy thứ hai,
    Raumakey đọc lại tệp đó. Nếu thư mục không ghi được, hoặc nằm trong `C:\Program Files`, thư mục
    Windows hay thư mục tạm (ví dụ khi bạn chạy exe ngay trong tệp ZIP), cấu hình được lưu ở
-   `%LOCALAPPDATA%\Raumakey\raumakey.toml`. Mục **Giới thiệu** trong menu cho biết đường dẫn đang
-   dùng.
+   `%LOCALAPPDATA%\Raumakey\raumakey.toml`. Lần chạy đầu, một hộp thoại cho biết tệp cấu hình nằm
+   ở đâu; về sau, mục **Giới thiệu** trong menu cho biết đường dẫn đang dùng.
 5. Chỉ chạy được một Raumakey mỗi lúc: chạy lần nữa khi đang chạy thì lần sau tự thoát.
 
 ### 5.2 Gõ và đổi chế độ
@@ -211,8 +211,15 @@ Thư mục này không được đưa lên Git.
 
 Mọi thay đổi trong menu được ghi ngay vào `raumakey.toml`. Nếu bạn sửa tệp bằng tay rồi lưu,
 Raumakey nạp lại trong vòng vài giây. Một giá trị không hợp lệ được thay bằng giá trị mặc định.
-Tệp không đọc được (ví dụ sai cú pháp TOML) thì Raumakey chạy với cấu hình mặc định và không ghi đè
-tệp của bạn. Khi Raumakey ghi lại tệp, các dòng comment bạn thêm vào không được giữ.
+Tệp không đọc được (ví dụ sai cú pháp TOML) thì Raumakey báo một lần, chạy với cấu hình mặc định
+và không ghi đè tệp của bạn. Nếu tệp đã hỏng từ trước khi chạy, Raumakey hỏi bạn có muốn đổi tên
+nó thành `raumakey.toml.bak-…` rồi tạo tệp mới không. Khi Raumakey ghi lại tệp, các dòng comment bạn
+thêm vào không được giữ.
+
+Nếu `raumakey.toml` chọn một bảng phím tự định nghĩa (`method = "user"`), không mục nào trong
+Telex/VNI/VIQR được đánh dấu và tooltip ghi "(kiểu gõ riêng)". Nếu bạn bật khởi động cùng Windows
+bằng tác vụ quản trị (`raumakey startup elevated-task`, chạy bằng quyền quản trị), muốn tắt thì
+chạy `raumakey startup none` cũng bằng quyền quản trị.
 
 ### 5.4 Tệp cấu hình
 
@@ -293,6 +300,10 @@ như mô tả và báo lại.
 | 8 | Gõ trong một cửa sổ chạy quyền quản trị (ví dụ PowerShell "Run as administrator") | Phím đi thẳng, không biến đổi (cần chạy Raumakey bằng quyền quản trị để gõ tiếng Việt ở đó) |
 | 9 | Bật "Khởi động cùng Windows", đăng xuất rồi đăng nhập lại | Raumakey tự chạy, đúng chế độ đã lưu |
 | 10 | Thoát Raumakey, chạy lại | Các tuỳ chọn đã chọn vẫn còn |
+| 11 | Khoá máy (Win+L), mở lại, gõ `aa`, rồi nhấn Ctrl+Shift | "â", và Ctrl+Shift vẫn đổi được V/E ngay lần đầu |
+| 12 | Gõ `xin `, khoá máy, đổi Caps Lock ở màn hình khoá, mở lại, gõ `tieengs` | Cả từ cùng kiểu chữ ("TIẾNG" hoặc "tiếng"), không lẫn hoa thường |
+| 13 | Gõ `tie`, nhấn Alt một mình, rồi gõ `e` | Không có Backspace nào lọt vào menu của Notepad |
+| 14 | Gõ nhanh, nhấn chồng phím, giữ phím để lặp | Không mất chữ, không lặp chữ, không đảo thứ tự |
 
 ### 5.7 Dòng lệnh
 
@@ -325,6 +336,8 @@ Raumakey không ghi gì vào registry.
   Ứng dụng có tự hoàn thành (thanh địa chỉ trình duyệt, Excel) có thể làm lệch chữ.
 - Ô mật khẩu chỉ được nhận ra khi là ô Edit kiểu cũ của Windows; ô mật khẩu trên trình duyệt được
   xử lý như ô thường.
+- Khi đang dùng bộ gõ tiếng Trung, Nhật hoặc Hàn của Windows, Raumakey để mọi phím đi thẳng.
+- Nếu Windows gỡ hook (ví dụ khi máy quá tải), Raumakey tự cài lại trong vòng khoảng 2 giây.
 - Chưa có bảng cài đặt; các tuỳ chọn khác ngoài menu phải sửa trong `raumakey.toml`.
 - Chưa có giao diện quản lý macro: bạn tự viết `raumakey-macros.toml`.
 - Lệnh `migrate` (nhập cấu hình và macro từ EVKey) chưa có.
