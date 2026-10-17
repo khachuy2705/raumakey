@@ -4,7 +4,8 @@
 //! in-memory fake; `crate::system` holds the real one.
 //!
 //! - Without arguments, `raumakey.exe` runs the controller on the [`System::desktop`]
-//!   ([`crate::run`]): a single instance with its tray icon. It prints nothing.
+//!   ([`crate::run`]): a single instance that types through the keyboard hook, with its tray
+//!   icon and the settings of `raumakey.toml`. It prints nothing.
 //! - `--version` prints the product name and version; `help` the usage.
 //! - `update` (matrix #57): Raumakey has no updater. The command says so, exits with 0, and
 //!   never touches the network (design §13: a future updater must verify an authenticated
@@ -53,7 +54,8 @@ pub trait System: InstallSystem + StartupSystem {
 /// Where `raumakey.exe` runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Context {
-    /// The directory of `raumakey.exe`, which holds the TIPs of the package layout.
+    /// The directory of `raumakey.exe`; in the layout of a TSF build (not shipped) it holds
+    /// the TIPs.
     pub exe_dir: PathBuf,
 }
 
@@ -63,8 +65,8 @@ pub fn version_line() -> String {
 }
 
 /// The TIPs of `install`: the given paths made absolute against the current directory (an
-/// elevated restart runs in another directory), or else the package layout next to
-/// `raumakey.exe`.
+/// elevated restart runs in another directory), or else the TSF build layout next to
+/// `raumakey.exe` (`x64\raumakey_tip.dll`, `x86\raumakey_tip.dll`).
 pub fn resolve_tips(args: &InstallArgs, exe_dir: &Path) -> io::Result<Vec<TipBinary>> {
     let resolve = |given: &Option<PathBuf>, arch: TipArch| -> io::Result<TipBinary> {
         let path = match given {

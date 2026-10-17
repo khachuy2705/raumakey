@@ -207,8 +207,9 @@
 //!
 //! On a test desktop, with no other Vietnamese input method running, start the hook with the
 //! ignored test `manual_typing_hook` (`tests/manual.rs`; `RAUMAKEY_TYPING_SECONDS` sets how
-//! long it runs; it checks the hook's health every 2 seconds) or, once it is wired, with
-//! `raumakey.exe`. Record each result.
+//! long it runs; it checks the hook's health every 2 seconds) or with the portable
+//! `raumakey.exe` started without arguments (the run mode starts the hook, `crate::desktop`).
+//! Record each result.
 //!
 //! 1. **Notepad, Telex:** type `tieengs vieetj` then Space: `tiếng việt `. Type
 //!    `xin chaof` and `ddi hojc`: `xin chào`, `đi học`.

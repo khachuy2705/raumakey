@@ -1,0 +1,516 @@
+//! The settings worker (`worker`): the tray's commands run on the worker's `Settings` (D40),
+//! off the tray's window thread, and come back as numbered answers that carry the settings in
+//! effect; the macro snapshots of a reload go to the typing hook from the worker. Real files
+//! in temporary folders; the shortcut, Notepad, and the hook are fakes.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use raumakey_config::{ConfigDocument, ConfigError, StartupMode, StoreDocument};
+use raumakey_controller::settings::{Change, DocumentStatus, Recovery, Settings};
+use raumakey_controller::worker::{
+    Answer, OpenError, Outcome, SettingsState, SettingsWorker, StartupError, WorkerCommand,
+    WorkerPorts, WorkerThread,
+};
+use raumakey_ipc::message::MacroSnapshot;
+use raumakey_model::options::InputMethod;
+use raumakey_windows::error::{E_ACCESSDENIED, E_FAIL, WinError, WinResult};
+
+/// What the worker asked of its ports.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PortCall {
+    /// A macro snapshot for the hook: its revision and entry count (never its text).
+    Macros {
+        revision: u64,
+        entries: usize,
+    },
+    CreateShortcut,
+    RemoveShortcut,
+    Notepad(PathBuf),
+}
+
+type Log = Arc<Mutex<Vec<PortCall>>>;
+
+struct FakePorts {
+    log: Log,
+    create: WinResult<()>,
+    remove: WinResult<bool>,
+    notepad: WinResult<()>,
+    /// Notepad panics instead of answering.
+    notepad_panics: bool,
+}
+
+impl FakePorts {
+    fn new(log: &Log) -> Self {
+        Self {
+            log: Arc::clone(log),
+            create: Ok(()),
+            remove: Ok(true),
+            notepad: Ok(()),
+            notepad_panics: false,
+        }
+    }
+
+    fn push(&self, call: PortCall) {
+        self.log.lock().unwrap().push(call);
+    }
+}
+
+impl WorkerPorts for FakePorts {
+    fn post_macros(&mut self, macros: &MacroSnapshot) {
+        self.push(PortCall::Macros {
+            revision: macros.macro_revision,
+            entries: macros.entries.len(),
+        });
+    }
+
+    fn create_shortcut(&mut self) -> WinResult<()> {
+        self.push(PortCall::CreateShortcut);
+        self.create
+    }
+
+    fn remove_shortcut(&mut self) -> WinResult<bool> {
+        self.push(PortCall::RemoveShortcut);
+        self.remove
+    }
+
+    fn open_in_notepad(&mut self, file: &Path) -> WinResult<()> {
+        self.push(PortCall::Notepad(file.to_path_buf()));
+        assert!(!self.notepad_panics, "Notepad panics in this test");
+        self.notepad
+    }
+}
+
+/// A folder for `raumakey.exe` that holds the configuration.
+struct Folder(tempfile::TempDir);
+
+impl Folder {
+    fn new() -> Self {
+        Self(tempfile::tempdir().unwrap())
+    }
+
+    fn open(&self) -> Settings {
+        Settings::open(self.0.path(), None, &|_| true, &|_| false).0
+    }
+
+    fn config(&self) -> PathBuf {
+        self.0.path().join("raumakey.toml")
+    }
+
+    fn macros(&self) -> PathBuf {
+        self.0.path().join("raumakey-macros.toml")
+    }
+
+    fn stored(&self) -> ConfigDocument {
+        ConfigDocument::decode(&fs::read_to_string(self.config()).unwrap())
+            .unwrap()
+            .document
+    }
+}
+
+fn worker(folder: &Folder, ports: FakePorts) -> SettingsWorker<FakePorts> {
+    SettingsWorker::new(folder.open(), ports)
+}
+
+fn state(answer: &Answer) -> &SettingsState {
+    answer.state.as_deref().expect("the settings in effect")
+}
+
+#[test]
+fn an_applied_change_is_committed_and_answered_with_the_settings_in_effect() {
+    let folder = Folder::new();
+    let log = Log::default();
+    let mut worker = worker(&folder, FakePorts::new(&log));
+    let change = Change::InputMethod(InputMethod::Vni);
+    let answer = worker.handle(1, WorkerCommand::Apply(change));
+    assert_eq!(answer.seq, 1);
+    assert_eq!(
+        answer.outcome,
+        Outcome::Applied {
+            change,
+            result: Ok(())
+        }
+    );
+    let state = state(&answer);
+    assert_eq!(state.runtime, *worker.settings().runtime_snapshot());
+    assert_eq!(state.runtime.options.input_method, InputMethod::Vni);
+    assert_eq!(state.startup, StartupMode::None);
+    assert_eq!(folder.stored().input.method, InputMethod::Vni);
+    assert_eq!(*log.lock().unwrap(), []);
+}
+
+/// A damaged `raumakey.toml` is never overwritten: the change takes effect, and the answer
+/// carries the error.
+#[test]
+fn a_change_that_cannot_be_saved_stays_in_effect_and_is_answered_with_the_error() {
+    let folder = Folder::new();
+    fs::write(folder.config(), "[[[ damaged").unwrap();
+    let mut worker = worker(&folder, FakePorts::new(&Log::default()));
+    let change = Change::SpellCheck(false);
+    let answer = worker.handle(4, WorkerCommand::Apply(change));
+    assert_eq!(
+        answer.outcome,
+        Outcome::Applied {
+            change,
+            result: Err(ConfigError::Corrupt)
+        }
+    );
+    assert!(!state(&answer).runtime.options.spell_check);
+    assert_eq!(fs::read(folder.config()).unwrap(), b"[[[ damaged");
+}
+
+/// Every answer carries the settings in effect, so the answer to whatever command the tray
+/// sent last brings everything the worker has (a reload answered before it included): the
+/// tray takes settings over only from that answer.
+#[test]
+fn a_poll_that_finds_nothing_new_still_answers_with_the_settings_in_effect() {
+    let folder = Folder::new();
+    let log = Log::default();
+    let mut worker = worker(&folder, FakePorts::new(&log));
+    let answer = worker.handle(2, WorkerCommand::Poll);
+    assert_eq!(answer.seq, 2);
+    assert_eq!(answer.outcome, Outcome::Polled(None));
+    assert_eq!(
+        state(&answer).runtime,
+        *worker.settings().runtime_snapshot()
+    );
+    assert_eq!(*log.lock().unwrap(), []);
+}
+
+/// A hand edit reloaded by a poll, then "Mở file cấu hình": the answer to the later command
+/// carries the reloaded settings as well.
+#[test]
+fn the_answer_to_open_config_carries_a_reload_answered_before_it() {
+    let folder = Folder::new();
+    let mut worker = worker(&folder, FakePorts::new(&Log::default()));
+    fs::write(
+        folder.config(),
+        "version = 1\nrevision = 1\n[input]\nmethod = \"vni\"\n",
+    )
+    .unwrap();
+    worker.handle(1, WorkerCommand::Poll);
+    let answer = worker.handle(2, WorkerCommand::OpenConfig);
+    assert_eq!(
+        state(&answer).runtime.options.input_method,
+        InputMethod::Vni
+    );
+}
+
+/// A hand edit is loaded again by the poll: the answer carries the new settings and the state
+/// of the files, and the new macros go to the hook from the worker thread.
+#[test]
+fn a_hand_edit_is_reloaded_by_a_poll_and_its_macros_go_to_the_hook() {
+    let folder = Folder::new();
+    let log = Log::default();
+    let mut worker = worker(&folder, FakePorts::new(&log));
+    fs::write(
+        folder.config(),
+        "version = 1\nrevision = 1\n[input]\nmethod = \"viqr\"\nenabled = false\n",
+    )
+    .unwrap();
+    fs::write(
+        folder.macros(),
+        "version = 1\nrevision = 3\n[[macro]]\nid = 1\ntrigger = \"vn\"\nreplacement = \"Việt Nam\"\n",
+    )
+    .unwrap();
+    let answer = worker.handle(5, WorkerCommand::Poll);
+    let Outcome::Polled(Some(status)) = &answer.outcome else {
+        panic!("{:?}", answer.outcome);
+    };
+    assert_eq!(status, worker.settings().status());
+    assert!(matches!(status.config, DocumentStatus::Loaded { .. }));
+    let state = state(&answer);
+    assert_eq!(state.runtime.options.input_method, InputMethod::Viqr);
+    assert!(!state.runtime.vietnamese_mode);
+    assert_eq!(
+        *log.lock().unwrap(),
+        [PortCall::Macros {
+            revision: 3,
+            entries: 1
+        }]
+    );
+    // Nothing new since.
+    assert_eq!(
+        worker.handle(6, WorkerCommand::Poll).outcome,
+        Outcome::Polled(None)
+    );
+}
+
+/// A hand edit that breaks the file keeps the last good settings and is answered with the new
+/// state of the files, so the tray can tell the user.
+#[test]
+fn a_hand_edit_that_breaks_the_file_is_answered_with_its_state() {
+    let folder = Folder::new();
+    let mut worker = worker(&folder, FakePorts::new(&Log::default()));
+    worker.handle(1, WorkerCommand::Apply(Change::ModernTone(true)));
+    fs::write(folder.config(), "[input\nmethod = ").unwrap();
+    let answer = worker.handle(2, WorkerCommand::Poll);
+    let Outcome::Polled(Some(status)) = &answer.outcome else {
+        panic!("{:?}", answer.outcome);
+    };
+    assert_eq!(
+        status.config,
+        DocumentStatus::Unreadable(ConfigError::Corrupt)
+    );
+    assert!(state(&answer).runtime.options.modern_tone);
+}
+
+#[test]
+fn turning_startup_on_creates_the_shortcut_then_saves_shortcut() {
+    let folder = Folder::new();
+    let log = Log::default();
+    let mut worker = worker(&folder, FakePorts::new(&log));
+    let answer = worker.handle(3, WorkerCommand::Startup(true));
+    assert_eq!(
+        answer.outcome,
+        Outcome::Startup {
+            on: true,
+            result: Ok(())
+        }
+    );
+    assert_eq!(state(&answer).startup, StartupMode::Shortcut);
+    assert_eq!(folder.stored().system.startup, StartupMode::Shortcut);
+    assert_eq!(*log.lock().unwrap(), [PortCall::CreateShortcut]);
+}
+
+/// Without the shortcut, nothing starts Raumakey at logon, so `shortcut` is not saved.
+#[test]
+fn a_shortcut_that_cannot_be_created_leaves_startup_off() {
+    let folder = Folder::new();
+    let log = Log::default();
+    let error = WinError::new(E_ACCESSDENIED, "IPersistFile::Save");
+    let mut ports = FakePorts::new(&log);
+    ports.create = Err(error);
+    let mut worker = worker(&folder, ports);
+    let answer = worker.handle(1, WorkerCommand::Startup(true));
+    assert_eq!(
+        answer.outcome,
+        Outcome::Startup {
+            on: true,
+            result: Err(StartupError::Shortcut(error))
+        }
+    );
+    assert_eq!(state(&answer).startup, StartupMode::None);
+    assert_eq!(folder.stored().system.startup, StartupMode::None);
+}
+
+#[test]
+fn turning_startup_off_removes_the_shortcut_then_saves_none() {
+    let folder = Folder::new();
+    let log = Log::default();
+    let mut worker = worker(&folder, FakePorts::new(&log));
+    worker.handle(1, WorkerCommand::Startup(true));
+    let answer = worker.handle(2, WorkerCommand::Startup(false));
+    assert_eq!(
+        answer.outcome,
+        Outcome::Startup {
+            on: false,
+            result: Ok(())
+        }
+    );
+    assert_eq!(state(&answer).startup, StartupMode::None);
+    assert_eq!(folder.stored().system.startup, StartupMode::None);
+    assert_eq!(
+        *log.lock().unwrap(),
+        [PortCall::CreateShortcut, PortCall::RemoveShortcut]
+    );
+    // A shortcut that was gone already is no failure.
+    let mut ports = FakePorts::new(&log);
+    ports.remove = Ok(false);
+    let mut worker = SettingsWorker::new(folder.open(), ports);
+    let answer = worker.handle(1, WorkerCommand::Startup(false));
+    assert_eq!(
+        answer.outcome,
+        Outcome::Startup {
+            on: false,
+            result: Ok(())
+        }
+    );
+}
+
+/// The shortcut that is still there still starts Raumakey, so `shortcut` stays saved.
+#[test]
+fn a_shortcut_that_cannot_be_removed_keeps_startup_on() {
+    let folder = Folder::new();
+    let log = Log::default();
+    let mut worker = worker(&folder, FakePorts::new(&log));
+    worker.handle(1, WorkerCommand::Startup(true));
+    let error = WinError::new(E_FAIL, "remove shortcut");
+    let mut ports = FakePorts::new(&log);
+    ports.remove = Err(error);
+    let mut worker = SettingsWorker::new(folder.open(), ports);
+    let answer = worker.handle(2, WorkerCommand::Startup(false));
+    assert_eq!(
+        answer.outcome,
+        Outcome::Startup {
+            on: false,
+            result: Err(StartupError::Shortcut(error))
+        }
+    );
+    assert_eq!(state(&answer).startup, StartupMode::Shortcut);
+    assert_eq!(folder.stored().system.startup, StartupMode::Shortcut);
+}
+
+/// The shortcut was made, but the choice could not be saved: the shortcut stays (it starts
+/// Raumakey at logon), and the save error is answered.
+#[test]
+fn a_startup_choice_that_cannot_be_saved_is_answered_with_the_save_error() {
+    let folder = Folder::new();
+    fs::write(folder.config(), "[[[ damaged").unwrap();
+    let log = Log::default();
+    let mut worker = worker(&folder, FakePorts::new(&log));
+    let answer = worker.handle(1, WorkerCommand::Startup(true));
+    assert_eq!(
+        answer.outcome,
+        Outcome::Startup {
+            on: true,
+            result: Err(StartupError::Save(ConfigError::Corrupt))
+        }
+    );
+    assert_eq!(state(&answer).startup, StartupMode::Shortcut);
+    assert_eq!(*log.lock().unwrap(), [PortCall::CreateShortcut]);
+}
+
+#[test]
+fn open_config_starts_notepad_with_the_configuration_file() {
+    let folder = Folder::new();
+    let log = Log::default();
+    let mut worker = worker(&folder, FakePorts::new(&log));
+    let answer = worker.handle(1, WorkerCommand::OpenConfig);
+    assert_eq!(answer.outcome, Outcome::Opened(Ok(())));
+    assert!(answer.state.is_some());
+    assert_eq!(*log.lock().unwrap(), [PortCall::Notepad(folder.config())]);
+}
+
+#[test]
+fn open_config_without_a_file_says_so_and_starts_nothing() {
+    let folder = Folder::new();
+    let log = Log::default();
+    let mut worker = worker(&folder, FakePorts::new(&log));
+    fs::remove_file(folder.config()).unwrap();
+    assert_eq!(
+        worker.handle(1, WorkerCommand::OpenConfig).outcome,
+        Outcome::Opened(Err(OpenError::NoFile))
+    );
+    // No folder at all (`Location::Unavailable`): no file either.
+    let (settings, _) = Settings::open(Path::new(""), None, &|_| true, &|_| false);
+    let mut worker = SettingsWorker::new(settings, FakePorts::new(&log));
+    assert_eq!(
+        worker.handle(2, WorkerCommand::OpenConfig).outcome,
+        Outcome::Opened(Err(OpenError::NoFile))
+    );
+    assert_eq!(*log.lock().unwrap(), []);
+}
+
+#[test]
+fn a_notepad_that_cannot_start_is_answered() {
+    let folder = Folder::new();
+    let log = Log::default();
+    let error = WinError::new(E_FAIL, "CreateProcessW(notepad)");
+    let mut ports = FakePorts::new(&log);
+    ports.notepad = Err(error);
+    let mut worker = worker(&folder, ports);
+    assert_eq!(
+        worker.handle(1, WorkerCommand::OpenConfig).outcome,
+        Outcome::Opened(Err(OpenError::Failed(error)))
+    );
+}
+
+/// Recovery is the user's explicit choice: the damaged file is moved aside and the settings
+/// in effect are written in its place.
+#[test]
+fn recover_moves_a_damaged_file_aside_and_writes_the_settings_in_effect() {
+    let folder = Folder::new();
+    fs::write(folder.config(), "[[[ damaged").unwrap();
+    let mut worker = worker(&folder, FakePorts::new(&Log::default()));
+    worker.handle(1, WorkerCommand::Apply(Change::Macros(false)));
+    let answer = worker.handle(2, WorkerCommand::Recover);
+    let Outcome::Recovered(Ok(Recovery::Replaced {
+        backup: Some(backup),
+        saved: Ok(()),
+    })) = &answer.outcome
+    else {
+        panic!("{:?}", answer.outcome);
+    };
+    assert_eq!(fs::read(backup).unwrap(), b"[[[ damaged");
+    assert!(!folder.stored().macros.enabled);
+    assert!(!state(&answer).runtime.options.macros_enabled);
+    // Nothing is left to recover.
+    assert_eq!(
+        worker.handle(3, WorkerCommand::Recover).outcome,
+        Outcome::Recovered(Ok(Recovery::NotNeeded))
+    );
+}
+
+/// The worker thread runs the commands in the order they were sent and delivers each answer;
+/// `finish` closes the queue and waits until everything sent was done.
+#[test]
+fn the_worker_thread_answers_in_order_and_finishes_its_queue() {
+    let folder = Folder::new();
+    let log = Log::default();
+    let (deliver, answers) = mpsc::channel();
+    let thread = WorkerThread::spawn(worker(&folder, FakePorts::new(&log)), move |answer| {
+        deliver.send(answer).unwrap();
+    })
+    .unwrap();
+    assert!(thread.send(1, WorkerCommand::Apply(Change::ModernTone(true))));
+    assert!(thread.send(2, WorkerCommand::Poll));
+    assert!(thread.send(3, WorkerCommand::Apply(Change::SpellCheck(false))));
+    assert!(thread.finish(Duration::from_secs(20)));
+    let seqs: Vec<u64> = answers.try_iter().map(|answer| answer.seq).collect();
+    assert_eq!(seqs, [1, 2, 3]);
+    let stored = folder.stored();
+    assert!(stored.input.modern_tone);
+    assert!(!stored.input.spell_check);
+}
+
+/// A command that panics is contained on the worker thread: it is answered as failed (so the
+/// tray never waits for it), and the worker goes on with the next command.
+#[test]
+fn a_command_that_panics_is_answered_as_failed_and_the_worker_goes_on() {
+    let folder = Folder::new();
+    let log = Log::default();
+    let mut ports = FakePorts::new(&log);
+    ports.notepad_panics = true;
+    let (deliver, answers) = mpsc::channel();
+    let thread = WorkerThread::spawn(worker(&folder, ports), move |answer| {
+        deliver.send(answer).unwrap();
+    })
+    .unwrap();
+    thread.send(1, WorkerCommand::OpenConfig);
+    thread.send(2, WorkerCommand::Apply(Change::Macros(false)));
+    assert!(thread.finish(Duration::from_secs(20)));
+    let answers: Vec<Answer> = answers.try_iter().collect();
+    assert_eq!(answers.len(), 2);
+    assert_eq!((answers[0].seq, &answers[0].outcome), (1, &Outcome::Failed));
+    assert_eq!(answers[1].seq, 2);
+    assert!(!folder.stored().macros.enabled);
+}
+
+/// The answers travel to the tray's thread and the worker owns `Settings`.
+#[test]
+fn answers_and_workers_move_between_threads() {
+    fn send<T: Send>() {}
+    send::<Answer>();
+    send::<SettingsWorker<FakePorts>>();
+    send::<WorkerCommand>();
+}
+
+/// `Debug` of an answer shows revisions and states, never macro text (a poll's macros never
+/// travel in an answer at all).
+#[test]
+fn answers_hold_no_macro_text() {
+    let folder = Folder::new();
+    let mut worker = worker(&folder, FakePorts::new(&Log::default()));
+    fs::write(
+        folder.macros(),
+        "version = 1\nrevision = 1\n[[macro]]\nid = 1\ntrigger = \"secret-trigger\"\nreplacement = \"secret replacement\"\n",
+    )
+    .unwrap();
+    let answer = worker.handle(1, WorkerCommand::Poll);
+    let shown = format!("{answer:?}");
+    assert!(!shown.contains("secret"), "{shown}");
+}

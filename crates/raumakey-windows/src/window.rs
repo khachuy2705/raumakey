@@ -85,6 +85,10 @@ pub const WM_CLOSE: u32 = 0x0010;
 /// session ends (sign-out, shutdown, or the Restart Manager closing the application); the
 /// process may end any time after the window procedure returns.
 pub const WM_ENDSESSION: u32 = 0x0016;
+/// `WM_TIMER`: a timer of the window (`Window::set_timer`, on Windows) elapsed;
+/// `wParam` is the timer's id. Windows posts it only when the thread's queue is otherwise
+/// empty, and never more than one per timer at a time.
+pub const WM_TIMER: u32 = 0x0113;
 
 /// True for the messages a `WindowHandle` posts: private messages
 /// ([`WM_APP`]`..=`[`WM_APP_LAST`], see [`AppMessage`]) and registered messages
@@ -158,9 +162,10 @@ mod win {
     use windows::Win32::UI::WindowsAndMessaging::{
         CREATESTRUCTW, ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow,
         DispatchMessageW, GCW_ATOM, GetClassWord, GetMessageW, GetWindowThreadProcessId,
-        HWND_MESSAGE, MSG, MSGFLT_ALLOW, PostMessageW, PostQuitMessage, RegisterClassExW,
-        TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_LONG_PTR_INDEX, WINDOW_STYLE,
-        WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
+        HWND_MESSAGE, KillTimer, MSG, MSGFLT_ALLOW, PostMessageW, PostQuitMessage,
+        RegisterClassExW, SetTimer, TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE,
+        WINDOW_LONG_PTR_INDEX, WINDOW_STYLE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WNDCLASSEXW,
+        WS_EX_TOOLWINDOW, WS_POPUP,
     };
 
     use super::{class_name, is_postable};
@@ -486,6 +491,36 @@ mod win {
             // it lives; no filter-change structure is passed, so nothing is written back.
             unsafe { ChangeWindowMessageFilterEx(self.hwnd, message, MSGFLT_ALLOW, None) }
                 .context("ChangeWindowMessageFilterEx")
+        }
+
+        /// Starts timer `id` of this window (`SetTimer`), or restarts it with the new interval
+        /// when it runs already: every `interval_ms` milliseconds (Windows raises intervals
+        /// below 10 ms to 10 ms) the window's handler receives a `WM_TIMER`
+        /// ([`super::WM_TIMER`]) whose `wParam` is `id`. The timer ends with
+        /// [`kill_timer`](Self::kill_timer) or with the window. Id 0 fails with
+        /// `E_INVALIDARG`.
+        ///
+        /// While a modal loop runs inside the handler (a menu, a message box), the timer's
+        /// messages get the default processing like any other (see "Re-entrancy" in the module
+        /// documentation), so a tick can be missed but never queued twice.
+        pub fn set_timer(&self, id: usize, interval_ms: u32) -> WinResult<()> {
+            if id == 0 {
+                return Err(WinError::new(E_INVALIDARG, "timer id"));
+            }
+            // SAFETY: USER validates the handle; no timer procedure is passed, so the timer
+            // posts WM_TIMER to the window and calls no code of ours.
+            let set = unsafe { SetTimer(Some(self.hwnd), id, interval_ms, None) };
+            if set == 0 {
+                return Err(WinError::last("SetTimer"));
+            }
+            Ok(())
+        }
+
+        /// Stops timer `id` of this window (`KillTimer`); a `WM_TIMER` already queued is
+        /// removed with it.
+        pub fn kill_timer(&self, id: usize) -> WinResult<()> {
+            // SAFETY: USER validates the handle and the id.
+            unsafe { KillTimer(Some(self.hwnd), id) }.context("KillTimer")
         }
 
         /// True when the handle still names a window of this thread and of this window's class

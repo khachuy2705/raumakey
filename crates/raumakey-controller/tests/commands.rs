@@ -10,7 +10,6 @@ use raumakey_controller::cli::{EXIT_FAILED, EXIT_OK, EXIT_USAGE, USAGE, UsageErr
 use raumakey_controller::commands::{Context, execute, print_usage_error};
 use raumakey_controller::install::default_tip_path;
 use raumakey_controller::run::start_error_text;
-use raumakey_controller::tray::initial_mode;
 use raumakey_windows::error::{E_FAIL, WinError};
 use raumakey_windows::tsf_registration::TipArch;
 
@@ -77,8 +76,8 @@ fn migrate_is_not_available_yet() {
     }
 }
 
-/// Without arguments `raumakey.exe` runs the controller: the tray on the desktop, with the
-/// exit code of its message loop. It prints nothing (it has no console).
+/// Without arguments `raumakey.exe` runs the controller on the desktop (settings, typing hook,
+/// tray), with the exit code of its message loop. It prints nothing (it has no console).
 #[test]
 fn no_arguments_run_the_controller_on_the_desktop() {
     let mut system = FakeSystem::default();
@@ -86,14 +85,23 @@ fn no_arguments_run_the_controller_on_the_desktop() {
     assert_eq!(result.code, EXIT_OK, "{result:?}");
     assert!(result.out.is_empty(), "{}", result.out);
     assert!(result.err.is_empty(), "{}", result.err);
+    let calls: Vec<&DesktopCall> = system
+        .desktop
+        .calls
+        .iter()
+        .filter(|call| !matches!(call, DesktopCall::RunTray(_)))
+        .collect();
     assert_eq!(
-        system.desktop.calls,
+        calls,
         [
-            DesktopCall::AcquireInstance,
-            DesktopCall::RunTray(initial_mode()),
-            DesktopCall::ReleaseInstance,
+            &DesktopCall::AcquireInstance,
+            &DesktopCall::OpenSettings,
+            &DesktopCall::StartTyping,
+            &DesktopCall::StopTyping,
+            &DesktopCall::ReleaseInstance,
         ]
     );
+    assert!(matches!(system.desktop.calls[3], DesktopCall::RunTray(_)));
     assert!(system.calls.is_empty());
 }
 

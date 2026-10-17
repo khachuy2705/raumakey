@@ -4,7 +4,8 @@
 //! These tests run only commands that change nothing on the machine: `--version`, `help`,
 //! `update`, `migrate` (not available), dry runs of `install` and `uninstall`, usage errors,
 //! file conversion inside a temporary directory, and a second start of the controller while
-//! the test holds the single-instance mutex (so no tray icon is ever shown).
+//! the test holds the single-instance mutex: the single instance is checked first, so that
+//! start shows no tray icon, installs no keyboard hook, and writes no `raumakey.toml`.
 
 mod support;
 
@@ -171,8 +172,9 @@ fn usage_errors_exit_with_2_and_print_the_usage() {
     }
 }
 
-/// The release gate's contract (xtask `gate.rs`): exit code 0, both Raumakey identities, and
-/// no other GUID than the Windows SDK categories of plan §10.4.
+/// The contract of the TSF dry runs (the TIP stays in the repository but is not shipped, and
+/// the release gate checks the portable package instead, D38): exit code 0, both Raumakey
+/// identities, and no other GUID than the Windows SDK categories of plan §10.4.
 fn assert_dry_run_contract(output: &Output) {
     assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
     let all = format!("{}{}", text(&output.stdout), text(&output.stderr));
@@ -186,23 +188,22 @@ fn assert_dry_run_contract(output: &Output) {
     }
 }
 
-/// The release gate passes `--dry-run` first, the packaged `install.ps1` last; both print the
-/// same plan.
+/// `--dry-run` may come before or after the TIP paths; both orders print the same plan.
 #[test]
 fn the_install_dry_run_accepts_its_options_in_any_order() {
     let x64 = "C:\\Raumakey Package\\x64\\raumakey_tip.dll";
     let x86 = "C:\\Raumakey Package\\x86\\raumakey_tip.dll";
-    let gate = run_exe(&["install", "--dry-run", "--tip-x64", x64, "--tip-x86", x86]);
-    let script = run_exe(&["install", "--tip-x64", x64, "--tip-x86", x86, "--dry-run"]);
-    assert_dry_run_contract(&gate);
-    assert_dry_run_contract(&script);
-    assert_eq!(text(&gate.stdout), text(&script.stdout));
-    let plan = text(&gate.stdout);
+    let first = run_exe(&["install", "--dry-run", "--tip-x64", x64, "--tip-x86", x86]);
+    let last = run_exe(&["install", "--tip-x64", x64, "--tip-x86", x86, "--dry-run"]);
+    assert_dry_run_contract(&first);
+    assert_dry_run_contract(&last);
+    assert_eq!(text(&first.stdout), text(&last.stdout));
+    let plan = text(&first.stdout);
     assert!(plan.contains(x64) && plan.contains(x86), "{plan}");
 }
 
 #[test]
-fn the_uninstall_dry_run_meets_the_gate_contract() {
+fn the_uninstall_dry_run_meets_the_dry_run_contract() {
     let output = run_exe(&["uninstall", "--dry-run"]);
     assert_dry_run_contract(&output);
 }

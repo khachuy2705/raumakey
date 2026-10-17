@@ -1,9 +1,9 @@
 //! Command line of `raumakey.exe` (plan §10.2).
 //!
 //! ```text
-//! raumakey                                   run the controller (the tray icon)
-//! raumakey install [--dry-run] [--tip-x64 <path>] [--tip-x86 <path>]
-//! raumakey uninstall [--dry-run]
+//! raumakey                                   run Raumakey (keyboard hook and tray icon)
+//! raumakey install [--dry-run] [--tip-x64 <path>] [--tip-x86 <path>]   TSF text service
+//! raumakey uninstall [--dry-run]                                         TSF text service
 //! raumakey startup <none|shortcut|elevated-task>
 //! raumakey convert --from <charset> --to <charset>
 //!                  (--in <file> --out <file> [--overwrite] | --clipboard)
@@ -12,11 +12,16 @@
 //! raumakey --version | help
 //! ```
 //!
-//! [`parse_args`] is pure. The command comes first; its options follow in any order, because
-//! the release gate passes `--dry-run` before the TIP paths and the packaged `install.ps1` after
-//! them. An option may be given once. Its value is the next argument, which must be non-empty
-//! and must not start with `--` (so `--tip-x64 --dry-run` is a missing value, not a path).
-//! Charset and startup-mode names ignore ASCII case.
+//! The portable release (D38) is `raumakey.exe` alone: started without arguments it types
+//! through a keyboard hook (`crate::run`). `install` and `uninstall` register and remove the
+//! TSF text service (TIP), which stays in the repository but is not shipped; the commands are
+//! kept for it (design §21.1).
+//!
+//! [`parse_args`] is pure. The command comes first; its options follow in any order (so
+//! `install --dry-run --tip-x64 <path>` and `install --tip-x64 <path> --dry-run` are the
+//! same). An option may be given once. Its value is the next argument, which must be
+//! non-empty and must not start with `--` (so `--tip-x64 --dry-run` is a missing value, not a
+//! path). Charset and startup-mode names ignore ASCII case.
 //!
 //! `install`, `uninstall`, and `startup` also accept `--elevated`. Raumakey adds it when it
 //! restarts itself with administrator rights; a process that has it and is still not elevated
@@ -48,16 +53,22 @@ pub const EXIT_INCOMPLETE: u8 = 3;
 pub const USAGE: &str = "\
 Usage:
   raumakey
-      Runs the Raumakey controller: its notification-area icon switches between
-      Vietnamese and English typing. A second start exits at once while it runs.
+      Runs Raumakey: it types Vietnamese in every application through a keyboard hook,
+      with a notification-area icon that shows V (Vietnamese) or E (English); click it or
+      press Ctrl+Shift to switch. The settings are in the tray menu (right-click the icon)
+      and in raumakey.toml, kept next to raumakey.exe (or in %LOCALAPPDATA%\\Raumakey when
+      that folder cannot be used); a hand edit is picked up within a few seconds. A second
+      start exits at once while it runs.
   raumakey install [--dry-run] [--tip-x64 <path>] [--tip-x86 <path>]
-      Registers the Raumakey text input processor (TIP) for 64-bit and 32-bit applications
-      and records the installation. Asks for administrator rights.
+      For the TSF text service (TIP), which is not shipped with the portable raumakey.exe:
+      registers the Raumakey text input processor for 64-bit and 32-bit applications and
+      records the installation. Asks for administrator rights.
       --dry-run         prints the registration plan and changes nothing.
       --tip-x64 <path>  the x64 TIP (default: x64\\raumakey_tip.dll next to raumakey.exe).
       --tip-x86 <path>  the x86 TIP (default: x86\\raumakey_tip.dll next to raumakey.exe).
   raumakey uninstall [--dry-run]
-      Removes the Raumakey registration entries and the installation record. Asks for
+      For the TSF text service (TIP), which is not shipped with the portable raumakey.exe:
+      removes the Raumakey registration entries and the installation record. Asks for
       administrator rights. --dry-run prints the removal plan and changes nothing.
   raumakey startup <none|shortcut|elevated-task>
       How Raumakey starts at logon: none (it does not), shortcut (a shortcut in your

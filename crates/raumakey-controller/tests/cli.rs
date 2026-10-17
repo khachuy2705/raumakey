@@ -67,8 +67,8 @@ fn install_options_default_to_the_package_layout() {
     );
 }
 
-/// The release gate passes `--dry-run` before the TIP paths, the packaged `install.ps1` after
-/// them (xtask `gate.rs` and `package.rs`).
+/// The options of `install` (the TSF text service, not shipped) come in any order: `--dry-run`
+/// before the TIP paths, after them, or between them.
 #[test]
 fn install_options_are_accepted_in_any_order() {
     let expected = Ok(install(
@@ -689,26 +689,64 @@ fn the_usage_text_names_every_command() {
     }
 }
 
-/// Without arguments `raumakey.exe` runs the controller, which exists now; `migrate` is the
-/// only command that is not available.
-#[test]
-fn the_usage_describes_the_controller_without_arguments() {
+/// The indented description below the usage line that starts with `usage`, as one line.
+fn description_of(usage: &str) -> String {
     let mut lines = USAGE.lines();
-    assert!(lines.any(|line| line.trim() == "raumakey"), "{USAGE}");
+    assert!(
+        lines.any(|line| line.trim().starts_with(usage)),
+        "{usage}: {USAGE}"
+    );
     let description: Vec<&str> = lines
         .take_while(|line| line.starts_with("      "))
+        .map(str::trim)
         .collect();
-    let description = description.join(" ");
+    description.join(" ")
+}
+
+/// Without arguments `raumakey.exe` runs the portable controller (D38–D42): it types
+/// Vietnamese through a keyboard hook, keeps `raumakey.toml` next to the exe, and has its
+/// settings in the tray menu; `migrate` is the only command that is not available.
+#[test]
+fn the_usage_describes_the_portable_controller_without_arguments() {
     assert!(
-        description.contains("notification-area icon"),
-        "{description}"
+        USAGE.lines().any(|line| line.trim() == "raumakey"),
+        "{USAGE}"
     );
+    let description = description_of("raumakey");
+    for words in [
+        "keyboard hook",
+        "notification-area icon",
+        "raumakey.toml",
+        "next to raumakey.exe",
+        "%LOCALAPPDATA%\\Raumakey",
+        "tray menu",
+        "Ctrl+Shift",
+    ] {
+        assert!(description.contains(words), "{words}: {description}");
+    }
     assert!(
         description.contains("exits"),
         "a second start: {description}"
     );
     assert!(!description.contains("Not available"), "{description}");
     assert_eq!(USAGE.matches("Not available").count(), 1, "{USAGE}");
+}
+
+/// `install` and `uninstall` stay for the TSF text service, which the portable release does
+/// not ship (design §21.1).
+#[test]
+fn install_and_uninstall_are_marked_for_the_tsf_text_service_that_is_not_shipped() {
+    for command in ["raumakey install", "raumakey uninstall"] {
+        let description = description_of(command);
+        assert!(
+            description.contains("TSF text service"),
+            "{command}: {description}"
+        );
+        assert!(
+            description.contains("not shipped"),
+            "{command}: {description}"
+        );
+    }
 }
 
 #[test]

@@ -7,8 +7,9 @@
 //! ```
 //!
 //! A successful build or a passing fake-based suite is no evidence that this glue works on
-//! Windows; these tests (and the manual checks in the `install`, `startup`, and `desktop`
-//! module docs) are.
+//! Windows; these tests (and the manual checks in the `desktop`, `typing`, `startup`, and
+//! `install` module docs) are. `manual_portable_run` is the smoke test of the portable
+//! release; `install` and `uninstall` concern the TSF text service, which is not shipped.
 
 #![cfg(windows)]
 
@@ -114,17 +115,35 @@ fn manual_startup_elevated_task() {
     assert!(!task.exists().unwrap());
 }
 
-/// Runs the controller with its real notification-area icon until "Thoát" (Exit) is chosen in
-/// the icon's menu. Meanwhile, work through the manual check list in the documentation of
-/// `raumakey_controller::desktop` (click, menu, a second start, an Explorer restart, Exit);
-/// run it again from an elevated prompt for the elevated items.
+/// Runs the portable controller (D38–D42) the way a user does: the built `raumakey.exe` is
+/// copied into a folder of its own (`RAUMAKEY_PORTABLE_DIR`, else a new temporary folder that
+/// is kept) and started there without arguments, so its `raumakey.toml` is created beside
+/// the copy, not in the build folder. It types through its keyboard hook and shows its tray
+/// icon until "Thoát" (Exit) is chosen in the icon's menu. Meanwhile, work through the manual
+/// check list in the documentation of `raumakey_controller::desktop`; run the test again with
+/// the same folder for the second-run checks, and from an elevated prompt for the elevated
+/// ones. Close UniKey, EVKey, and other input methods first.
 #[test]
-#[ignore = "manual: shows the Raumakey notification-area icon until you choose Thoát (Exit) in its menu"]
-fn manual_tray_icon() {
-    let status = Command::new(controller())
+#[ignore = "manual: installs a global keyboard hook and shows the tray icon until you choose Thoát (Exit); writes raumakey.toml in RAUMAKEY_PORTABLE_DIR"]
+fn manual_portable_run() {
+    let dir = match std::env::var_os("RAUMAKEY_PORTABLE_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => tempfile::tempdir().unwrap().keep(),
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("raumakey.exe");
+    std::fs::copy(controller(), &exe).unwrap();
+    eprintln!("running {}", exe.display());
+    let status = Command::new(&exe)
+        .current_dir(&dir)
         .status()
         .unwrap_or_else(|error| panic!("raumakey.exe must start: {error}"));
     assert_eq!(status.code(), Some(0));
+    assert!(
+        dir.join("raumakey.toml").is_file(),
+        "raumakey.toml beside the copy in {}",
+        dir.display()
+    );
 }
 
 /// Converts the text on the real clipboard from TCVN3 to Unicode.

@@ -1,0 +1,442 @@
+//! What the run mode tells the user (`notice`): the first-run and problem messages of the
+//! start, the problems a reload finds, save errors, the Startup shortcut, recovery, opening the
+//! configuration, and "Giới thiệu" (About). Pure: the texts are new Vietnamese strings, and
+//! none holds file content or macro text.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use raumakey_config::{ConfigError, FieldIssue, IssueReason};
+use raumakey_controller::notice::{
+    LICENSE, Notice, NoticeKind, Question, REPOSITORY_URL, about_notice, about_text,
+    elevated_task_notice, heal_notice, open_error_notice, recovery_notice, save_error_notice,
+    start_notice, startup_error_notice, status_notice,
+};
+use raumakey_controller::settings::{
+    DocumentStatus, Location, OpenReport, Recovery, Settings, Status,
+};
+use raumakey_controller::worker::{OpenError, StartupError};
+use raumakey_ipc::error::{IpcError, MalformedReason};
+use raumakey_macro::{EntryIssue, MacroError};
+use raumakey_model::macros::MacroId;
+use raumakey_windows::error::{E_ACCESSDENIED, WinError};
+
+fn path() -> PathBuf {
+    PathBuf::from(r"D:\Tools\Raumakey\raumakey.toml")
+}
+
+fn clean() -> Status {
+    Status {
+        config: DocumentStatus::Loaded { issues: Vec::new() },
+        macros: DocumentStatus::Missing,
+        app_rules: DocumentStatus::Missing,
+        skipped_macros: Vec::new(),
+    }
+}
+
+fn report(location: Location, first_run: bool, status: Status) -> OpenReport {
+    OpenReport {
+        location,
+        config_path: (location != Location::Unavailable).then(path),
+        first_run,
+        create_error: None,
+        status,
+    }
+}
+
+fn issue(path: &str) -> FieldIssue {
+    FieldIssue {
+        path: path.to_owned(),
+        reason: IssueReason::InvalidValue,
+    }
+}
+
+/// Every notice is shown in a message box: no NUL, which would cut it short.
+fn shown(notice: &Notice) -> &str {
+    assert!(!notice.text.contains('\0'), "{}", notice.text);
+    assert!(!notice.text.is_empty());
+    &notice.text
+}
+
+#[test]
+fn a_second_run_without_problems_says_nothing() {
+    assert_eq!(
+        start_notice(&report(Location::ExeDir, false, clean())),
+        None
+    );
+    assert_eq!(
+        start_notice(&report(Location::LocalAppData, false, clean())),
+        None
+    );
+}
+
+/// The first run says where the file was created and how the icon and the menu work.
+#[test]
+fn the_first_run_tells_where_the_configuration_was_created() {
+    let notice = start_notice(&report(Location::ExeDir, true, clean())).unwrap();
+    assert_eq!(notice.kind, NoticeKind::Information);
+    assert_eq!(notice.question, None);
+    let text = shown(&notice);
+    assert!(text.contains(r"D:\Tools\Raumakey\raumakey.toml"), "{text}");
+    assert!(text.contains("cạnh raumakey.exe"), "{text}");
+    assert!(text.contains("Ctrl+Shift"), "{text}");
+    assert!(text.contains("chuột phải"), "{text}");
+
+    let notice = start_notice(&report(Location::LocalAppData, true, clean())).unwrap();
+    let text = shown(&notice);
+    assert!(text.contains(r"%LOCALAPPDATA%\Raumakey"), "{text}");
+    assert!(!text.contains("cạnh raumakey.exe"), "{text}");
+}
+
+#[test]
+fn a_first_run_that_could_not_write_the_file_warns_that_changes_are_not_saved() {
+    let mut opened = report(
+        Location::ExeDir,
+        true,
+        Status {
+            config: DocumentStatus::Missing,
+            ..clean()
+        },
+    );
+    opened.create_error = Some(ConfigError::PermissionDenied);
+    let notice = start_notice(&opened).unwrap();
+    assert_eq!(notice.kind, NoticeKind::Warning);
+    let text = shown(&notice);
+    assert!(text.contains(r"D:\Tools\Raumakey\raumakey.toml"), "{text}");
+    assert!(text.contains("từ chối"), "{text}");
+    assert!(text.contains("mặc định"), "{text}");
+}
+
+#[test]
+fn no_folder_at_all_warns_that_nothing_is_saved() {
+    let mut opened = report(
+        Location::Unavailable,
+        true,
+        Status {
+            config: DocumentStatus::Missing,
+            ..clean()
+        },
+    );
+    opened.create_error = Some(ConfigError::NotFound);
+    let notice = start_notice(&opened).unwrap();
+    assert_eq!(notice.kind, NoticeKind::Warning);
+    let text = shown(&notice);
+    assert!(text.contains(r"%LOCALAPPDATA%\Raumakey"), "{text}");
+    assert!(text.contains("không được lưu"), "{text}");
+}
+
+/// A damaged file is kept; the user is asked whether Raumakey may move it aside.
+#[test]
+fn a_damaged_file_at_start_is_kept_and_the_user_is_asked_about_recovery() {
+    let status = Status {
+        config: DocumentStatus::Unreadable(ConfigError::Corrupt),
+        ..clean()
+    };
+    let notice = start_notice(&report(Location::ExeDir, false, status)).unwrap();
+    assert_eq!(notice.question, Some(Question::Recover));
+    let text = shown(&notice);
+    assert!(text.contains(r"D:\Tools\Raumakey\raumakey.toml"), "{text}");
+    assert!(text.contains("hỏng"), "{text}");
+    assert!(text.contains("không ghi đè"), "{text}");
+    assert!(text.contains("raumakey.toml.bak-"), "{text}");
+}
+
+/// A file of a newer version is not offered for recovery: it is not damaged.
+#[test]
+fn a_file_of_a_newer_version_is_kept_without_a_question() {
+    let status = Status {
+        config: DocumentStatus::Unreadable(ConfigError::UnsupportedVersion),
+        ..clean()
+    };
+    let notice = start_notice(&report(Location::ExeDir, false, status)).unwrap();
+    assert_eq!(notice.kind, NoticeKind::Warning);
+    assert_eq!(notice.question, None);
+    assert!(shown(&notice).contains("mới hơn"), "{}", notice.text);
+}
+
+/// Values that took their defaults are named by their schema path, never by their value.
+#[test]
+fn defaulted_values_and_skipped_macros_are_listed_by_path_and_count() {
+    let status = Status {
+        config: DocumentStatus::Loaded {
+            issues: vec![issue("input.method"), issue("hotkeys.toggle_mode")],
+        },
+        macros: DocumentStatus::Loaded { issues: Vec::new() },
+        app_rules: DocumentStatus::Unusable(IpcError::Malformed(MalformedReason::InvalidOptions)),
+        skipped_macros: vec![
+            EntryIssue {
+                index: 0,
+                error: MacroError::DuplicateId(MacroId(1)),
+            },
+            EntryIssue {
+                index: 4,
+                error: MacroError::DuplicateId(MacroId(1)),
+            },
+        ],
+    };
+    let notice = start_notice(&report(Location::ExeDir, false, status)).unwrap();
+    assert_eq!(notice.kind, NoticeKind::Warning);
+    let text = shown(&notice);
+    assert!(text.contains("input.method"), "{text}");
+    assert!(text.contains("hotkeys.toggle_mode"), "{text}");
+    assert!(text.contains("2 mục"), "{text}");
+    assert!(text.contains("raumakey-macros.toml"), "{text}");
+    assert!(text.contains("raumakey-app-rules.toml"), "{text}");
+}
+
+#[test]
+fn unreadable_macros_and_rules_are_reported() {
+    let status = Status {
+        macros: DocumentStatus::Unreadable(ConfigError::Corrupt),
+        app_rules: DocumentStatus::Unreadable(ConfigError::IoFailure),
+        ..clean()
+    };
+    let notice = start_notice(&report(Location::ExeDir, false, status)).unwrap();
+    let text = shown(&notice);
+    assert!(text.contains("raumakey-macros.toml"), "{text}");
+    assert!(text.contains("raumakey-app-rules.toml"), "{text}");
+    assert_eq!(notice.question, None, "only raumakey.toml is recovered");
+}
+
+/// The notices of real damaged files never show what the files hold.
+#[test]
+fn notices_never_show_file_content_or_macro_text() {
+    let exe = tempfile::tempdir().unwrap();
+    fs::write(
+        exe.path().join("raumakey.toml"),
+        "secret-config-text = [[[ \"bí mật\"",
+    )
+    .unwrap();
+    fs::write(
+        exe.path().join("raumakey-macros.toml"),
+        "version = 1\nrevision = 1\n[[macro]]\nid = 1\ntrigger = \"secret-trigger\"\nreplacement = \"secret replacement\"\n[[macro]]\nid = 1\ntrigger = \"secret-two\"\nreplacement = \"secret\"\n",
+    )
+    .unwrap();
+    let (settings, opened) = Settings::open(exe.path(), None, &|_| true, &|_| false);
+    let notice = start_notice(&opened).unwrap();
+    let text = shown(&notice);
+    assert!(!text.contains("secret"), "{text}");
+    assert!(!text.contains("bí mật"), "{text}");
+    let later = status_notice(settings.config_path(), &clean(), settings.status()).unwrap();
+    assert!(!shown(&later).contains("secret"), "{}", later.text);
+}
+
+/// A reload reports only what is new, and asks nothing: the user may be editing the file.
+#[test]
+fn a_reload_reports_new_problems_once() {
+    let broken = Status {
+        config: DocumentStatus::Unreadable(ConfigError::Corrupt),
+        ..clean()
+    };
+    let notice = status_notice(Some(&path()), &clean(), &broken).unwrap();
+    assert_eq!(notice.kind, NoticeKind::Warning);
+    assert_eq!(notice.question, None);
+    let text = shown(&notice);
+    assert!(text.contains("hỏng"), "{text}");
+    assert!(
+        text.contains("đang dùng"),
+        "the last good settings stay: {text}"
+    );
+    // The same problem again, or a problem that went away: nothing to say.
+    assert_eq!(status_notice(Some(&path()), &broken, &broken), None);
+    assert_eq!(status_notice(Some(&path()), &broken, &clean()), None);
+    assert_eq!(status_notice(Some(&path()), &clean(), &clean()), None);
+    // Another value that took its default is new.
+    let one = Status {
+        config: DocumentStatus::Loaded {
+            issues: vec![issue("input.method")],
+        },
+        ..clean()
+    };
+    let two = Status {
+        config: DocumentStatus::Loaded {
+            issues: vec![issue("input.method"), issue("input.context_limit")],
+        },
+        ..clean()
+    };
+    assert!(status_notice(Some(&path()), &clean(), &one).is_some());
+    assert_eq!(status_notice(Some(&path()), &one, &one), None);
+    let text = status_notice(Some(&path()), &one, &two).unwrap().text;
+    assert!(text.contains("input.context_limit"), "{text}");
+}
+
+#[test]
+fn save_errors_say_the_change_stays_in_effect() {
+    for error in [
+        ConfigError::PermissionDenied,
+        ConfigError::IoFailure,
+        ConfigError::Conflict {
+            expected: 1,
+            actual: 2,
+        },
+        ConfigError::UnsupportedVersion,
+        ConfigError::NotFound,
+    ] {
+        let notice = save_error_notice(Some(&path()), error);
+        assert_eq!(notice.kind, NoticeKind::Warning, "{error:?}");
+        assert_eq!(notice.question, None, "{error:?}");
+        let text = shown(&notice);
+        assert!(text.contains("Không lưu được"), "{text}");
+        assert!(text.contains("vẫn có hiệu lực"), "{text}");
+    }
+    // A damaged file: the user may let Raumakey move it aside.
+    let notice = save_error_notice(Some(&path()), ConfigError::Corrupt);
+    assert_eq!(notice.question, Some(Question::Recover));
+    assert!(
+        shown(&notice).contains("raumakey.toml.bak-"),
+        "{}",
+        notice.text
+    );
+    // No folder at all.
+    let notice = save_error_notice(None, ConfigError::NotFound);
+    assert!(
+        shown(&notice).contains("vẫn có hiệu lực"),
+        "{}",
+        notice.text
+    );
+}
+
+#[test]
+fn startup_errors_say_whether_raumakey_still_starts_with_windows() {
+    let error = WinError::new(E_ACCESSDENIED, "IPersistFile::Save");
+    let on = startup_error_notice(Some(&path()), true, StartupError::Shortcut(error));
+    assert_eq!(on.kind, NoticeKind::Error);
+    let text = shown(&on);
+    assert!(text.contains("Raumakey.lnk"), "{text}");
+    assert!(text.contains("0x80070005"), "{text}");
+    assert!(text.contains("IPersistFile::Save"), "{text}");
+    assert!(text.contains("chưa khởi động cùng Windows"), "{text}");
+    let off = startup_error_notice(Some(&path()), false, StartupError::Shortcut(error));
+    assert!(
+        shown(&off).contains("vẫn khởi động cùng Windows"),
+        "{}",
+        off.text
+    );
+    // The shortcut is right but the choice was not saved.
+    let saved = startup_error_notice(
+        Some(&path()),
+        true,
+        StartupError::Save(ConfigError::PermissionDenied),
+    );
+    assert_eq!(
+        saved,
+        save_error_notice(Some(&path()), ConfigError::PermissionDenied)
+    );
+}
+
+/// The elevated logon task is changed only from an elevated command line.
+#[test]
+fn the_elevated_task_is_turned_off_from_an_elevated_command_line() {
+    let notice = elevated_task_notice();
+    assert_eq!(notice.kind, NoticeKind::Information);
+    let text = shown(&notice);
+    assert!(text.contains("raumakey.exe startup none"), "{text}");
+    assert!(text.contains("quản trị"), "{text}");
+    assert!(text.contains("elevated-task"), "{text}");
+}
+
+#[test]
+fn recovery_results_are_reported() {
+    let backup = PathBuf::from(r"D:\Tools\Raumakey\raumakey.toml.bak-1700000000000");
+    assert_eq!(
+        recovery_notice(Some(&path()), &Ok(Recovery::NotNeeded)),
+        None
+    );
+    let adopted = recovery_notice(Some(&path()), &Ok(Recovery::Adopted)).unwrap();
+    assert_eq!(adopted.kind, NoticeKind::Information);
+    let replaced = recovery_notice(
+        Some(&path()),
+        &Ok(Recovery::Replaced {
+            backup: Some(backup.clone()),
+            saved: Ok(()),
+        }),
+    )
+    .unwrap();
+    assert_eq!(replaced.kind, NoticeKind::Information);
+    assert!(
+        shown(&replaced).contains("raumakey.toml.bak-1700000000000"),
+        "{}",
+        replaced.text
+    );
+    let unsaved = recovery_notice(
+        Some(&path()),
+        &Ok(Recovery::Replaced {
+            backup: Some(backup),
+            saved: Err(ConfigError::PermissionDenied),
+        }),
+    )
+    .unwrap();
+    assert_eq!(unsaved.kind, NoticeKind::Warning);
+    assert!(
+        shown(&unsaved).contains("raumakey.toml.bak-1700000000000"),
+        "{}",
+        unsaved.text
+    );
+    let failed = recovery_notice(Some(&path()), &Err(ConfigError::PermissionDenied)).unwrap();
+    assert_eq!(failed.kind, NoticeKind::Error);
+    assert!(shown(&failed).contains("giữ nguyên"), "{}", failed.text);
+}
+
+#[test]
+fn opening_the_configuration_reports_a_missing_file_or_notepad() {
+    let missing = open_error_notice(Some(&path()), OpenError::NoFile);
+    assert_eq!(missing.kind, NoticeKind::Information);
+    assert!(
+        shown(&missing).contains(r"D:\Tools\Raumakey\raumakey.toml"),
+        "{}",
+        missing.text
+    );
+    let nowhere = open_error_notice(None, OpenError::NoFile);
+    assert!(
+        shown(&nowhere).contains("Không có tệp cấu hình"),
+        "{}",
+        nowhere.text
+    );
+    let failed = open_error_notice(
+        Some(&path()),
+        OpenError::Failed(WinError::new(E_ACCESSDENIED, "CreateProcessW(notepad)")),
+    );
+    assert_eq!(failed.kind, NoticeKind::Error);
+    assert!(shown(&failed).contains("Notepad"), "{}", failed.text);
+}
+
+/// "Giới thiệu": the product and version, what it is, where the configuration lives, the
+/// licence, and the repository.
+#[test]
+fn about_names_the_version_the_configuration_the_licence_and_the_repository() {
+    let text = about_text(Location::ExeDir, Some(&path()));
+    let first = text.lines().next().unwrap();
+    assert_eq!(first, format!("Raumakey {}", env!("CARGO_PKG_VERSION")));
+    assert!(text.contains("Bộ gõ tiếng Việt cho Windows"), "{text}");
+    assert!(text.contains(r"D:\Tools\Raumakey\raumakey.toml"), "{text}");
+    assert!(text.contains("cạnh raumakey.exe"), "{text}");
+    assert!(text.contains(LICENSE), "{text}");
+    assert!(text.contains(REPOSITORY_URL), "{text}");
+    assert_eq!(LICENSE, "GPL-3.0-or-later");
+    assert_eq!(REPOSITORY_URL, "https://github.com/khachuy2705/raumakey");
+
+    let local = about_text(
+        Location::LocalAppData,
+        Some(Path::new(
+            r"C:\Users\u\AppData\Local\Raumakey\raumakey.toml",
+        )),
+    );
+    assert!(local.contains(r"%LOCALAPPDATA%\Raumakey"), "{local}");
+    let nowhere = about_text(Location::Unavailable, None);
+    assert!(nowhere.contains("không được lưu"), "{nowhere}");
+
+    let notice = about_notice(Location::ExeDir, Some(&path()));
+    assert_eq!(notice.kind, NoticeKind::Information);
+    assert_eq!(notice.text, text);
+    assert_eq!(notice.question, None);
+}
+
+#[test]
+fn a_shortcut_that_could_not_be_repaired_is_reported() {
+    let notice = heal_notice(&WinError::new(E_ACCESSDENIED, "IPersistFile::Save"));
+    assert_eq!(notice.kind, NoticeKind::Warning);
+    let text = shown(&notice);
+    assert!(text.contains("Raumakey.lnk"), "{text}");
+    assert!(text.contains("Khởi động cùng Windows"), "{text}");
+    assert!(text.contains("0x80070005"), "{text}");
+}

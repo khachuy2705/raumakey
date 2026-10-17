@@ -111,8 +111,8 @@ mod win {
         HWND_MESSAGE, IsWindow, IsWindowVisible, MSG, PM_REMOVE, PeekMessageW, PostMessageW,
         SendMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_CBT,
         WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COPYDATA, WM_CREATE, WM_DESTROY, WM_ENDSESSION,
-        WM_GETTEXTLENGTH, WM_NCCREATE, WM_NCDESTROY, WM_NULL, WM_QUIT, WM_USER, WNDCLASSEXW,
-        WS_EX_TOOLWINDOW, WS_POPUP, WS_VISIBLE,
+        WM_GETTEXTLENGTH, WM_NCCREATE, WM_NCDESTROY, WM_NULL, WM_QUIT, WM_TIMER, WM_USER,
+        WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP, WS_VISIBLE,
     };
     use windows::core::w;
 
@@ -1034,5 +1034,56 @@ mod win {
     fn the_pure_message_numbers_are_those_of_windows() {
         assert_eq!(raumakey_windows::window::WM_CLOSE, WM_CLOSE);
         assert_eq!(raumakey_windows::window::WM_ENDSESSION, WM_ENDSESSION);
+        assert_eq!(raumakey_windows::window::WM_TIMER, WM_TIMER);
+    }
+
+    /// A timer of the window delivers `WM_TIMER` with its id in `wParam` to the window's
+    /// handler, again and again, until it is stopped.
+    #[test]
+    fn a_window_timer_reaches_the_handler_with_its_id_until_it_is_stopped() {
+        on_fresh_thread(|| {
+            let class = WindowClass::register("test-timer").unwrap();
+            let ticks = Rc::new(RefCell::new(Vec::new()));
+            let seen = Rc::clone(&ticks);
+            let handler = move |_: HWND, message: u32, wparam: WPARAM, _: LPARAM| {
+                if message != WM_TIMER {
+                    return None;
+                }
+                let mut seen = seen.borrow_mut();
+                seen.push(wparam.0);
+                if seen.len() == 3 {
+                    post_quit(0);
+                }
+                Some(LRESULT(0))
+            };
+            let window = Window::create_hidden(&class, TITLE, Box::new(handler)).unwrap();
+            window.set_timer(7, 10).unwrap();
+            // Starting it again replaces it: still one timer with id 7.
+            window.set_timer(7, 10).unwrap();
+            assert_eq!(run_message_loop().unwrap(), 0);
+            assert_eq!(*ticks.borrow(), [7, 7, 7]);
+            window.kill_timer(7).unwrap();
+            // Nothing is left to tick: a message posted afterwards is the next one handled.
+            post_raw(window.hwnd(), PING.id());
+            let mut message = MSG::default();
+            // SAFETY: `message` is a valid out buffer; the filter accepts every message.
+            while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+                assert_ne!(message.message, WM_TIMER);
+            }
+        });
+    }
+
+    /// Timer id 0 is refused, and a destroyed window has no timers.
+    #[test]
+    fn timer_id_0_and_destroyed_windows_are_refused() {
+        on_fresh_thread(|| {
+            let class = WindowClass::register("test-timer-refused").unwrap();
+            let window = Window::create_hidden(&class, TITLE, ignore_all()).unwrap();
+            let error = window.set_timer(0, 10).unwrap_err();
+            assert_eq!(error.kind(), WinErrorKind::InvalidInput);
+            // SAFETY: the window belongs to this thread; the `Window` notices that it is gone.
+            unsafe { DestroyWindow(window.hwnd()) }.unwrap();
+            assert_eq!(window.set_timer(1, 10).unwrap_err().context(), "SetTimer");
+        });
     }
 }

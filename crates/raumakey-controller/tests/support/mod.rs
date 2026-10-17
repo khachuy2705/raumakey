@@ -15,14 +15,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use raumakey_config::StartupMode;
 use raumakey_controller::commands::System;
 use raumakey_controller::elevation::Elevation;
 use raumakey_controller::install::{InstallRecord, InstallSystem};
 use raumakey_controller::output::Output;
-use raumakey_controller::run::Desktop;
+use raumakey_controller::run::{Desktop, Opened, ShortcutState, TypingStartError};
+use raumakey_controller::settings::{DocumentStatus, Location, OpenReport, Status};
 use raumakey_controller::startup::StartupSystem;
-use raumakey_controller::tray::InputMode;
+use raumakey_controller::tray::TrayStart;
 use raumakey_converter::{ClipboardError, ClipboardPort, ClipboardText};
+use raumakey_ipc::message::RuntimeSnapshot;
 use raumakey_model::identity::Guid;
 use raumakey_windows::error::{E_ACCESSDENIED, WinError, WinResult, win32};
 use raumakey_windows::names::SidHash;
@@ -202,20 +205,66 @@ impl ClipboardPort for FakeClipboard {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DesktopCall {
     AcquireInstance,
-    RunTray(InputMode),
+    OpenSettings,
+    StartTyping,
+    StartupShortcut,
+    CreateStartupShortcut,
+    RunTray(Box<TrayStart>),
+    StopTyping,
     ReleaseInstance,
     ReportError(String),
 }
 
-/// The desktop of the run mode: the single-instance mutex, the tray, and error reports.
+/// The path of `raumakey.toml` in the fake desktop's settings.
+pub fn fake_config_path() -> PathBuf {
+    PathBuf::from(r"C:\Raumakey\raumakey.toml")
+}
+
+/// What the fake desktop's settings hold by default: a second run beside `raumakey.exe`,
+/// without problems, on the defaults (revision 1), not starting with Windows.
+pub fn opened_settings() -> Opened {
+    let mut runtime = RuntimeSnapshot::defaults_v1();
+    runtime.config_revision = 1;
+    Opened {
+        report: OpenReport {
+            location: Location::ExeDir,
+            config_path: Some(fake_config_path()),
+            first_run: false,
+            create_error: None,
+            status: Status {
+                config: DocumentStatus::Loaded { issues: Vec::new() },
+                macros: DocumentStatus::Missing,
+                app_rules: DocumentStatus::Missing,
+                skipped_macros: Vec::new(),
+            },
+        },
+        runtime,
+        startup: StartupMode::None,
+    }
+}
+
+/// The desktop of the run mode: the single-instance mutex, the settings, the typing hook, the
+/// Startup-folder shortcut, the tray, and error reports.
 #[derive(Debug)]
 pub struct FakeDesktop {
     /// Answer of the single-instance check.
     pub instance: WinResult<bool>,
+    /// What opening the settings finds.
+    pub opened: Opened,
+    /// Result of starting the typing hook.
+    pub typing: Result<(), TypingStartError>,
+    /// What the Startup-folder shortcut is.
+    pub shortcut: WinResult<ShortcutState>,
+    /// Result of creating the shortcut.
+    pub create_shortcut: WinResult<()>,
     /// Result of the tray: the exit code of its message loop.
     pub tray: WinResult<i32>,
     /// The mutex is held.
     pub held: bool,
+    /// The settings were opened.
+    pub settings_open: bool,
+    /// The typing hook runs.
+    pub typing_runs: bool,
     /// Every call, in order.
     pub calls: Vec<DesktopCall>,
 }
@@ -224,8 +273,14 @@ impl Default for FakeDesktop {
     fn default() -> Self {
         Self {
             instance: Ok(true),
+            opened: opened_settings(),
+            typing: Ok(()),
+            shortcut: Ok(ShortcutState::Missing),
+            create_shortcut: Ok(()),
             tray: Ok(0),
             held: false,
+            settings_open: false,
+            typing_runs: false,
             calls: Vec::new(),
         }
     }
@@ -239,15 +294,57 @@ impl Desktop for FakeDesktop {
         self.instance
     }
 
-    fn run_tray(&mut self, mode: InputMode) -> WinResult<i32> {
-        self.calls.push(DesktopCall::RunTray(mode));
+    fn open_settings(&mut self) -> Opened {
+        self.calls.push(DesktopCall::OpenSettings);
+        assert!(
+            self.held,
+            "the settings are opened only by the first instance"
+        );
+        assert!(!self.settings_open, "the settings are opened once");
+        self.settings_open = true;
+        self.opened.clone()
+    }
+
+    fn start_typing(&mut self) -> Result<(), TypingStartError> {
+        self.calls.push(DesktopCall::StartTyping);
+        assert!(
+            self.settings_open,
+            "the hook starts with the settings' snapshots"
+        );
+        assert!(!self.typing_runs, "the hook starts once");
+        self.typing_runs = self.typing.is_ok();
+        self.typing
+    }
+
+    fn startup_shortcut(&mut self) -> WinResult<ShortcutState> {
+        self.calls.push(DesktopCall::StartupShortcut);
+        self.shortcut
+    }
+
+    fn create_startup_shortcut(&mut self) -> WinResult<()> {
+        self.calls.push(DesktopCall::CreateStartupShortcut);
+        self.create_shortcut
+    }
+
+    fn run_tray(&mut self, start: TrayStart) -> WinResult<i32> {
+        self.calls.push(DesktopCall::RunTray(Box::new(start)));
         assert!(self.held, "the tray runs only while the instance is held");
+        assert!(self.typing_runs, "the tray runs with the hook");
         self.tray
+    }
+
+    fn stop_typing(&mut self) {
+        self.calls.push(DesktopCall::StopTyping);
+        self.typing_runs = false;
     }
 
     fn release_instance(&mut self) {
         self.calls.push(DesktopCall::ReleaseInstance);
         assert!(self.held, "only a held instance is released");
+        assert!(
+            !self.typing_runs,
+            "the hook stops before the instance is given back"
+        );
         self.held = false;
     }
 

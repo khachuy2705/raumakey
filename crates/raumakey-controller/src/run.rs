@@ -1,5 +1,6 @@
-//! The run mode: `raumakey.exe` without arguments (plan §10.2; design §11 and §13). This is
-//! what the Startup-folder shortcut and the elevated logon task start.
+//! The run mode: `raumakey.exe` without arguments (plan §10.2, D38–D42; design §21). This is
+//! what the user starts by double-clicking the portable `raumakey.exe`, and what the
+//! Startup-folder shortcut and the elevated logon task start.
 //!
 //! [`run_controller`] is the whole sequence, over the [`Desktop`] port so that it is tested
 //! with a fake; `crate::desktop` holds the Windows desktop.
@@ -7,29 +8,81 @@
 //! 1. **Single instance.** The controller takes its named mutex
 //!    (`Local\Raumakey.<sidhash>.controller`: one controller per user and session). When
 //!    another controller holds it, this start ends at once with exit code 0, says nothing,
-//!    and does not signal the first instance. A mutex that this process may not open (access
-//!    denied: an elevated controller of the same user holds it) counts as held by another
-//!    controller as well.
-//! 2. **Tray.** While the mutex is held, the tray runs in [`initial_mode`]: the hidden window,
-//!    its notification icon, and the message loop (`crate::tray`), until Exit, `WM_CLOSE`, or
-//!    the end of the session. Its exit code ([`LOOP_EXIT_CODE`](crate::tray::LOOP_EXIT_CODE),
-//!    0) becomes the exit code of the process; a code outside `0..=255` becomes
-//!    [`EXIT_FAILED`].
-//! 3. **Errors.** The controller has no console: an error is shown to the user
+//!    opens no file, and does not signal the first instance. A mutex that this process may not
+//!    open (access denied: an elevated controller of the same user holds it) counts as held by
+//!    another controller as well.
+//! 2. **Settings.** [`Desktop::open_settings`] opens the configuration beside `raumakey.exe`
+//!    or in `%LOCALAPPDATA%\Raumakey` (`crate::settings`, D40); on the first run it writes
+//!    `raumakey.toml` with the defaults. Opening never fails: whatever cannot be read leaves
+//!    its defaults in effect and is reported.
+//! 3. **Typing.** [`Desktop::start_typing`] starts the keyboard hook (`crate::typing`, D39)
+//!    with the settings' runtime and macro snapshots. A hook that cannot start ends the start:
+//!    without it Raumakey cannot type ([`typing_error_text`], [`EXIT_FAILED`]).
+//! 4. **Start with Windows (D41).** When `startup = "shortcut"` is saved, the shortcut
+//!    `Raumakey.lnk` in the user's Startup folder must exist and start this `raumakey.exe`
+//!    ([`needs_repair`], [`shortcut_points_to`]): a missing one, one that starts another path
+//!    (the exe was moved), or one that cannot be read is created again. A repair that fails is
+//!    told by the tray ([`heal_notice`](crate::notice::heal_notice)); the controller runs on.
+//! 5. **Tray.** [`Desktop::run_tray`] runs the tray in the saved mode ([`TrayStart`]) until
+//!    Exit, `WM_CLOSE`, or the end of the session (`crate::tray`): the hidden window, its
+//!    notification icon, the poll timer, the settings worker, and the message loop. The first
+//!    run and the problems found at the start ([`start_notice`](crate::notice::start_notice))
+//!    are shown once, after the icon is added. Its exit code
+//!    ([`LOOP_EXIT_CODE`](crate::tray::LOOP_EXIT_CODE), 0) becomes the exit code of the
+//!    process; a code outside `0..=255` becomes [`EXIT_FAILED`].
+//! 6. **Stop.** [`Desktop::stop_typing`] runs on every way out of the tray (the tray stops the
+//!    hook itself on Exit and at the end of the session; this covers a tray that failed or a
+//!    window that was lost), then the mutex is given back.
+//! 7. **Errors.** The controller has no console: an error is shown to the user
 //!    ([`Desktop::report_error`], a message box naming the failed operation and its code,
-//!    [`start_error_text`]) after the mutex was given back, and the process exits with
-//!    [`EXIT_FAILED`].
+//!    [`start_error_text`], [`typing_error_text`]) after the mutex was given back, and the
+//!    process exits with [`EXIT_FAILED`].
 //!
-//! Not in this step (plan §14.5 step 5): opening the configuration
-//! ([`crate::settings::Settings`] exists, but the run mode does not use it yet, so the mode is
-//! not read from or saved to `raumakey.toml`), the IPC server hub and its snapshots (the TIP
-//! does not follow the controller's mode yet), the worker thread, the hook thread (D24 is an
-//! open question, design §20.8 item 2), the fallback transport, and the panel with its tabs.
+//! Not in this step (design §21.6): the panel and its tabs, the IPC hub (there is no TIP to
+//! serve), and the `migrate` import.
 
+use std::path::Path;
+
+use raumakey_config::StartupMode;
+use raumakey_ipc::message::RuntimeSnapshot;
 use raumakey_windows::error::{WinError, WinErrorKind, WinResult};
 
 use crate::cli::{EXIT_FAILED, EXIT_OK};
-use crate::tray::{InputMode, initial_mode};
+use crate::notice::{heal_notice, start_notice, win_error_text};
+use crate::settings::OpenReport;
+use crate::tray::TrayStart;
+
+/// What [`Desktop::open_settings`] found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Opened {
+    /// The open's report: where, the first run, and the state of every file.
+    pub report: OpenReport,
+    /// The runtime snapshot in effect (the hook starts with it, the tray shows it).
+    pub runtime: RuntimeSnapshot,
+    /// `[system] startup` in effect.
+    pub startup: StartupMode,
+}
+
+/// The shortcut `Raumakey.lnk` in the user's Startup folder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ShortcutState {
+    /// There is none.
+    Missing,
+    /// It starts this `raumakey.exe` without arguments.
+    PointsHere,
+    /// It starts something else (another copy, a moved exe) or passes arguments.
+    PointsElsewhere,
+}
+
+/// Why the typing hook did not start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypingStartError {
+    /// The session core refused the settings' snapshots (the settings validate them, so this
+    /// is not expected).
+    Refused,
+    /// The hook thread or its hooks could not be installed.
+    Hook(WinError),
+}
 
 /// The desktop side effects of the run mode.
 pub trait Desktop {
@@ -38,9 +91,27 @@ pub trait Desktop {
     /// controller of this user and session holds it.
     fn acquire_instance(&mut self) -> WinResult<bool>;
 
-    /// Runs the tray in `mode` (the hidden window, its notification icon, and the message
-    /// loop) until it ends; returns the exit code of the message loop.
-    fn run_tray(&mut self, mode: InputMode) -> WinResult<i32>;
+    /// Opens the configuration of the running `raumakey.exe` and keeps it for the tray's
+    /// settings worker. Never fails.
+    fn open_settings(&mut self) -> Opened;
+
+    /// Starts the typing hook with the snapshots of the opened settings.
+    fn start_typing(&mut self) -> Result<(), TypingStartError>;
+
+    /// What the shortcut in the user's Startup folder is.
+    fn startup_shortcut(&mut self) -> WinResult<ShortcutState>;
+
+    /// Creates (or replaces) the shortcut in the user's Startup folder, starting the running
+    /// `raumakey.exe` without arguments.
+    fn create_startup_shortcut(&mut self) -> WinResult<()>;
+
+    /// Runs the tray from `start` (the hidden window, its notification icon, the settings
+    /// worker, and the message loop) until it ends; returns the exit code of the message
+    /// loop. The tray owns the typing hook while it runs.
+    fn run_tray(&mut self, start: TrayStart) -> WinResult<i32>;
+
+    /// Stops the typing hook if it still runs.
+    fn stop_typing(&mut self);
 
     /// Gives the single-instance mutex back.
     fn release_instance(&mut self);
@@ -61,15 +132,67 @@ pub fn run_controller(desktop: &mut dyn Desktop) -> u8 {
             return EXIT_FAILED;
         }
     }
-    let ran = desktop.run_tray(initial_mode());
+    let ran = run_instance(desktop);
     desktop.release_instance();
     match ran {
         Ok(code) => u8::try_from(code).unwrap_or(EXIT_FAILED),
-        Err(error) => {
-            desktop.report_error(&start_error_text(&error));
+        Err(text) => {
+            desktop.report_error(&text);
             EXIT_FAILED
         }
     }
+}
+
+/// Steps 2 to 6, while the instance is held; an error is the text to show.
+fn run_instance(desktop: &mut dyn Desktop) -> Result<i32, String> {
+    let opened = desktop.open_settings();
+    if let Err(error) = desktop.start_typing() {
+        return Err(typing_error_text(&error));
+    }
+    let mut notices: Vec<_> = start_notice(&opened.report).into_iter().collect();
+    if opened.startup == StartupMode::Shortcut {
+        let shortcut = desktop.startup_shortcut();
+        if needs_repair(opened.startup, &shortcut)
+            && let Err(error) = desktop.create_startup_shortcut()
+        {
+            notices.push(heal_notice(&error));
+        }
+    }
+    let Opened {
+        report,
+        runtime,
+        startup,
+    } = opened;
+    let start = TrayStart {
+        runtime,
+        startup,
+        location: report.location,
+        config_path: report.config_path,
+        status: report.status,
+        notices,
+    };
+    let ran = desktop.run_tray(start);
+    desktop.stop_typing();
+    ran.map_err(|error| start_error_text(&error))
+}
+
+/// Whether the start must create the Startup shortcut again (D41): `shortcut` is saved and the
+/// shortcut is missing, starts something else, or cannot be read.
+pub fn needs_repair(startup: StartupMode, shortcut: &WinResult<ShortcutState>) -> bool {
+    startup == StartupMode::Shortcut && !matches!(shortcut, Ok(ShortcutState::PointsHere))
+}
+
+/// Whether a shortcut with `target` and `arguments` starts `exe` without arguments. Paths are
+/// compared the way Windows compares them: ASCII case and `/` against `\` do not matter.
+pub fn shortcut_points_to(target: &Path, arguments: &str, exe: &Path) -> bool {
+    let normalize = |path: &Path| {
+        path.to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+    };
+    arguments.trim().is_empty()
+        && !target.as_os_str().is_empty()
+        && normalize(target) == normalize(exe)
 }
 
 /// The message shown when the controller cannot start: "Raumakey could not start", then the
@@ -80,4 +203,18 @@ pub fn start_error_text(error: &WinError) -> String {
         error.code() as u32,
         error.context()
     )
+}
+
+/// The message shown when the typing hook cannot start: Raumakey cannot type.
+pub fn typing_error_text(error: &TypingStartError) -> String {
+    match error {
+        TypingStartError::Refused => {
+            "Không khởi động được bộ gõ của Raumakey: cấu hình gõ bị từ chối.".to_owned()
+        }
+        TypingStartError::Hook(error) => format!(
+            "Không khởi động được bộ gõ của Raumakey: Windows không cho cài hook bàn phím.\n\n\
+             Chi tiết: {}.",
+            win_error_text(error)
+        ),
+    }
 }

@@ -1,10 +1,25 @@
 //! `process`: command lines and regsvr32 selection (pure), plus read-only Windows lookups.
 
+use std::path::{Path, PathBuf};
+
 use raumakey_windows::process::{
-    ConsolePlan, Machine, Regsvr32Dir, command_line, console_plan, quote_arg, regsvr32_arguments,
-    regsvr32_dir,
+    ConsolePlan, Machine, Regsvr32Dir, command_line, console_plan, notepad_path, quote_arg,
+    regsvr32_arguments, regsvr32_dir,
 };
 use raumakey_windows::tsf_registration::TipArch;
+
+/// Notepad is `%SystemRoot%\System32\notepad.exe`, by its absolute path.
+#[test]
+fn notepad_lies_in_system32_of_the_windows_folder() {
+    assert_eq!(
+        notepad_path(Path::new(r"C:\Windows")),
+        PathBuf::from(r"C:\Windows\System32\notepad.exe")
+    );
+    assert_eq!(
+        notepad_path(Path::new(r"D:\WinNT\")),
+        PathBuf::from(r"D:\WinNT\System32\notepad.exe")
+    );
+}
 
 #[test]
 fn arguments_are_quoted_for_command_line_to_argv() {
@@ -169,6 +184,25 @@ mod win {
             regsvr32_path(TipArch::Arm64).unwrap_err().kind(),
             WinErrorKind::NotSupported
         );
+    }
+
+    /// The Notepad that `open_in_notepad` starts exists (read-only check: nothing starts).
+    #[test]
+    fn the_notepad_of_this_windows_exists() {
+        let windows = raumakey_windows::known_folder::windows_dir().unwrap();
+        let notepad = raumakey_windows::process::notepad_path(&windows);
+        assert!(notepad.is_absolute(), "{}", notepad.display());
+        assert!(notepad.is_file(), "{}", notepad.display());
+    }
+
+    /// Only an absolute path of a file is opened; anything else is refused before a process
+    /// starts.
+    #[test]
+    fn notepad_opens_only_absolute_paths() {
+        for file in ["raumakey.toml", r"..\raumakey.toml", ""] {
+            let error = raumakey_windows::process::open_in_notepad(Path::new(file)).unwrap_err();
+            assert_eq!(error.kind(), WinErrorKind::InvalidInput, "{file}");
+        }
     }
 
     #[test]

@@ -38,7 +38,8 @@ pub use other::UnsupportedSystem as PlatformSystem;
 #[cfg(windows)]
 pub use win::{
     ELEVATED_TIMEOUT, REGSVR32_TIMEOUT, RegistryRecordStore, SHORTCUT_DESCRIPTION,
-    SHORTCUT_FILE_NAME, WinSystem, WinSystem as PlatformSystem,
+    SHORTCUT_FILE_NAME, WinSystem, WinSystem as PlatformSystem, shortcut_spec,
+    startup_shortcut_path,
 };
 
 /// The side effects of this platform for the `raumakey.exe` at `exe`.
@@ -229,31 +230,33 @@ mod win {
         desktop: WinDesktop,
     }
 
+    /// `Raumakey.lnk` in the user's Startup folder.
+    pub fn startup_shortcut_path() -> WinResult<PathBuf> {
+        Ok(startup_folder()?.join(SHORTCUT_FILE_NAME))
+    }
+
+    /// The Startup shortcut of the `raumakey.exe` at `exe`: it starts `raumakey.exe` without
+    /// arguments (the controller) in its own folder, with its own icon. Used by `startup
+    /// shortcut` and by the tray (D41).
+    pub fn shortcut_spec(exe: &Path) -> ShortcutSpec {
+        ShortcutSpec {
+            target: exe.to_path_buf(),
+            arguments: String::new(),
+            working_dir: exe.parent().map(Path::to_path_buf),
+            description: SHORTCUT_DESCRIPTION.to_owned(),
+            icon: Some((exe.to_path_buf(), 0)),
+        }
+    }
+
     impl WinSystem {
         /// The side effects for the `raumakey.exe` at `exe` (an absolute path).
         pub fn new(exe: PathBuf) -> Self {
             Self {
+                desktop: WinDesktop::new(exe.clone()),
                 exe,
                 record: RegistryRecordStore::machine(),
                 clipboard: WinClipboard::new(),
                 reader: WinRegistrationReader,
-                desktop: WinDesktop::new(),
-            }
-        }
-
-        fn shortcut_path() -> WinResult<PathBuf> {
-            Ok(startup_folder()?.join(SHORTCUT_FILE_NAME))
-        }
-
-        /// The shortcut starts `raumakey.exe` without arguments (the controller) in its own
-        /// folder, with its own icon.
-        fn shortcut_spec(&self) -> ShortcutSpec {
-            ShortcutSpec {
-                target: self.exe.clone(),
-                arguments: String::new(),
-                working_dir: self.exe.parent().map(Path::to_path_buf),
-                description: SHORTCUT_DESCRIPTION.to_owned(),
-                icon: Some((self.exe.clone(), 0)),
             }
         }
     }
@@ -315,11 +318,11 @@ mod win {
         }
 
         fn create_shortcut(&mut self) -> WinResult<()> {
-            create_shortcut(&Self::shortcut_path()?, &self.shortcut_spec())
+            create_shortcut(&startup_shortcut_path()?, &shortcut_spec(&self.exe))
         }
 
         fn remove_shortcut(&mut self) -> WinResult<bool> {
-            remove_shortcut(&Self::shortcut_path()?)
+            remove_shortcut(&startup_shortcut_path()?)
         }
 
         fn task_exists(&mut self, user: &SidHash) -> WinResult<bool> {
@@ -372,15 +375,15 @@ mod other {
     use crate::commands::System;
     use crate::elevation::Elevation;
     use crate::install::{InstallRecord, InstallSystem};
-    use crate::run::Desktop;
+    use crate::run::{Desktop, Opened, ShortcutState, TypingStartError};
     use crate::startup::StartupSystem;
-    use crate::tray::InputMode;
+    use crate::tray::TrayStart;
 
     /// Every side effect fails: this is not Windows.
     const UNSUPPORTED: WinError = WinError::new(E_NOTIMPL, "Raumakey side effect (Windows only)");
 
     /// A desktop without a notification area: the controller cannot run, and says so on
-    /// standard error.
+    /// standard error. The single-instance check fails first, so nothing else is reached.
     #[derive(Debug, Default)]
     struct NoDesktop;
 
@@ -389,9 +392,32 @@ mod other {
             Err(UNSUPPORTED)
         }
 
-        fn run_tray(&mut self, _mode: InputMode) -> WinResult<i32> {
+        fn open_settings(&mut self) -> Opened {
+            let (settings, report) = crate::settings::Settings::open_for_current_exe();
+            Opened {
+                report,
+                runtime: settings.runtime_snapshot().clone(),
+                startup: settings.document().system.startup,
+            }
+        }
+
+        fn start_typing(&mut self) -> Result<(), TypingStartError> {
+            Err(TypingStartError::Hook(UNSUPPORTED))
+        }
+
+        fn startup_shortcut(&mut self) -> WinResult<ShortcutState> {
             Err(UNSUPPORTED)
         }
+
+        fn create_startup_shortcut(&mut self) -> WinResult<()> {
+            Err(UNSUPPORTED)
+        }
+
+        fn run_tray(&mut self, _start: TrayStart) -> WinResult<i32> {
+            Err(UNSUPPORTED)
+        }
+
+        fn stop_typing(&mut self) {}
 
         fn release_instance(&mut self) {}
 

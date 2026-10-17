@@ -1,6 +1,7 @@
-//! Child processes: regsvr32, elevation, and console attachment.
+//! Child processes: regsvr32, elevation, Notepad, and console attachment.
 //!
 //! The command-line, architecture, and console decisions are pure. On Windows,
+//! `open_in_notepad` opens a file in the Notepad of the Windows folder ([`notepad_path`]), and
 //! [`run_regsvr32`] runs the regsvr32 that matches the TIP's bitness and returns its exit code;
 //! **an exit code is never proof of registration** — verification reads the registry back
 //! (see [`crate::tsf_registration::verify_installation`]).
@@ -136,6 +137,13 @@ pub fn command_line(program: &str, args: &[&str]) -> String {
     line
 }
 
+/// The Notepad of the Windows folder `windows` (`%SystemRoot%`): `System32\notepad.exe` in it.
+/// `open_in_notepad` (Windows) starts it by this absolute path, so no `notepad.exe`
+/// found through the search path or the current directory is ever run.
+pub fn notepad_path(windows: &std::path::Path) -> std::path::PathBuf {
+    windows.join("System32").join("notepad.exe")
+}
+
 /// regsvr32 arguments: always silent (`/s`), `/u` to unregister, then the DLL path.
 pub fn regsvr32_arguments(dll: &str, unregister: bool) -> Vec<String> {
     let mut args = vec!["/s".to_owned()];
@@ -169,7 +177,8 @@ pub const fn console_plan(stdout_usable: bool, stderr_usable: bool) -> ConsolePl
 
 #[cfg(windows)]
 pub use win::{
-    attach_parent_console, current_machines, regsvr32_path, relaunch_elevated, run_regsvr32,
+    attach_parent_console, current_machines, open_in_notepad, regsvr32_path, relaunch_elevated,
+    run_regsvr32,
 };
 
 #[cfg(windows)]
@@ -191,7 +200,7 @@ mod win {
     use windows::Win32::System::SystemInformation::IMAGE_FILE_MACHINE;
     use windows::Win32::System::Threading::{
         CREATE_NO_WINDOW, CreateProcessW, GetCurrentProcess, GetExitCodeProcess, IsWow64Process2,
-        PROCESS_INFORMATION, STARTUPINFOW, WaitForSingleObject,
+        PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW, WaitForSingleObject,
     };
     use windows::Win32::UI::Shell::{
         SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
@@ -201,8 +210,8 @@ mod win {
     use windows::core::{PCWSTR, PWSTR};
 
     use super::{
-        Machine, Regsvr32Dir, command_line, console_plan, quote_arg, regsvr32_arguments,
-        regsvr32_dir,
+        Machine, Regsvr32Dir, command_line, console_plan, notepad_path, quote_arg,
+        regsvr32_arguments, regsvr32_dir,
     };
     use crate::error::{E_INVALIDARG, ResultExt, WinError, WinResult, win32};
     use crate::handle;
@@ -240,6 +249,54 @@ mod win {
             Regsvr32Dir::Sysnative => windows_dir()?.join("Sysnative"),
         };
         Ok(base.join("regsvr32.exe"))
+    }
+
+    /// Opens `file` in Notepad and returns without waiting for it: starts
+    /// `%SystemRoot%\System32\notepad.exe` ([`notepad_path`] of the Windows folder) by its
+    /// absolute path, with `file` as its one (quoted) argument, inheriting no handles. `file`
+    /// must be an absolute path (else `E_INVALIDARG`, and nothing starts); whether it exists
+    /// is for the caller to check.
+    pub fn open_in_notepad(file: &Path) -> WinResult<()> {
+        if !file.is_absolute() {
+            return Err(WinError::new(E_INVALIDARG, "file for Notepad"));
+        }
+        let file = file
+            .to_str()
+            .ok_or_else(|| WinError::new(E_INVALIDARG, "file for Notepad"))?;
+        let program = notepad_path(&windows_dir()?);
+        let program_text = program
+            .to_str()
+            .ok_or_else(|| WinError::new(E_INVALIDARG, "Notepad path"))?;
+        let line = command_line(program_text, &[file]);
+        let application = WideString::from_os(program.as_os_str())?;
+        // CreateProcessW may modify the command-line buffer, so it must be mutable.
+        let mut line: Vec<u16> = line.encode_utf16().chain(Some(0)).collect();
+        let startup = STARTUPINFOW {
+            cb: size_of::<STARTUPINFOW>() as u32,
+            ..Default::default()
+        };
+        let mut info = PROCESS_INFORMATION::default();
+        // SAFETY: all strings are NUL-terminated and outlive the call; no handles are
+        // inherited; the returned handles are owned (and closed) below.
+        unsafe {
+            CreateProcessW(
+                application.as_pcwstr(),
+                Some(PWSTR(line.as_mut_ptr())),
+                None,
+                None,
+                false,
+                PROCESS_CREATION_FLAGS(0),
+                None,
+                PCWSTR::null(),
+                &startup,
+                &mut info,
+            )
+        }
+        .context("CreateProcessW(notepad)")?;
+        // SAFETY: CreateProcessW returned new process and thread handles owned by nobody else;
+        // they are closed at once, which leaves Notepad running.
+        let _ = unsafe { (handle::take(info.hProcess), handle::take(info.hThread)) };
+        Ok(())
     }
 
     /// Runs `regsvr32 /s [/u] <dll>` with the regsvr32 of `arch`, waits up to `timeout`, and
