@@ -2,8 +2,8 @@
 //! (plan §10.2: the controller's hidden window, its message loop, and results posted back from
 //! the worker thread).
 //!
-//! [`AppMessage`] (private message numbers in the `WM_APP` range) and [`class_name`] are pure.
-//! On Windows:
+//! [`AppMessage`] (private message numbers in the `WM_APP` range), [`class_name`], and the
+//! message numbers below are pure. On Windows:
 //!
 //! - [`WindowClass`] registers a class (`RegisterClassExW`) under a name that is unique to that
 //!   class ([`class_name`]: `Raumakey.<label>.<serial>`) and unregisters it once the last clone
@@ -33,8 +33,12 @@
 //! again (matrix #58). The owner of the notification icon must therefore be a hidden top-level
 //! window created with [`Window::create_hidden`]; message-only windows suit purely internal
 //! traffic. An elevated process (the elevated startup task) receives the broadcast from a
-//! non-elevated Explorer only if it allows that message through UIPI
-//! (`ChangeWindowMessageFilterEx`), which this module does not do.
+//! non-elevated Explorer only if it lets that message through User Interface Privilege
+//! Isolation: [`Window::allow_message_from_lower_integrity`] (`ChangeWindowMessageFilterEx`)
+//! does so for one private or registered message of one window.
+//!
+//! [`WM_CLOSE`] and [`WM_ENDSESSION`] are pure numbers for code that handles them on every
+//! host (the controller's tray state machine).
 //!
 //! **Threads.** A [`Window`] belongs to the thread that created it: it is neither `Send` nor
 //! `Sync`, its handler runs only on that thread (inside that thread's message loop or a
@@ -74,6 +78,13 @@ pub const REGISTERED_MESSAGE_FIRST: u32 = 0xC000;
 pub const REGISTERED_MESSAGE_LAST: u32 = 0xFFFF;
 /// Prefix of the name of every window class registered by this crate.
 pub const CLASS_NAME_PREFIX: &str = "Raumakey.";
+/// `WM_CLOSE`: a request to close the window (its close command, or `taskkill` without `/F`).
+/// `DefWindowProcW` answers it by destroying the window.
+pub const WM_CLOSE: u32 = 0x0010;
+/// `WM_ENDSESSION`: the answer to `WM_QUERYENDSESSION`. A non-zero `wParam` means that the
+/// session ends (sign-out, shutdown, or the Restart Manager closing the application); the
+/// process may end any time after the window procedure returns.
+pub const WM_ENDSESSION: u32 = 0x0016;
 
 /// True for the messages a `WindowHandle` posts: private messages
 /// ([`WM_APP`]`..=`[`WM_APP_LAST`], see [`AppMessage`]) and registered messages
@@ -145,11 +156,11 @@ mod win {
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GCW_ATOM,
-        GetClassWord, GetMessageW, GetWindowThreadProcessId, HWND_MESSAGE, MSG, PostMessageW,
-        PostQuitMessage, RegisterClassExW, TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE,
-        WINDOW_LONG_PTR_INDEX, WINDOW_STYLE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WNDCLASSEXW,
-        WS_EX_TOOLWINDOW, WS_POPUP,
+        CREATESTRUCTW, ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow,
+        DispatchMessageW, GCW_ATOM, GetClassWord, GetMessageW, GetWindowThreadProcessId,
+        HWND_MESSAGE, MSG, MSGFLT_ALLOW, PostMessageW, PostQuitMessage, RegisterClassExW,
+        TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_LONG_PTR_INDEX, WINDOW_STYLE,
+        WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
     };
 
     use super::{class_name, is_postable};
@@ -445,6 +456,36 @@ mod win {
         /// destroyed (see "Forged messages" in the module documentation).
         pub fn is_alive(&self) -> bool {
             self.alive.get()
+        }
+
+        /// Lets `message` reach this window from processes of lower integrity
+        /// (`ChangeWindowMessageFilterEx` with `MSGFLT_ALLOW`), for this window only.
+        ///
+        /// User Interface Privilege Isolation (UIPI) drops most messages that a process of
+        /// lower integrity sends or posts to the windows of an elevated process. An elevated
+        /// controller needs two of them from the (non-elevated) shell: the `TaskbarCreated`
+        /// broadcast (matrix #58) and the callback message of its notification icon. Every
+        /// process of the user's desktop can then send that message to the window, as it can
+        /// to a window of a non-elevated process, so only private ([`super::AppMessage`]) and
+        /// registered messages are accepted ([`super::is_postable`]). Any other message fails
+        /// with `E_INVALIDARG` before the call: system messages such as `WM_CLOSE` or
+        /// `WM_COPYDATA` and the class-private `WM_USER` range stay filtered.
+        ///
+        /// In a process that is not elevated the call succeeds and only widens the filter of
+        /// this window towards low-integrity processes, so callers allow messages only when
+        /// they run elevated. Allowing a message twice is harmless; the call fails once the
+        /// window is destroyed.
+        pub fn allow_message_from_lower_integrity(&self, message: u32) -> WinResult<()> {
+            if !is_postable(message) {
+                return Err(WinError::new(
+                    E_INVALIDARG,
+                    "message let through from lower integrity",
+                ));
+            }
+            // SAFETY: USER validates the handle, which names a window of this process while
+            // it lives; no filter-change structure is passed, so nothing is written back.
+            unsafe { ChangeWindowMessageFilterEx(self.hwnd, message, MSGFLT_ALLOW, None) }
+                .context("ChangeWindowMessageFilterEx")
         }
 
         /// True when the handle still names a window of this thread and of this window's class

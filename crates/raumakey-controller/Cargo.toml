@@ -34,8 +34,12 @@ raumakey-windows.workspace = true
 windows.workspace = true
 windows-core.workspace = true
 
+# `build.rs` embeds the resources and writes the icon group ids of the V and E tray icons into
+# `OUT_DIR`, so the program itself does not depend on `raumakey-resources` (plan §1.1).
 [build-dependencies]
 raumakey-resources.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# The tests compare the icon ids that `build.rs` wrote with `raumakey-resources`.
+raumakey-resources.workspace = true

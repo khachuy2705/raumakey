@@ -349,7 +349,7 @@ impl ServiceCore {
                 policy,
                 result,
                 arrival,
-            } => self.apply(id, &policy, result, arrival, document),
+            } => self.apply(id, &policy, *result, arrival, document),
         }
     }
 
@@ -768,11 +768,11 @@ impl ServiceCore {
         &mut self,
         document: DocumentId,
         policy: &HostPolicy,
-        result: Box<EngineResult>,
+        result: EngineResult,
         arrival: Option<Arrival>,
         port: &mut dyn DocumentPort,
     ) -> KeyDownOutcome {
-        let EngineResult { transaction, next } = *result;
+        let EngineResult { transaction, next } = result;
         let applied = match self.states.get(document) {
             Some(prior) => match checked_request(&transaction, prior.owned_utf16(), policy) {
                 Ok(Some(request)) => port.replace_before_caret(&request).is_ok(),

@@ -2,7 +2,7 @@
 
 Raumakey is a Vietnamese input method for Windows, licensed GPL-3.0-or-later and implemented in Rust with native Win32 and TSF integration. It is under development.
 
-Status on 2026-10-17: the core libraries (model, engine, macros, configuration, policy, IPC, conversion, migration, resources, Windows wrappers), the platform-independent core of the TSF text service, the shared test suites (fuzz smoke, compatibility vectors, test runner), and the `xtask` build tooling are implemented and tested. The controller (`raumakey.exe`), the COM layer of the TSF text service (`raumakey_tip.dll`), and the Windows acceptance harness are not written yet, so Raumakey cannot be installed or used yet. Section 14 of the implementation plan lists what is done and what is outstanding; section 20 of the design has the detailed evidence of the earlier snapshot.
+Status on 2026-10-17: the core libraries (model, engine, macros, configuration, policy, IPC, conversion, migration, resources, Windows wrappers), the TSF text service (`raumakey_tip.dll`: COM layer and key path, without its connection to the controller yet), the controller's command line (install, uninstall, startup, convert) and a minimal tray, the shared test suites (fuzz smoke, compatibility vectors, test runner), and the `xtask` build tooling are implemented and pass their automated tests. The controller's IPC hub, keyboard hook, fallback transport, and panel, and the Windows acceptance harness, are not written yet. Raumakey has not been tried in a real Windows application yet, so treat it as a development build. Section 14 of the implementation plan lists what is done and what is outstanding; section 20 of the design has the detailed evidence of the earlier snapshot.
 
 ## Target
 

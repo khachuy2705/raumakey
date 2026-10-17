@@ -33,6 +33,8 @@ windows-core.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# tests/resources.rs compares the profile icon index with the resources build.rs embeds.
+raumakey-resources.workspace = true
 
 [build-dependencies]
 raumakey-resources.workspace = true

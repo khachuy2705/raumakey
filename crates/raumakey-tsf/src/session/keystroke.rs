@@ -24,6 +24,10 @@ pub struct KeyStroke {
     pub scan_code: u32,
     /// Extended-key flag (bit 24 of `lParam`); tells right Alt and right Ctrl from left.
     pub extended: bool,
+    /// Auto-repeat: the key was already down before this key-down (bit 30 of `lParam`).
+    /// Set on every key-up as well. The engine event of a key-down carries it as
+    /// `InputEvent::repeat`.
+    pub repeat: bool,
     /// Modifier state at the time of the key. `alt_gr` is set when the layout has AltGr and
     /// the character comes from right Alt (or Ctrl+Alt) rather than a shortcut.
     pub modifiers: Modifiers,
@@ -34,8 +38,7 @@ pub struct KeyStroke {
     /// The message extra info (`GetMessageExtraInfo`) as the zero-extended `ULONG_PTR` that
     /// `SendInput` stored: `lparam.0 as usize as u64`. A sign-extending `lparam.0 as u64`
     /// would turn `0xEBCA1234` into `0xFFFF_FFFF_EBCA_1234` on 32-bit Windows. Input that
-    /// Raumakey injected carries
-    /// [`RAUMAKEY_INJECTED_TAG`](raumakey_model::identity::RAUMAKEY_INJECTED_TAG).
+    /// Raumakey injected carries [`RAUMAKEY_INJECTED_TAG`].
     pub extra_info: u64,
     /// The document that has the focus, as the COM layer identifies it.
     pub host: HostContext,
@@ -75,6 +78,7 @@ impl KeyStroke {
         event.virtual_key = Some(virtual_key);
         event.scan_code = Some(self.scan_code);
         event.modifiers = self.modifiers;
+        event.repeat = self.repeat;
         event.injected_tag = (self.extra_info != 0).then_some(self.extra_info);
         Some(event)
     }
@@ -86,5 +90,42 @@ impl fmt::Debug for KeyStroke {
             .field("injected", &self.is_injected())
             .field("document", &self.host.document_id)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use raumakey_model::host::{ExeName, HostContext, SessionId};
+    use raumakey_model::input::{Modifiers, vk};
+
+    use super::KeyStroke;
+
+    fn stroke(virtual_key: u32, text: &[u16], repeat: bool) -> KeyStroke {
+        KeyStroke {
+            virtual_key,
+            scan_code: 0x1E,
+            extended: false,
+            repeat,
+            modifiers: Modifiers::default(),
+            text: text.to_vec(),
+            extra_info: 0,
+            host: HostContext::new(
+                SessionId::default(),
+                ExeName::new("notepad.exe").expect("valid name"),
+            ),
+        }
+    }
+
+    #[test]
+    fn the_event_of_an_auto_repeat_is_marked_as_a_repeat() {
+        for virtual_key in [0x41, vk::BACK, vk::SPACE, vk::LEFT] {
+            let repeated = stroke(virtual_key, &[0x61], true).input_event();
+            assert!(
+                repeated.is_some_and(|event| event.repeat),
+                "{virtual_key:#x}"
+            );
+            let first = stroke(virtual_key, &[0x61], false).input_event();
+            assert!(first.is_some_and(|event| !event.repeat), "{virtual_key:#x}");
+        }
     }
 }

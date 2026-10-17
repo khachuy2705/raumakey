@@ -11,9 +11,18 @@
 
 use raumakey_windows::error::WinErrorKind;
 use raumakey_windows::window::{
-    AppMessage, REGISTERED_MESSAGE_FIRST, REGISTERED_MESSAGE_LAST, WM_APP, WM_APP_LAST, class_name,
-    is_postable,
+    AppMessage, REGISTERED_MESSAGE_FIRST, REGISTERED_MESSAGE_LAST, WM_APP, WM_APP_LAST, WM_CLOSE,
+    WM_ENDSESSION, class_name, is_postable,
 };
+
+#[test]
+fn close_and_end_session_are_system_messages() {
+    assert_eq!(WM_CLOSE, 0x0010);
+    assert_eq!(WM_ENDSESSION, 0x0016);
+    // The system sends them; a window handle never posts them.
+    assert!(!is_postable(WM_CLOSE));
+    assert!(!is_postable(WM_ENDSESSION));
+}
 
 #[test]
 fn only_private_and_registered_messages_are_postable() {
@@ -90,7 +99,8 @@ mod win {
     use raumakey_windows::shell::taskbar_created_message;
     use raumakey_windows::strings::WideString;
     use raumakey_windows::window::{
-        AppMessage, Window, WindowClass, WindowHandle, WindowHandler, post_quit, run_message_loop,
+        AppMessage, WM_APP, WM_APP_LAST, Window, WindowClass, WindowHandle, WindowHandler,
+        post_quit, run_message_loop,
     };
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -100,9 +110,9 @@ mod win {
         GetClassInfoExW, GetClassNameW, GetDesktopWindow, GetWindowLongW, HCBT_CREATEWND, HHOOK,
         HWND_MESSAGE, IsWindow, IsWindowVisible, MSG, PM_REMOVE, PeekMessageW, PostMessageW,
         SendMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_CBT,
-        WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_GETTEXTLENGTH,
-        WM_NCCREATE, WM_NCDESTROY, WM_NULL, WM_QUIT, WM_USER, WNDCLASSEXW, WS_EX_TOOLWINDOW,
-        WS_POPUP, WS_VISIBLE,
+        WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COPYDATA, WM_CREATE, WM_DESTROY, WM_ENDSESSION,
+        WM_GETTEXTLENGTH, WM_NCCREATE, WM_NCDESTROY, WM_NULL, WM_QUIT, WM_USER, WNDCLASSEXW,
+        WS_EX_TOOLWINDOW, WS_POPUP, WS_VISIBLE,
     };
     use windows::core::w;
 
@@ -952,5 +962,77 @@ mod win {
         assert_send_sync::<WindowHandle>();
         assert_send_sync::<WindowClass>();
         // That `Window` is neither Send nor Sync is checked by `compile_fail` doctests on it.
+    }
+
+    /// An elevated controller lets `TaskbarCreated` (matrix #58) and its icon's callback
+    /// message through UIPI. On a test window of this (non-elevated) process the call changes
+    /// only the filter of that window: nothing is shown or broadcast.
+    #[test]
+    fn private_and_registered_messages_can_be_let_through_from_lower_integrity() {
+        let taskbar_created = taskbar_created_message().unwrap();
+        on_fresh_thread(move || {
+            let class = WindowClass::register("test-uipi").unwrap();
+            for (kind, create) in CONSTRUCTORS {
+                let window = create(&class, TITLE, ignore_all()).unwrap();
+                for message in [taskbar_created, PING.id(), WM_APP, WM_APP_LAST] {
+                    window
+                        .allow_message_from_lower_integrity(message)
+                        .unwrap_or_else(|error| panic!("{kind}, {message:#x}: {error}"));
+                    // Allowing a message again changes nothing and still succeeds.
+                    window
+                        .allow_message_from_lower_integrity(message)
+                        .unwrap_or_else(|error| panic!("{kind}, {message:#x} again: {error}"));
+                }
+            }
+        });
+    }
+
+    /// System messages and the class-private `WM_USER` range stay filtered: lower-integrity
+    /// processes must never reach the window with them (`WM_CLOSE` would end the controller,
+    /// `WM_COPYDATA` carries data). They are refused before any call, which would succeed.
+    #[test]
+    fn system_and_class_messages_are_never_let_through_from_lower_integrity() {
+        on_fresh_thread(|| {
+            let class = WindowClass::register("test-uipi-refused").unwrap();
+            let window = Window::create_hidden(&class, TITLE, ignore_all()).unwrap();
+            for message in [
+                WM_NULL,
+                WM_CLOSE,
+                WM_DESTROY,
+                WM_COPYDATA,
+                WM_QUIT,
+                WM_USER,
+                WM_APP - 1,
+                0x1_0000,
+                u32::MAX,
+            ] {
+                let error = window
+                    .allow_message_from_lower_integrity(message)
+                    .unwrap_err();
+                assert_eq!(error.kind(), WinErrorKind::InvalidInput, "{message:#x}");
+            }
+        });
+    }
+
+    #[test]
+    fn a_destroyed_window_lets_nothing_through() {
+        on_fresh_thread(|| {
+            let class = WindowClass::register("test-uipi-gone").unwrap();
+            let window = Window::create_hidden(&class, TITLE, ignore_all()).unwrap();
+            // SAFETY: the window belongs to this thread; the `Window` notices that it is gone.
+            unsafe { DestroyWindow(window.hwnd()) }.unwrap();
+            assert!(!window.is_alive());
+            let error = window
+                .allow_message_from_lower_integrity(PING.id())
+                .unwrap_err();
+            assert_eq!(error.context(), "ChangeWindowMessageFilterEx");
+        });
+    }
+
+    /// The pure message numbers that the controller's tray state machine uses on every host.
+    #[test]
+    fn the_pure_message_numbers_are_those_of_windows() {
+        assert_eq!(raumakey_windows::window::WM_CLOSE, WM_CLOSE);
+        assert_eq!(raumakey_windows::window::WM_ENDSESSION, WM_ENDSESSION);
     }
 }

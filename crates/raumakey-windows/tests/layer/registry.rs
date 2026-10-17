@@ -1,5 +1,11 @@
 //! `registry` (Win32 part). Writes happen only under `HKCU\Software\Raumakey\Tests-<pid>-<n>`,
 //! which every test deletes again.
+//!
+//! The tests that write run one at a time ([`REGISTRY`]): a test that deletes the empty
+//! product root `Software\Raumakey` must never do so while another one creates its key below
+//! it, which then fails with `ERROR_KEY_DELETED` or `ERROR_FILE_NOT_FOUND`.
+
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use raumakey_windows::error::WinErrorKind;
 use raumakey_windows::registry::{
@@ -8,15 +14,23 @@ use raumakey_windows::registry::{
 
 use crate::support::unique_suffix;
 
-/// A test key that is deleted on drop.
+/// Held by each [`TestKey`] while it exists, so the tests below `HKCU\Software\Raumakey` run
+/// one at a time. A test that failed while holding it leaves it poisoned, which is ignored.
+static REGISTRY: Mutex<()> = Mutex::new(());
+
+/// A test key that is deleted on drop (while [`REGISTRY`] is still held: fields are dropped
+/// after `Drop::drop`).
 struct TestKey {
     path: String,
+    _serial: MutexGuard<'static, ()>,
 }
 
 impl TestKey {
     fn new() -> Self {
+        let serial = REGISTRY.lock().unwrap_or_else(PoisonError::into_inner);
         Self {
             path: format!("Software\\Raumakey\\Tests-{}", unique_suffix()),
+            _serial: serial,
         }
     }
 }

@@ -102,8 +102,11 @@ impl std::error::Error for EditError {}
 ///
 /// [`Inserted`](Self::Inserted) and [`Deleted`](Self::Deleted) describe what a key let
 /// through to the application does when it arrives in a plain text control; the core compares
-/// them with that key. A record that shows anything else, or cannot be read, is
-/// [`Other`](Self::Other), which always ends the word in progress.
+/// them with that key. A record that shows any other change, or cannot be read, is
+/// [`Other`](Self::Other), which always ends the word in progress. A record that shows
+/// neither a text change nor a selection change (such as an edit session of another text
+/// service that only sets properties) is no change of the document: the COM layer does not
+/// report it.
 ///
 /// `Debug` shows only the number of inserted units: they are document text.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -116,8 +119,9 @@ pub enum SelectionChange<'a> {
     /// The record holds exactly one text change, its range is now empty (text was removed and
     /// none inserted), and the selection is a caret at that range.
     Deleted,
-    /// Anything else: no text change, several, or one away from the caret; a selection that
-    /// covers text; or a record that could not be read.
+    /// Any other change: a selection that moved without a text change; several text
+    /// changes, or one away from the caret; a selection that covers text; or a record that
+    /// could not be read.
     Other,
 }
 
@@ -136,8 +140,9 @@ impl fmt::Debug for SelectionChange<'_> {
 
 /// The edit-session abstraction of one document.
 ///
-/// The TSF implementation (a later step) requests one synchronous read-write edit session
-/// per call and performs the steps described on [`EditRequest`] inside it. Tests use a fake
+/// The TSF implementation of the COM layer requests one synchronous read-write edit session
+/// per call and performs the steps described on [`EditRequest`] inside it
+/// ([`crate::adapter::edit`]). Tests use a fake
 /// document. Implementations must not call back into the core.
 pub trait DocumentPort {
     /// Performs `request` in one edit session, or changes nothing and says why not.

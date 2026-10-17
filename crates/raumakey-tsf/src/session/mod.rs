@@ -1,8 +1,9 @@
 //! Platform-independent core of the TSF text service (plan §10.3, design §5.2).
 //!
-//! [`ServiceCore`] makes every decision of the text input processor. The COM layer (a later
-//! step) translates TSF callbacks into calls on it and carries out what it returns; it
-//! reaches a document only through the [`DocumentPort`] edit-session abstraction. Nothing in
+//! [`ServiceCore`] makes every decision of the text input processor. The COM layer
+//! (`crate::server` describes it) translates TSF callbacks into calls on it and carries out
+//! what it returns; it reaches a document only through the [`DocumentPort`] edit-session
+//! abstraction. Nothing in
 //! this module uses Win32 or COM types, so it is tested with fakes on any host (design
 //! §15.1). Those tests say nothing about behavior inside a real Windows application.
 //!
@@ -147,9 +148,13 @@
 //! - Report every change of a document that its own edit sessions did not make through
 //!   [`ServiceCore::selection_changed`], with the [`SelectionChange`] that the edit record
 //!   shows: its text-change ranges (`ITfEditRecord::GetTextAndPropertyUpdates`) and the
-//!   selection, read with the read-only cookie of `OnEndEdit`. Whenever the record shows
-//!   anything but exactly one of the other variants, or cannot be read, report
-//!   [`SelectionChange::Other`].
+//!   selection (`ITfEditRecord::GetSelectionStatus`), read with the read-only cookie of
+//!   `OnEndEdit`. Whenever the record shows anything but exactly one of the other variants,
+//!   or cannot be read, report [`SelectionChange::Other`]. A record that shows neither a text
+//!   change nor a selection change is no change of the document and is not reported (a
+//!   decision of this crate that plan §10.3 does not record yet): the edit sessions of other
+//!   text services that only set properties, such as display attributes, leave the text and
+//!   the caret as they were, and reporting them would end the word in progress.
 //! - Report every mouse button press in the host's windows through
 //!   [`ServiceCore::mouse_down`], for example from a `WH_MOUSE` hook of the thread that owns
 //!   the core.

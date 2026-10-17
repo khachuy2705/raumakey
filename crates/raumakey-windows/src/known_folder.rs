@@ -9,8 +9,8 @@ use windows::Win32::System::SystemInformation::{
     GetSystemDirectoryW, GetSystemWindowsDirectoryW, GetSystemWow64DirectoryW,
 };
 use windows::Win32::UI::Shell::{
-    FOLDERID_LocalAppData, FOLDERID_ProgramFiles, FOLDERID_Startup, KF_FLAG_DONT_VERIFY,
-    SHGetKnownFolderPath,
+    FOLDERID_LocalAppData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_Startup,
+    KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath,
 };
 use windows::core::{GUID, PCWSTR};
 
@@ -31,6 +31,15 @@ pub fn startup_folder() -> WinResult<PathBuf> {
 /// `FOLDERID_ProgramFiles`. A 32-bit process on 64-bit Windows receives `Program Files (x86)`.
 pub fn program_files() -> WinResult<PathBuf> {
     known_folder(&FOLDERID_ProgramFiles, "SHGetKnownFolderPath(ProgramFiles)")
+}
+
+/// `FOLDERID_ProgramFilesX86`: `Program Files (x86)` on 64-bit Windows, for 64-bit and 32-bit
+/// processes alike; `Program Files` on 32-bit Windows.
+pub fn program_files_x86() -> WinResult<PathBuf> {
+    known_folder(
+        &FOLDERID_ProgramFilesX86,
+        "SHGetKnownFolderPath(ProgramFilesX86)",
+    )
 }
 
 /// Directory of the running executable.

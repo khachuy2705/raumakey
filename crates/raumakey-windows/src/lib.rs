@@ -5,23 +5,26 @@
 //! [`error::WinError`] values that carry an HRESULT and a static operation name only.
 //!
 //! Modules that hold pure logic (planning, naming, decoding, encoding, validation) compile on
-//! every platform: [`error`], [`panic`], [`strings`] (including growing-buffer reads),
+//! every platform: [`error`], [`panic`](mod@panic), [`strings`] (including growing-buffer reads),
 //! [`names`], [`security`] (SDDL), [`registry`] (write guard, value encoding), [`clipboard`]
 //! (snapshot logic), [`input`] (synthetic input builders), [`hooks`] (record decoders),
 //! [`foreground`], [`keyboard`], [`process`] (command lines, regsvr32 selection), [`shell`]
-//! (tooltips), [`tsf_registration`] (planner, rollback, verification), [`window`] (private
-//! and registered message numbers, class names), [`menu`] (menu items and their flags),
-//! [`icon`] (icon sizes), [`dialog`] (message box styles, texts, and answers), and
-//! [`com_server`] (COM object and server-lock counts). Their Win32 parts and the purely Win32
-//! modules (`com`, `file_replace`, `known_folder`, `module`, `pipe`, `sid`, `single_instance`,
-//! `task_scheduler`, and the `evkey-compat` module `legacy`) exist only on Windows.
+//! (tooltips, notification-icon callbacks), [`tsf_registration`] (planner, rollback,
+//! verification), [`window`] (private, registered, and closing message numbers, class
+//! names), [`menu`] (menu items and their flags), [`icon`] (icon sizes), [`dialog`] (message
+//! box styles, texts, and answers), and [`com_server`] (COM object and server-lock counts).
+//! Their Win32 parts and the purely Win32 modules (`com`, `file_replace`, `known_folder`,
+//! `module`, `pipe`, `sid`, `single_instance`, `task_scheduler`, and the `evkey-compat` module
+//! `legacy`) exist only on Windows.
 //!
 //! The controller's building blocks are [`window`] (window classes, the hidden top-level
-//! window that owns the notification icon, message-only windows, the message loop, and posting
-//! from other threads), [`menu`], [`icon`], [`dialog`], and `module` (the module that links
-//! this crate and its path). The TIP's are [`com_server`] (class factory, `DllGetClassObject`,
-//! `DllCanUnloadNow`), `module` (the DLL's own path for `DllRegisterServer`), and
-//! [`input`] (`GetMessageExtraInfo`, to bypass Raumakey's own injected keys).
+//! window that owns the notification icon, message-only windows, the message loop, posting
+//! from other threads, and letting the shell's messages through UIPI when elevated),
+//! [`shell`] (the notification icon), [`menu`], [`icon`], [`dialog`], `single_instance`, and
+//! `module` (the module that links this crate and its path). The TIP's are [`com_server`]
+//! (class factory, `DllGetClassObject`, `DllCanUnloadNow`), `module` (the DLL's own path for
+//! `DllRegisterServer`), and [`input`] (`GetMessageExtraInfo`, to bypass Raumakey's own
+//! injected keys).
 //!
 //! Nothing here logs. Values that may hold user content (paths, registry strings, clipboard
 //! bytes) are not shown by `Debug` or `Display`.

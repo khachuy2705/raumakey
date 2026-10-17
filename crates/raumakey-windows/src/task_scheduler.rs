@@ -4,6 +4,11 @@
 //! the controller at the current user's logon with the highest run level, an interactive token
 //! (no stored password), and no execution time limit. Creating or deleting it requires an
 //! elevated caller; [`ElevatedLogonTask::exists`] is a read-only query.
+//!
+//! The task belongs to one account: its principal and logon trigger are the SID of the account
+//! that creates it. [`ElevatedLogonTask::for_user`] names it after the SID hash of that account
+//! (`names::sid_hash16`), so each account has its own task and one account's choice never
+//! replaces or deletes another's; such a task must be created by its own account.
 
 use std::path::Path;
 
@@ -19,6 +24,7 @@ use windows::core::{BSTR, Interface};
 
 use crate::com::ComApartment;
 use crate::error::{E_INVALIDARG, ResultExt, WinError, WinResult, hresult_from_win32, win32};
+use crate::names::SidHash;
 use crate::sid::current_user_sid_string;
 
 /// Longest accepted task name.
@@ -80,6 +86,15 @@ impl ElevatedLogonTask {
     pub fn new() -> Self {
         Self {
             name: Self::NAME.to_owned(),
+        }
+    }
+
+    /// The product's task of the account whose SID hash is `user`:
+    /// `Raumakey Elevated Startup <user>` in the root folder. [`Self::create`] registers it for
+    /// the account of the calling process, so only that account may create its task.
+    pub fn for_user(user: &SidHash) -> Self {
+        Self {
+            name: format!("{} {}", Self::NAME, user.as_str()),
         }
     }
 

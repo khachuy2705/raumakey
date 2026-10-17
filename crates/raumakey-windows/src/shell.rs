@@ -1,7 +1,89 @@
 //! Shell integration: the notification-area icon, `TaskbarCreated`, and shortcuts.
+//!
+//! [`tooltip_units`] and [`decode_notify_icon_message`] are pure. A [`NotifyIcon`] uses
+//! `NOTIFYICON_VERSION_4`, so its window receives the callback message with the notification
+//! and the icon id in `lParam` and the anchor point in `wParam`;
+//! [`decode_notify_icon_message`] reads them. With version 4 the shell reports a click as
+//! [`NIN_SELECT`], a selection with the keyboard as [`NIN_KEYSELECT`], and a request for the
+//! shortcut menu (right click, Shift+F10, or the menu key) as [`WM_CONTEXTMENU`]; the Windows
+//! SDK notification-icon sample recommends these over the raw mouse messages, which the shell
+//! sends as well.
 
 /// Capacity of `NOTIFYICONDATAW::szTip` in UTF-16 units, including the terminating NUL.
 pub const TOOLTIP_CAPACITY: usize = 128;
+
+/// `NIN_SELECT` (`WM_USER`): the user selected the icon with the mouse (a click).
+pub const NIN_SELECT: u32 = 0x0400;
+/// `NINF_KEY`: the bit that marks a selection made with the keyboard.
+pub const NINF_KEY: u32 = 0x0001;
+/// `NIN_KEYSELECT` (`NIN_SELECT | NINF_KEY`): the user selected the icon with the keyboard
+/// (Space or Enter on the focused icon).
+pub const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
+/// `WM_CONTEXTMENU`: the user asked for the icon's shortcut menu (right click, Shift+F10, or
+/// the menu key).
+pub const WM_CONTEXTMENU: u32 = 0x007B;
+
+/// What a notification icon reports through its callback message (`NOTIFYICON_VERSION_4`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NotifyIconEvent {
+    /// [`NIN_SELECT`]: the icon was clicked.
+    Select,
+    /// [`NIN_KEYSELECT`]: the icon was selected with the keyboard.
+    KeySelect,
+    /// [`WM_CONTEXTMENU`]: the shortcut menu was requested; it opens at the anchor point.
+    ContextMenu {
+        /// Horizontal screen coordinate of the anchor (negative on monitors left of the
+        /// primary one).
+        x: i32,
+        /// Vertical screen coordinate of the anchor (negative on monitors above the primary
+        /// one).
+        y: i32,
+    },
+    /// Any other notification, by its code: the mouse messages (`WM_MOUSEMOVE`, the button
+    /// messages), `NIN_POPUPOPEN`, the balloon notifications, and so on.
+    Other(u16),
+}
+
+/// A decoded callback message of a notification icon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NotifyIconMessage {
+    /// The id the icon was added with. Version 4 reports 16 bits, so a window should give its
+    /// icons ids below `0x10000`.
+    pub icon_id: u16,
+    /// What happened.
+    pub event: NotifyIconEvent,
+}
+
+/// Low word of `value` (`LOWORD`).
+const fn low_word(value: usize) -> u16 {
+    (value & 0xFFFF) as u16
+}
+
+/// High word of the low 32 bits of `value` (`HIWORD`).
+const fn high_word(value: usize) -> u16 {
+    ((value >> 16) & 0xFFFF) as u16
+}
+
+/// Decodes the parameters of a version-4 callback message: `LOWORD(lParam)` is the
+/// notification and `HIWORD(lParam)` the icon id; for [`WM_CONTEXTMENU`] the anchor point is
+/// `GET_X_LPARAM(wParam)`, `GET_Y_LPARAM(wParam)` (signed 16-bit screen coordinates). Bits
+/// above the low 32 bits of either parameter are ignored.
+pub const fn decode_notify_icon_message(wparam: usize, lparam: isize) -> NotifyIconMessage {
+    let code = low_word(lparam as usize);
+    let event = match code as u32 {
+        NIN_SELECT => NotifyIconEvent::Select,
+        NIN_KEYSELECT => NotifyIconEvent::KeySelect,
+        WM_CONTEXTMENU => NotifyIconEvent::ContextMenu {
+            x: low_word(wparam) as i16 as i32,
+            y: high_word(wparam) as i16 as i32,
+        },
+        _ => NotifyIconEvent::Other(code),
+    };
+    NotifyIconMessage {
+        icon_id: high_word(lparam as usize),
+        event,
+    }
+}
 
 /// A tooltip buffer: `text` truncated to 127 units at a character boundary (a surrogate pair is
 /// never split), NUL-terminated and NUL-padded.

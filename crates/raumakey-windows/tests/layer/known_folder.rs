@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use raumakey_windows::known_folder::{
-    current_exe_dir, local_app_data, program_files, startup_folder, system_dir, syswow64_dir,
-    windows_dir,
+    current_exe_dir, local_app_data, program_files, program_files_x86, startup_folder, system_dir,
+    syswow64_dir, windows_dir,
 };
 
 fn ends_with_ignore_case(path: &Path, suffix: &str) -> bool {
@@ -45,6 +45,24 @@ fn startup_and_program_files_resolve() {
             "{}",
             program_files.display()
         );
+    }
+}
+
+/// `Program Files (x86)` on 64-bit Windows, for 64-bit and 32-bit processes alike; on 32-bit
+/// Windows the one `Program Files`.
+#[test]
+fn program_files_x86_resolves() {
+    let x86 = program_files_x86().unwrap();
+    assert!(x86.is_absolute());
+    let suffix = if syswow64_dir().unwrap().is_some() {
+        "Program Files (x86)"
+    } else {
+        "Program Files"
+    };
+    assert!(ends_with_ignore_case(&x86, suffix), "{}", x86.display());
+    if cfg!(target_pointer_width = "32") {
+        // A 32-bit process gets the same folder as its `Program Files`.
+        assert_eq!(x86, program_files().unwrap());
     }
 }
 

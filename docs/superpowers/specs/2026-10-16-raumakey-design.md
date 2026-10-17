@@ -451,6 +451,8 @@ Each item was confirmed against the code. Items marked *(Windows)* still need co
 
 These need a product decision. Record each answer as a plan decision (Dn), then align this design, the plan, the code, and the tests.
 
+All nine items were decided on 2026-10-17; plan §15 records the answers as D17, D21, and D25–D34. Until the code and this design are aligned (plan §14.5 step 3), the text below describes the questions as they were asked.
+
 1. **Secure-field mode `Restricted`.** §14 and matrix #29 say secure fields bypass transformation, macros, and clipboard. Plan §6 and `raumakey-policy` let `Restricted` keep transformation, and a test asserts this. The engine bypasses secure fields in every mode, so the setting currently has no effect.
 2. **The controller's global keyboard hook (D24).** The hook receives every key on the desktop, including keys typed into TSF hosts, while §5.2 says raw keystrokes stay in the TIP on the TSF path. Either state the privacy rules for the hook handler (classify only, store nothing, run the engine only for fallback hosts) or revise D24. Also decide what happens while a TIP is disconnected and both sides may classify the same key.
 3. **EVKey settings import.** `FIELD_MAP` ships empty (D18). An import therefore brings in macros and executable-list named sets and keeps every other setting only as raw evidence. Success criterion 6 ("import supported EVKey settings") is met only because no setting is declared supported. Confirm this, or plan the mappings.

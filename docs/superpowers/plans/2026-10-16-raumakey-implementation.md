@@ -1,7 +1,7 @@
 # Raumakey Implementation Plan
 
 **Date:** 2026-10-16 (last updated 2026-10-17: release-gate evidence contract in §12,
-implementation status in §14)
+implementation status in §14, decisions in §15)
 **Status:** Active; implementation in progress (see §14)
 **Inputs:** `docs/superpowers/specs/2026-10-16-raumakey-design.md` (design, authoritative),
 `docs/reference/evkey_clean_room_spec.md` (clean-room behavioral reference),
@@ -1006,25 +1006,28 @@ behavior was verified in a Windows host application (§0 rule 6).
   `-policy`, and `-ipc` (with the `evkey-compat` codec), and `raumakey-resources`, apart from the
   gaps in §14.2 and the defects in §14.4. `raumakey-migrate`, `raumakey-windows`, and `xtask` are
   mostly done. `xtask` includes the release-gate evidence contract of §12. The TIP has its
-  platform-independent session core (`raumakey_tip::session`), tested with fakes.
+  session core and its COM layer, and the controller has its command line and a minimal tray.
   `raumakey-tests` has the fuzz smoke suite, a macro/engine suite with the real `MacroTable`,
   the compatibility vectors, and the runner's `vectors` mode.
-- **Not done:** the controller (`raumakey.exe`) is an empty stub and the TIP
-  (`raumakey_tip.dll`) has no COM layer, so Raumakey cannot be installed or used. The `fuzz/`
+- **Not done:** the TIP has no IPC client and runs on defaults v1 with its own mode, and the
+  controller has no IPC hub, hook thread, fallback transport, or panel. Nothing has been observed
+  in a Windows host application yet: the TIP can be registered and tried, but its manual check
+  list has not been run. The decisions of §15 are recorded but not yet implemented. The `fuzz/`
   workspace, the runner's `live` mode, and `tests/windows/` do not exist.
-- **Gates:** `cargo xtask ci` passes, including the fuzz smoke suite (§14.6). Neither
-  "cross-build verified" nor "runtime x86_64 verified" can be claimed (design §19).
+- **Gates:** `cargo xtask ci`, `cross`, `inspect` (debug and release), `package`, and the
+  installer dry runs pass (§14.6). Neither "cross-build verified" nor "runtime x86_64 verified"
+  can be claimed (design §19): the release gate also needs the audit and a whole-branch review.
 
 ### 14.2 By stage
 
 | Stage | Status | Done | Not done |
 |---|---|---|---|
 | 1 | Done | Workspace, toolchain pin (Rust 1.99.1, three MSVC targets), `LICENSE`, `THIRD_PARTY.md`, `deny.toml`, `raumakey-model` | `THIRD_PARTY.md` corrections (design §20.6 item 9); §1.1 and §1.3 do not match the manifests |
-| 2 | Done (library) | `raumakey-engine` with every §3.10 golden vector; `raumakey-macro`; the engine runs with the real `MacroTable` in `tests/tests/macro_engine.rs` | The Circumflex fallback with spell checking off has no test (design §20.8 item 9); the macro defects in §14.4 items 1, 2, and 4 |
-| 3 | Mostly done (library) | `raumakey-config`, `raumakey-converter`, `raumakey-migrate` (sources, parsing, commit with rollback, idempotence) | Commit durability (design §20.7); a Windows `LegacyRegistry` adapter; default EVKey folder discovery; the `migrate` and `convert` commands |
-| 4 | Done (library) | `raumakey-policy`; `raumakey-ipc` with frames, messages, client and server sessions, backoff, and the `evkey-compat` codec | The controller's server hub and snapshot builder; the policy and the engine disagree on `Restricted` secure fields (design §20.8 item 1) |
-| 5 | Building blocks only | `raumakey-resources`; `raumakey-windows` wrappers for errors, panic guards, strings, handles, SIDs, object names, security, pipes, registry, known folders, file replacement, clipboard, input (including `GetMessageExtraInfo`), hooks, foreground, keyboard, processes, shell, task scheduler, COM apartments, single instance, legacy objects, hidden and message-only windows with the message loop and `PostMessageW`, popup menus, icons, modules, COM server support (class factory, object and lock counts), and message boxes | No `build.rs` calls `raumakey-resources`; dialogs and controls, and the building blocks of §14.5 item 3; `raumakey-controller` is `fn main() {}` |
-| 6 | Session core and registration code | TSF registration planner, executor, and verification in `raumakey-windows`, tested with fakes; the TIP's platform-independent session core (`raumakey_tip::session`: document port, key path, per-document state, mouse-press resets, probe bookkeeping, D24 while disconnected, snapshots), tested with fakes | The COM layer (§14.5 item 4); verification does not enumerate the profile (§10.4); D17 and D21 have no decision text |
+| 2 | Done (library) | `raumakey-engine` with every §3.10 golden vector; `raumakey-macro`; the engine runs with the real `MacroTable` in `tests/tests/macro_engine.rs` | A test for D34; D28–D30 (§15), which resolve §14.4 items 1, 2, and 4, are not implemented |
+| 3 | Mostly done (library) | `raumakey-config`, `raumakey-converter`, `raumakey-migrate` (sources, parsing, commit with rollback, idempotence) | Commit durability (design §20.7); a Windows `LegacyRegistry` adapter; default EVKey folder discovery; the `migrate` command (D31) |
+| 4 | Done (library) | `raumakey-policy`; `raumakey-ipc` with frames, messages, client and server sessions, backoff, and the `evkey-compat` codec | The controller's server hub and snapshot builder; D25 (`Restricted` secure fields) and D27 (sandboxed hosts) are not implemented |
+| 5 | Partial | `raumakey.exe`: GUI subsystem with resources, the command line (`install` and `uninstall` with dry runs and rollback, `startup`, `convert`, `update`, `--version`; `migrate` reports that it is not available yet), and a minimal tray run mode (single instance, V/E icon, menu, `TaskbarCreated`); `raumakey-resources`; `raumakey-windows` wrappers for errors, panic guards, strings, handles, SIDs, object names, security, pipes, registry, known folders, file replacement, clipboard, input (including `GetMessageExtraInfo`), hooks, foreground, keyboard, processes, shell, task scheduler, COM apartments, single instance, legacy objects, hidden and message-only windows with the message loop and `PostMessageW`, popup menus, icons, modules, COM server support (class factory, object and lock counts), and message boxes | The IPC hub, hook thread, fallback transport, panel, worker thread, and configuration lifecycle (§14.5 step 5); dialogs and controls, and the building blocks of §14.5 step 6 |
+| 6 | Partial | TSF registration planner, executor, and verification in `raumakey-windows`, tested with fakes; the TIP's platform-independent session core (`raumakey_tip::session`), tested with fakes; the COM layer of `raumakey_tip.dll`: the four exports, class factory, `DllRegisterServer`, `TextService` with its activation lifecycle and sinks, the key path through synchronous edit sessions, input scopes, the `WH_MOUSE` hook, and the open/close compartment, tested in-process with the real TSF thread manager | The IPC client, the probe edit, diagnostics, and the `evkey-compat` path (§14.5 step 4); verification does not enumerate the profile (D21); §14.4 item 5 |
 | 7 | Partial | `xtask` commands `ci`, `cross`, `inspect`, `package`, `audit`, `notices`, and `release-gate`; `raumakey-tests`: eight fuzz targets run by `fuzz_smoke` (the seven of §12 plus configuration concurrency, matrix #46), the macro/engine suite, 202 compatibility vectors in `tests/fixtures/compat/` for the engine-level matrix rows and the §3.10 golden vectors, and `raumakey-test-runner vectors [--json]` | The other contract suites of §12 (policy rows, migration fixtures, IPC frames, legacy codec rows, converter round trips); the runner's `live` mode; `fuzz/`; PowerShell suite; manual checklist; the `xtask` items of design §20.6 item 7 that the follow-up left open (§14.5 item 7); documentation (§14.5 item 8) |
 | 8 | Not started | `xtask audit` passed in the design §20 snapshot (design §20.2; not rerun) | Hardening (design §20.7), whole-branch review, release-gate evidence |
 
@@ -1043,9 +1046,10 @@ None. The work started on 2026-10-17 in local worktrees is reviewed and merged;
 
 ### 14.4 Defects found after design §20
 
-The 2026-10-17 Phase 1 work found these defects; item 4 shows that the "Silent fallback" risk
-of design §20.7 is reachable with valid input. Each was confirmed against the code of
-`4507b1b`. Item 3 is fixed; items 1, 2, and 4 wait for the decisions of §14.5 step 2.
+The 2026-10-17 work found these defects; item 4 shows that the "Silent fallback" risk of design
+§20.7 is reachable with valid input. Items 1–4 were confirmed against the code of `4507b1b`.
+Item 3 is fixed; items 1, 2, and 4 are decided (D28–D30, §15) but not implemented; items 5 and
+6 are open.
 
 1. `MacroTable` accepts triggers that contain boundary punctuation, such as `v.v`. When no
    input-method action consumes the punctuation key, the engine commits the word at it (§3.8),
@@ -1068,48 +1072,52 @@ of design §20.7 is reachable with valid input. Each was confirmed against the c
    printable delimiter, so 4,096 astral scalars, or more than 2,730 letters such as `ệ` with NFD
    (three units each), exceed it. The engine then commits the word as rendered, with no
    expansion, no auto-restore, and no signal (design §20.7, "Silent fallback").
+5. Reported by the TIP work and not yet checked on Windows: `tsf_registration` registers the
+   profile without a substitute keyboard layout (`RegisterProfile` with a null `HKL`). If Windows
+   then runs the profile on the Vietnamese language's default layout, the number row and the
+   brackets produce Vietnamese characters before Raumakey sees the keys. Decide whether the
+   profile names a substitute layout, for example US (`00000409`).
+6. Open question from the controller work: `install` registers the TIPs where the package was
+   extracted, usually a folder the user can write, and prints a warning. Decide whether
+   installation requires Program Files or copies the package there.
 
 ### 14.5 Remaining work, in order
 
-This order replaces design §20.10. Its step 1 is done: `24ba7a6` committed the tree, and this
-revision commits the `xtask` fixes of the 2026-10-17 follow-up. Steps 7 and 8 do not depend on
-steps 3–6 and may run in parallel with them (§13). Every step records its failing test runs and
-its independent review (§0 rule 1, §13).
+This order replaces design §20.10. Steps 1 and 2 are done. Steps 6–8 can run in parallel with
+steps 3–5 (§13). Every step records its failing test runs and its independent review (§0 rule 1,
+§13).
 
-1. Done: the work started on 2026-10-17 is reviewed and merged (§14.3).
-2. Decide design §20.8 items 1–9 and §14.4 items 1, 2, and 4, record the answers as decisions
-   (item 5 is answered by writing D17 and D21), and align the code and tests with them.
-3. Add the `build.rs` files and the remaining `raumakey-windows` building blocks: dialogs and
-   controls, TSF sink and edit-session helpers, input-scope detection, foreground-change
-   tracking, the `LegacyRegistry` adapter and default EVKey folders, profile enumeration, x64 +
-   x86 install orchestration, a `ChangeWindowMessageFilterEx` wrapper so that an elevated
-   controller receives `TaskbarCreated` (matrix #58), a DPI query, and a message loop with
-   `IsDialogMessageW` for the modeless panel.
-4. Implement the TIP COM layer (§10.3) on the session core: the four exports, the class factory
-   on the `raumakey-windows` COM server support, `TextService` with its activation lifecycle and
-   sinks, edit sessions, replay through `SendInput`, the snapshot client thread, reporting mouse
-   presses to the core, the range-edit probe edit and its `ReportProbe` (sent again after a
-   reconnect while the session core still holds the result), opt-in `Diagnostic` events (only
-   while `RuntimeSnapshot.diagnostics_enabled` is set), and the `evkey-compat`
-   path.
-5. Implement the controller (§10.2). First the Windows GUI subsystem (attaching to the console
-   for subcommands) and the CLI with `install`/`uninstall --dry-run`, accepting options in any
-   order, because the packaged `install.ps1` and the release gate order them differently. With
-   steps 3 and 4 this lets `xtask inspect` and the installer dry run pass. Then the other
-   subcommands (`startup`, `migrate`, `convert`, `update`, `--version`); the configuration
-   lifecycle (D9 data root, stores, validation of the `[conversion]` charset names); the IPC hub
-   and snapshot builder, calling `verify_peer_same_user_and_session` on every connection; the
-   tray, hook thread, fallback transport, and panel; opt-in diagnostics; and the `evkey-compat`
-   legacy server.
-6. Finish `raumakey-tests` (the other contract suites of §12), the runner's `live` mode, the
-   `fuzz/` workspace, `tests/windows/Invoke-RaumakeyAcceptance.ps1`, and `MANUAL_ACCEPTANCE.md`.
-   Run the manual `#[ignore]`d `raumakey-windows` tests (10 in this revision) and keep their
-   results as evidence.
-7. Finish `xtask`: ship notices and license texts, check the manifest's Common Controls v6,
-   PerMonitorV2, and supportedOS entries in `inspect`, run the i686 tests under WOW64, compile
-   the WiX source in CI, and stop `package` from shipping artifacts that fail `inspect`.
-8. Documentation: correct `THIRD_PARTY.md`; add a decision index; record the code-level decisions
-   of design §20.9; align §1.1, §1.3, and §7 with the code.
+1. Done: the Phase 1 work is reviewed and merged (§14.3).
+2. Done: the open questions of design §20.8 and §14.4 items 1, 2, and 4 are decided (§15).
+3. Implement the decisions of §15 that change behavior: D25 in the engine (§3.8) and the session
+   core; D27 in the pipe and named-object security; D28–D30 in the engine and in macro
+   validation, which turns the `BUG` tests of §14.4 into passing tests; a test for D34. Align
+   design §9 (D31), design §14 and matrix #29 (D25), and plan §3.6, §3.8, §4, §6, and §10.4 with
+   §15. Decide §14.4 items 5 and 6.
+4. Finish the TIP (§10.3): the IPC snapshot client thread, the range-edit probe edit and its
+   `ReportProbe` (sent again after a reconnect while the session core still holds the result),
+   opt-in `Diagnostic` events (only while `RuntimeSnapshot.diagnostics_enabled` is set), the
+   `evkey-compat` path, and the input-mode compartment and language-bar state.
+5. Finish the controller (§10.2): the configuration lifecycle (D9 data root, stores, the mode and
+   the startup choice saved in `config.toml`, validation of the `[conversion]` charset names);
+   the IPC hub and snapshot builder, calling `verify_peer_same_user_and_session` on every
+   connection; the hook thread under D24 and D26; the fallback transport; the panel; the worker
+   thread; opt-in diagnostics; `migrate` (D31, with the Windows `LegacyRegistry` adapter and the
+   default EVKey folders); installing the ARM64 package; and the `evkey-compat` legacy server.
+6. Remaining `raumakey-windows` building blocks: dialogs and controls, foreground-change
+   tracking, profile enumeration for verification (D21), a DPI query, a message loop with
+   `IsDialogMessageW` for the modeless panel, and the helpers the TIP implements privately today
+   (the thread `WH_MOUSE` hook, TSF sink and selection helpers, `VARIANT` helpers).
+7. Tests and acceptance: the other contract suites of §12, the runner's `live` mode, the `fuzz/`
+   workspace, `tests/windows/Invoke-RaumakeyAcceptance.ps1`, and `MANUAL_ACCEPTANCE.md`. Run the
+   manual check lists of `raumakey_tip::server` and of the controller's desktop module, and the
+   manual `#[ignore]`d tests, on a Windows host, and keep the results as evidence.
+8. Finish `xtask` and the documentation: ship notices and license texts; check the manifest's
+   Common Controls v6, PerMonitorV2, and supportedOS entries in `inspect`; run the i686 tests
+   under WOW64 in CI; compile the WiX source in CI; stop `package` from shipping artifacts that
+   fail `inspect`; correct `THIRD_PARTY.md`; add a decision index; record the code-level
+   decisions of design §20.9 and those listed in `2026-10-17-phase1-task-notes.md`; align §1.1,
+   §1.3, and §7 with the code.
 9. Fix the risks of design §20.7 that break a design requirement, starting with commit
    durability. Then run a whole-branch review, the release gate, and Windows acceptance.
 
@@ -1121,15 +1129,73 @@ Run on 2026-10-17 on the Windows 11 x86_64 development host (Rust 1.99.1, `rust-
 |---|---|
 | `cargo fmt --all --check` | Pass |
 | `cargo xtask ci`: Clippy with `-D warnings`, default features and all five `evkey-compat` features | Pass |
-| `cargo xtask ci`: `cargo test --locked --workspace` | 1,535 passed, 0 failed, 13 ignored |
-| The same tests with all five `evkey-compat` features | 1,609 passed, 0 failed, 13 ignored |
-| `cargo xtask ci`: the fuzz smoke step (`cargo test --locked -p raumakey-tests --test fuzz_smoke`) | 10 passed |
-| `cargo test --locked -p raumakey-tests --target i686-pc-windows-msvc` (WOW64) | 93 passed, 0 failed, 3 ignored |
-| `cargo test --locked -p raumakey-windows -p raumakey-tsf --target i686-pc-windows-msvc` (WOW64) | 346 passed, 0 failed, 10 ignored |
-| `cargo xtask cross` (debug: x86_64, i686, aarch64) | Pass |
-| `raumakey-test-runner vectors --json <file>` (debug, x86_64) | 202 of 202 vectors passed |
+| `cargo xtask ci`: `cargo test --locked --workspace` | 1,887 passed, 0 failed, 20 ignored |
+| The same tests with all five `evkey-compat` features | 1,961 passed, 0 failed, 20 ignored |
+| `cargo xtask ci`: the fuzz smoke step | 10 passed |
+| `cargo test --locked -p raumakey-tsf -p raumakey-controller -p raumakey-windows --target i686-pc-windows-msvc` (WOW64) | 697 passed, 0 failed, 17 ignored |
+| `cargo xtask cross` and `cargo xtask cross --release` (x86_64, i686, aarch64) | Pass |
+| `cargo xtask inspect` and `cargo xtask inspect --release` | All 57 and all 66 checks pass |
+| `cargo xtask package` (debug) | Pass |
+| The packaged `raumakey.exe`: `install --dry-run` in both option orders, `uninstall --dry-run`, `--version`, `update` | Exit 0; the plans name the Raumakey CLSID and profile GUID |
 
-The 13 ignored tests are the 10 manual `raumakey-windows` tests (design §15.1) and the 3 `BUG`
-tests of §14.4. The i686 run of `raumakey-windows` and `raumakey-tsf` is from `834dbf5`; neither
-crate has changed since. PE inspection, packaging, and the audit were not rerun for this
-revision; design §20.2 has their last results.
+The ignored tests are manual Windows tests (design §15.1) and the 3 `BUG` tests of §14.4. The
+i686 run of `raumakey-tests` (93 passed, 3 ignored) and the runner's 202 of 202 vectors are from
+`0bdfbcc`; that package has not changed since. The audit was not rerun for this revision; design
+§20.2 has its last result. None of this is evidence of runtime behavior in Windows host
+applications.
+
+---
+
+## 15. Decisions recorded on 2026-10-17
+
+The product owner answered the open questions of design §20.8 and the defects of §14.4 on
+2026-10-17. These decisions are product choices, not claims about EVKey behavior. Where a
+decision changes behavior, §14.5 lists the work it needs; until that work is merged, the code
+may still follow the earlier text.
+
+- **D17 — TSF profile registration.** `DllRegisterServer`, run by the `regsvr32` of matching
+  bitness, registers the COM class and the profile machine-wide with
+  `ITfInputProcessorProfileMgr::RegisterProfile` (§10.4). Raumakey does not call
+  `InstallLayoutOrTip` and does not add itself to a user's keyboard list; users add the
+  keyboard in Windows Settings. The clean-room spec's `-ineime` and `-r -ineime` modes (§6.1)
+  are deliberately omitted, a recorded deviation from that spec.
+- **D21 — Registration entries and verification.** The entries are those of §10.4 in the
+  registry view matching the DLL's bitness. Verification reads every key back and enumerates
+  the installed profile through TSF; unregistration removes only these entries.
+- **D25 — Secure-field modes.** `Bypass` is the default: in a secure field every key passes
+  through untransformed, with no macros and no clipboard (design §14, matrix #29). `Restricted`
+  (`secure_field_mode = "restricted"` in `app_rules.toml`) keeps Vietnamese transformation in
+  secure fields but never expands macros and never uses the clipboard. The policy decides
+  (§6); adapters pass a key through before the engine when the resolved policy does not allow
+  Vietnamese; the engine never expands a macro in a secure field. This replaces the §3.8 row
+  that made the engine bypass every secure field.
+- **D26 — Privacy of the controller's keyboard hook (amends D24).** The global low-level
+  keyboard hook stays the single hotkey owner while a TIP is connected. Its handler classifies
+  hotkeys from the virtual key and the modifier state only, stores no keys, logs nothing, and
+  runs the engine only for hosts whose resolved transport is `SyntheticKey` or `Clipboard`.
+- **D27 — Sandboxed hosts.** The control pipe and the named objects also grant access to
+  `ALL APPLICATION PACKAGES` and carry the low mandatory label, so a TIP in an AppContainer or
+  low-integrity host connects and receives the same runtime and macro snapshots as any other
+  TIP. Accepted risk: any sandboxed process of the same user can read the configuration and the
+  macros.
+- **D28 — Macro triggers across punctuation.** When macros are active, a whitespace boundary
+  (and Enter or Tab) also looks up the token typed since the previous whitespace, including
+  boundary punctuation that committed words inside it, and replaces the whole token. `v.v`
+  then expands (matrix #47).
+- **D29 — Trigger length.** `MAX_TRIGGER_SCALARS` is 32, the default context limit; longer
+  triggers are rejected when a macro is created or imported. With a context limit below a
+  trigger's key count, that trigger still cannot expand; the configuration UI must say so.
+- **D30 — Replacement length.** A replacement is valid only if its UTF-16 length in NFC and in
+  NFD, plus one delimiter unit, is at most `MAX_INSERT_UNITS` (8,192). Creation and import
+  reject longer replacements with a typed error or an import issue, so the engine's silent
+  fallback (design §20.7) cannot be reached with valid macros.
+- **D31 — EVKey import scope.** Import brings in macros and executable-list named sets only
+  (`FIELD_MAP` stays empty, D18). Other values are kept as typed raw evidence, and
+  `migration.json` keeps the macro file's fingerprint, never macro text. Design §9 is to be
+  aligned with this.
+- **D32 — App-rule precedence.** Within one tier of §6, the first declared named set or rule
+  decides each field.
+- **D33 — Package contents.** Besides the binaries of design §13, the x64 package ships
+  `tools/raumakey-test-runner.exe`, `install.ps1`, `uninstall.ps1`, and a README.
+- **D34 — Circumflex fallback.** With spell checking off, `Circumflex` applies to the rightmost
+  `a`, `e`, or `o` of the cluster (§3.6).

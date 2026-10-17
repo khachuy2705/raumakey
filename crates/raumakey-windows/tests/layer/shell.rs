@@ -1,7 +1,111 @@
-//! `shell`: tooltips (pure), shortcuts in a temporary directory, and the TaskbarCreated
-//! message. The tray icon itself is a manual test.
+//! `shell`: tooltips and the callback messages of a notification icon (pure), shortcuts in a
+//! temporary directory, and the TaskbarCreated message. The tray icon itself is a manual test.
 
-use raumakey_windows::shell::tooltip_units;
+use raumakey_windows::shell::{
+    NIN_KEYSELECT, NIN_SELECT, NINF_KEY, NotifyIconEvent, NotifyIconMessage, WM_CONTEXTMENU,
+    decode_notify_icon_message, tooltip_units,
+};
+
+/// `wParam` of a version-4 callback: the anchor point, x in the low word and y in the high
+/// word (`MAKEWPARAM`), each a signed 16-bit screen coordinate.
+fn anchor(x: i16, y: i16) -> usize {
+    usize::from(x as u16) | (usize::from(y as u16) << 16)
+}
+
+/// `lParam` of a version-4 callback: the notification in the low word and the icon id in the
+/// high word, as the 32-bit `LPARAM` the shell passes, sign-extended on 64-bit Windows.
+fn notification(code: u32, icon_id: u16) -> isize {
+    ((u32::from(icon_id) << 16) | (code & 0xFFFF)) as i32 as isize
+}
+
+fn decoded(wparam: usize, lparam: isize) -> NotifyIconMessage {
+    decode_notify_icon_message(wparam, lparam)
+}
+
+#[test]
+fn the_notification_codes_are_those_of_the_windows_sdk() {
+    assert_eq!(NIN_SELECT, 0x0400, "WM_USER");
+    assert_eq!(NINF_KEY, 0x0001);
+    assert_eq!(NIN_KEYSELECT, NIN_SELECT | NINF_KEY);
+    assert_eq!(WM_CONTEXTMENU, 0x007B);
+}
+
+#[test]
+fn a_click_and_the_keyboard_select_the_icon() {
+    assert_eq!(
+        decoded(anchor(10, 20), notification(NIN_SELECT, 1)),
+        NotifyIconMessage {
+            icon_id: 1,
+            event: NotifyIconEvent::Select
+        }
+    );
+    assert_eq!(
+        decoded(anchor(10, 20), notification(NIN_KEYSELECT, 1)),
+        NotifyIconMessage {
+            icon_id: 1,
+            event: NotifyIconEvent::KeySelect
+        }
+    );
+}
+
+#[test]
+fn the_shortcut_menu_is_anchored_at_signed_screen_coordinates() {
+    assert_eq!(
+        decoded(anchor(1830, 1050), notification(WM_CONTEXTMENU, 1)),
+        NotifyIconMessage {
+            icon_id: 1,
+            event: NotifyIconEvent::ContextMenu { x: 1830, y: 1050 }
+        }
+    );
+    // Monitors left of and above the primary monitor have negative coordinates.
+    assert_eq!(
+        decoded(anchor(-1920, -40), notification(WM_CONTEXTMENU, 3)).event,
+        NotifyIconEvent::ContextMenu { x: -1920, y: -40 }
+    );
+    assert_eq!(
+        decoded(anchor(i16::MIN, i16::MAX), notification(WM_CONTEXTMENU, 3)).event,
+        NotifyIconEvent::ContextMenu {
+            x: i32::from(i16::MIN),
+            y: i32::from(i16::MAX)
+        }
+    );
+}
+
+/// On 64-bit Windows the parameters are wider than the 32 bits the shell fills (32-bit
+/// Windows has no other bits).
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn bits_above_the_two_words_are_ignored() {
+    let wide_wparam = anchor(-5, 7) | !0xFFFF_FFFF_usize;
+    let wide_lparam = notification(WM_CONTEXTMENU, 2) | !0xFFFF_FFFF_usize as isize;
+    assert_eq!(
+        decoded(wide_wparam, wide_lparam),
+        NotifyIconMessage {
+            icon_id: 2,
+            event: NotifyIconEvent::ContextMenu { x: -5, y: 7 }
+        }
+    );
+}
+
+#[test]
+fn other_notifications_keep_their_code_and_every_icon_id_is_decoded() {
+    // WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONUP, WM_LBUTTONDBLCLK, and
+    // NIN_POPUPOPEN.
+    for code in [0x0200_u16, 0x0201, 0x0202, 0x0205, 0x0203, 0x0406] {
+        assert_eq!(
+            decoded(anchor(1, 2), notification(u32::from(code), 9)),
+            NotifyIconMessage {
+                icon_id: 9,
+                event: NotifyIconEvent::Other(code)
+            },
+            "{code:#x}"
+        );
+    }
+    // Icon ids with the top bit set make the 32-bit LPARAM negative.
+    assert_eq!(decoded(0, notification(NIN_SELECT, 0xFFFF)).icon_id, 0xFFFF);
+    assert_eq!(decoded(0, notification(NIN_SELECT, 0x8000)).icon_id, 0x8000);
+    assert_eq!(decoded(0, notification(NIN_SELECT, 0)).icon_id, 0);
+}
 
 #[test]
 fn tooltips_are_nul_terminated_and_truncated_at_scalar_boundaries() {
@@ -50,6 +154,19 @@ mod win {
         let message = taskbar_created_message().unwrap();
         assert!(message >= 0xC000, "{message:#x}");
         assert_eq!(taskbar_created_message().unwrap(), message);
+    }
+
+    #[test]
+    fn the_pure_notification_codes_match_the_windows_crate() {
+        use windows::Win32::UI::Shell;
+        use windows::Win32::UI::WindowsAndMessaging;
+
+        assert_eq!(raumakey_windows::shell::NIN_SELECT, Shell::NIN_SELECT);
+        assert_eq!(raumakey_windows::shell::NINF_KEY, Shell::NINF_KEY);
+        assert_eq!(
+            raumakey_windows::shell::WM_CONTEXTMENU,
+            WindowsAndMessaging::WM_CONTEXTMENU
+        );
     }
 
     #[test]

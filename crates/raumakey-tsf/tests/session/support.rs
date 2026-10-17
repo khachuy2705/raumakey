@@ -131,6 +131,7 @@ pub fn stroke(virtual_key: u32, text: &str, host: &HostContext) -> KeyStroke {
         virtual_key,
         scan_code: virtual_key.wrapping_add(0x100),
         extended: false,
+        repeat: false,
         modifiers: Modifiers::default(),
         text: utf16::encode(text),
         extra_info: 0,
