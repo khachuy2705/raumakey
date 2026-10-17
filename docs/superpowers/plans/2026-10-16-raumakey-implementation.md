@@ -1076,6 +1076,10 @@ fmt, clippy, các test của crate, và một review độc lập đối chiếu
 
 ## 14. Trạng thái triển khai (2026-10-17)
 
+> **Từ 2026-10-18:** bản phát hành là `raumakey.exe` portable (D38–D42). §16 ghi trạng thái và
+> bằng chứng mới nhất; mục này giữ trạng thái trước khi đổi thiết kế. TIP (§14.5 bước 4) và IPC hub
+> (một phần của bước 5) được hoãn lại.
+
 Mục này theo dõi các task của §13. Nó mô tả bản sửa đổi Git chứa chính nó; công việc chỉ tồn tại
 bên ngoài bản sửa đổi đó được liệt kê ở §14.3. Thiết kế §20 chứa bằng chứng chi tiết của snapshot
 trước đó của nó (kết quả các gate, độ phủ ma trận tương thích, rủi ro và câu hỏi mở); §14.6 liệt kê
@@ -1409,4 +1413,46 @@ TIP (bước 4) và IPC hub (một phần của bước 5) được hoãn lại 
 
 ### 16.2 Trạng thái
 
-Mục này được cập nhật khi các task được merge.
+Mọi task đã xong, đã được review độc lập và sửa theo review. `2026-10-17-phase1-task-notes.md`
+(mục "Bản portable một tệp") ghi các lần chạy đỏ và kết quả review.
+
+| Task | Trạng thái | Commit | Review |
+|---|---|---|---|
+| P1 | Xong | `85e1b97` | Chuyển nguyên, số test không đổi |
+| P2 | Xong | `dc398a4`, `f14ba73` | Sửa 2 lỗi lớn: thư mục cấu hình khác nhau giữa chạy thường và chạy quyền quản trị; poll kẹt sau một lần đọc thất bại tạm thời |
+| P3 | Xong | `80b85d3` | — |
+| P4 | Xong | `e0a569e`, `e1eaf58` | Sửa 2 lỗi lớn: Ctrl+Shift mất tác dụng sau Win+L; Caps Lock đổi khi hook không được gọi |
+| P5 | Xong | `c2ec3b8`, `4278a32` | Sửa 3 lỗi lớn: tiến trình chạy mà không có icon; lệnh `startup` và menu không thống nhất; shortcut trỏ vào `%TEMP%` |
+| P6 | Xong | các commit tài liệu, bản build trong `release\` | — |
+
+Bằng chứng cho bản sửa đổi `4278a32`, chạy ngày 2026-10-18 trên host phát triển Windows 11 x86_64
+(Rust 1.99.1, `rust-lld` + `xwin`):
+
+| Lệnh | Kết quả |
+|---|---|
+| `cargo fmt --all --check` | Đạt |
+| `cargo xtask ci`: Clippy với `-D warnings`, feature mặc định và cả sáu feature `evkey-compat` | Đạt |
+| `cargo xtask ci`: `cargo test --locked --workspace` | 2,244 đạt, 0 không đạt, 19 bị bỏ qua |
+| Cũng các test đó với các feature `evkey-compat` | 2,318 đạt, 0 không đạt, 19 bị bỏ qua |
+| `cargo xtask ci`: bước fuzz smoke | 10 đạt |
+| Test i686 (WOW64), lệnh ở `GUIDE.md` §3 | 957 đạt, 0 không đạt, 12 bị bỏ qua |
+| `cargo xtask cross --release` | Đạt (x86_64, i686, aarch64) |
+| `cargo xtask inspect --release` | Cả 66 mục kiểm tra đều đạt |
+| `cargo xtask package --release` | Đạt: mỗi package có 6 tệp |
+| `raumakey.exe --version` của package | `Raumakey 0.1.0`, mã thoát 0, không ghi tệp nào |
+
+Smoke test của `raumakey.exe` thật trên máy phát triển. Mỗi lần chạy vài giây, với hook mức thấp
+thật được cài:
+
+- Với một `raumakey.toml` có sẵn ở chế độ tiếng Anh: tiến trình chạy, tệp không đổi, và WM_CLOSE
+  cho mã thoát 0.
+- Lần chạy đầu trong một thư mục trống ngoài `%TEMP%`: `raumakey.toml` (cấu hình mặc định) và
+  `raumakey.toml.lock` được tạo cạnh exe, còn `%LOCALAPPDATA%\Raumakey` không được tạo. Tiến trình
+  có cửa sổ khay ẩn và hộp thoại chào trên một luồng riêng. WM_CLOSE gửi tới cửa sổ khay trong lúc
+  hộp thoại còn mở cho mã thoát 0.
+- `taskkill /PID` (không `/F`) chỉ gửi WM_CLOSE tới cửa sổ đang hiện, tức là hộp thoại, nên khi hộp
+  thoại còn mở, lệnh này chỉ đóng hộp thoại.
+
+Chưa kiểm chứng: việc gõ trong ứng dụng thật. Smoke test không gửi phím nào. Các danh sách kiểm tra
+thủ công ở module `typing` và `desktop` của controller, và `GUIDE.md` §5.6, chưa được chạy. Không
+điều nào ở trên là bằng chứng về hành vi khi chạy thật.

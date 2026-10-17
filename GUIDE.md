@@ -214,12 +214,22 @@ Raumakey nạp lại trong vòng vài giây. Một giá trị không hợp lệ 
 Tệp không đọc được (ví dụ sai cú pháp TOML) thì Raumakey báo một lần, chạy với cấu hình mặc định
 và không ghi đè tệp của bạn. Nếu tệp đã hỏng từ trước khi chạy, Raumakey hỏi bạn có muốn đổi tên
 nó thành `raumakey.toml.bak-…` rồi tạo tệp mới không. Khi Raumakey ghi lại tệp, các dòng comment bạn
-thêm vào không được giữ.
+thêm vào không được giữ. Nếu một thay đổi chưa lưu được (ví dụ khi phần mềm diệt virus đang khoá
+tệp), nó vẫn có hiệu lực và Raumakey tự thử lưu lại.
+
+Về "Khởi động cùng Windows":
+
+- Khi bạn chạy `raumakey.exe` ngay trong tệp ZIP, Raumakey không tạo shortcut và nhắc bạn giải nén
+  ra một thư mục cố định trước, vì Windows sẽ xoá thư mục tạm đó.
+- Nếu bạn chuyển exe sang chỗ khác, lần chạy kế tiếp sửa lại shortcut. Một shortcut đang trỏ tới
+  một bản Raumakey khác vẫn còn trên máy thì được giữ nguyên.
 
 Nếu `raumakey.toml` chọn một bảng phím tự định nghĩa (`method = "user"`), không mục nào trong
 Telex/VNI/VIQR được đánh dấu và tooltip ghi "(kiểu gõ riêng)". Nếu bạn bật khởi động cùng Windows
 bằng tác vụ quản trị (`raumakey startup elevated-task`, chạy bằng quyền quản trị), muốn tắt thì
-chạy `raumakey startup none` cũng bằng quyền quản trị.
+chạy `raumakey startup none` cũng bằng quyền quản trị. Lệnh
+`raumakey startup <none|shortcut|elevated-task>` cũng ghi lựa chọn vào `raumakey.toml`, nên menu
+luôn hiện đúng.
 
 ### 5.4 Tệp cấu hình
 

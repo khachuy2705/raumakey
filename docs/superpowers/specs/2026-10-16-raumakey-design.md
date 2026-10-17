@@ -661,14 +661,27 @@ phím vật lý
 - Khi Raumakey ghi lại tệp, các dòng comment và cách trình bày trong tệp không được giữ, và một giá
   trị không hợp lệ được thay bằng giá trị mặc định.
 - Thay đổi từ menu được ghi ngay. Tệp sửa bằng tay được nạp lại trong vòng vài giây, vì
-  controller kiểm tra tệp mỗi 2 giây.
+  controller kiểm tra tệp mỗi 2 giây. Một tệp đọc ra hỏng hoặc thiếu `version` được đọc lại một
+  lần sau 300 ms, vì trình soạn thảo có thể đang ghi dở.
+- Một thay đổi chưa lưu được (ví dụ khi phần mềm diệt virus đang khoá tệp) vẫn có hiệu lực. Raumakey
+  thử lưu lại ở mỗi lần kiểm tra và một lần nữa khi thoát.
+- Hộp thoại thông báo chạy trên luồng riêng, nên trong lúc nó mở, khay vẫn nhận được lệnh thoát, lệnh
+  đăng xuất và `TaskbarCreated`. Nếu thêm biểu tượng thất bại, Raumakey thử lại ở mỗi nhịp 2 giây.
 
 ### 21.4 Khởi động cùng Windows (D41)
 
 - Mục menu "Khởi động cùng Windows": khi bật, Raumakey tạo shortcut `Raumakey.lnk` trỏ tới
   `raumakey.exe` đang chạy, đặt trong thư mục Startup của người dùng; khi tắt, Raumakey xoá
-  shortcut đó. Trạng thái được lưu ở `[system] startup` (`shortcut` hoặc `none`). Nếu exe bị
-  chuyển sang chỗ khác, lần chạy kế tiếp sửa lại shortcut.
+  shortcut đó. Trạng thái được lưu ở `[system] startup` (`shortcut` hoặc `none`).
+- Lúc khởi động, Raumakey chỉ sửa lại shortcut khi shortcut bị mất hoặc trỏ tới một exe không còn
+  tồn tại (exe đã bị chuyển chỗ). Shortcut đang trỏ tới một bản Raumakey khác vẫn còn tồn tại thì
+  được giữ nguyên.
+- Exe nằm trong `%TEMP%` (chạy thẳng từ tệp ZIP) không được tạo shortcut. Raumakey nhắc người dùng
+  giải nén ra một thư mục cố định trước.
+- Sửa tay `startup` trong tệp cấu hình cũng tạo hoặc xoá shortcut theo các quy tắc trên. Khi xoá,
+  Raumakey chỉ xoá shortcut trỏ tới chính exe này.
+- Lệnh `raumakey startup <mode>` cũng ghi chế độ vào `[system] startup`, nên menu và dòng lệnh luôn
+  thống nhất. Raumakey không sửa shortcut khi chế độ là `elevated-task`.
 - Việc này không cần quyền quản trị. Chế độ `elevated-task` chỉ còn dùng được qua dòng lệnh
   (`raumakey startup elevated-task`).
 

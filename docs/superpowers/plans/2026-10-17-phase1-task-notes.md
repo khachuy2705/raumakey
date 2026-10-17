@@ -545,3 +545,118 @@ controller.
   phím và tắt mọi phím bật/tắt của luồng test. Hàm chỉ đổi trạng thái của luồng gọi, không gửi
   input nào. Đỏ: 14 test fail khi chạy riêng (Caps Lock bật). Xanh: cả 47 test đạt hai lần liên
   tiếp, trong khi Caps Lock của desktop vẫn bật.
+
+## Bản portable một tệp (D38–D42)
+
+Ngày 2026-10-17 và 2026-10-18, chủ dự án quyết định bỏ cách cài đặt qua TIP và chuyển sang một tệp
+`raumakey.exe` portable (thiết kế §21, kế hoạch §15 D38–D42 và §16). Mỗi task được làm trong một Git
+worktree riêng, được một reviewer độc lập review, sửa theo review, rồi merge.
+
+### P1: crate `raumakey-session`
+
+- Chuyển nguyên `crates/raumakey-tsf/src/session/` và `tests/session/` sang crate mới; TIP re-export
+  crate đó làm `session`. Đây là một lần chuyển chỗ, không thêm hành vi, nên không có lần chạy đỏ;
+  thay vào đó, số test trước và sau được so: 1,955 / 2,029 cả hai lần.
+- `EditRequest::new` thành `pub` vì một test của TIP dùng nó. Crate mới có feature `evkey-compat`
+  riêng, nằm trong danh sách feature của `xtask ci`.
+
+### P2: cấu hình cạnh exe (D40)
+
+- Đỏ: `data_root` không biên dịch được (chưa có `resolve_with`, `is_exe_dir`, `is_writable_dir`);
+  bốn test tên tệp fail (`config.toml` khác `raumakey.toml`, …); 7 test `atomic_store`, 1 test
+  `store_robustness` và 9 test của `raumakey-migrate` fail vì tên tệp; `settings` không biên dịch
+  được.
+- Review: cần sửa, 2 lỗi lớn.
+  1. Thư mục được chọn theo việc lần chạy có quyền quản trị hay không, nên một bản trong Program
+     Files dùng hai cấu hình khác nhau.
+  2. Một lần đọc thất bại tạm thời trong lúc poll làm trạng thái kẹt ở `Unreadable`, và
+     `recover()` khi đó chuyển một tệp tốt sang `.bak`.
+
+  Ngoài ra còn các lỗi nhỏ: exe không rõ thư mục thì chạy chỉ trong bộ nhớ; tệp thăm dò có thể sót
+  lại; trạng thái cũ sau khi commit; tranh chấp ở lần chạy đầu.
+- Sửa:
+  - Quy tắc chọn thư mục mới: có sẵn `raumakey.toml` thì dùng thư mục exe; nếu không, chỉ dùng thư
+    mục exe khi ghi được và không thuộc Program Files, thư mục Windows hay `%TEMP%`.
+  - Đọc lại sau lỗi đọc.
+  - `Recovery` thay cho kiểu trả về cũ của `recover()`.
+  - Tệp thăm dò có tên cố định.
+
+  Đỏ: 3 test `data_root`, 21 lỗi biên dịch E0061, 3 test `settings`, 1 test unit tranh chấp lần
+  chạy đầu. Xanh: 2,001 / 2,075 trong worktree.
+
+### P3: package portable (D38)
+
+- Đỏ: E0425 (`package_paths`); 7 test package; 3 test gate, evidence và CLI; 18 lỗi biên dịch của
+  các test gate mới.
+- `wix.rs` bị xoá. `installer-dry-run` được thay bằng `portable-check`, bước này kiểm tra danh sách
+  tệp, chạy `raumakey.exe --version`, rồi quét lại package.
+
+### P4: gõ bằng hook (D39)
+
+- Đỏ:
+  - `raumakey-session` không biên dịch được (`Role`, `with_role`); sau khi thêm khung API, 6/10 test
+    vai trò hook fail;
+  - `raumakey-windows` không biên dịch được (`foreground_window`, `key_down_input`, `key_is_down`);
+  - test `typing` không biên dịch được.
+
+  Hai lần chạy đột biến (mutation) làm fail 11 và 15 test.
+- Review: cần sửa, 2 lỗi lớn, cả hai đã được tái hiện.
+  1. Sau Win+L hoặc Ctrl+Alt+Del, bộ phân loại phím tắt vẫn coi phím bổ trợ đang bị giữ, nên
+     Ctrl+Shift không còn tác dụng.
+  2. Caps Lock đổi trong lúc hook không được gọi (màn hình khoá, cửa sổ quyền cao hơn) không được
+     đọc lại, nên ra `xin TIếng`.
+
+  Ngoài ra còn các lỗi nhỏ: phím bổ trợ bị lỡ làm Backspace thành Ctrl+Backspace; Windows âm thầm
+  gỡ hook; Alt nhấn một mình đưa cửa sổ vào chế độ menu; bộ gõ CJK; phát lại một phím khác.
+- Sửa:
+  - `ServiceCore::transitions_missed`;
+  - đồng bộ phím bổ trợ từ `GetAsyncKeyState`;
+  - đọc lại Caps Lock khi đổi tài liệu và sau 1 giây không có sự kiện;
+  - `TypingHook::ensure_alive`;
+  - Alt nhấn một mình và F10 kết thúc từ;
+  - CJK cho đi thẳng.
+
+  Đỏ: 3 lỗi biên dịch E0599; 2 test session; lỗi biên dịch của `Heartbeat` và `last_input_tick`;
+  3 test lib và 19 test `typing` với stub. Xanh: 2,078 / 2,152 trong worktree.
+
+### P5: chế độ chạy portable (D40–D42, D41)
+
+- Đỏ:
+  - API timer và Notepad của `raumakey-windows` chưa có;
+  - test `worker`, `notice` và `tray` không biên dịch được (138 lỗi);
+  - `run.rs` không build được với trình tự cũ;
+  - 2 test help của CLI fail;
+  - 3 test `worker` fail vì một câu trả lời không mang settings làm mất lần nạp lại.
+- Người phụ trách (lead) thêm `TrayServices::keep_typing_alive`, gọi `ensure_alive` ở mỗi nhịp
+  timer. Đỏ: `E0407` (phương thức không thuộc trait). Xanh: 12 test `desktop`.
+- Smoke test của exe thật (package release, Windows 11 26H2), với hook mức thấp chạy trên máy phát
+  triển trong vài giây:
+  - Chạy với một `raumakey.toml` có sẵn ở chế độ tiếng Anh: tiến trình sống, tệp không đổi, và
+    `taskkill /PID` (WM_CLOSE) cho mã thoát 0.
+  - Lần chạy đầu trong một thư mục trống: `raumakey.toml` và `raumakey.toml.lock` được tạo cạnh exe
+    với cấu hình mặc định, còn `%LOCALAPPDATA%\Raumakey` không được tạo.
+  - Lỗi phát hiện: trong lúc hộp thoại chào đang mở, WM_CLOSE không làm tiến trình thoát.
+- Review: cần sửa, 3 lỗi lớn.
+  1. Tiến trình có thể chạy mà không có icon. Lần thêm icon thất bại không được thử lại, và
+     `TaskbarCreated` bị mất khi một hộp thoại đang mở.
+  2. Lệnh `startup` và menu khay không thống nhất `[system] startup`, nên tray làm ngược lại lệnh.
+  3. Shortcut có thể trỏ tới một exe trong `%TEMP%`, và lần sửa shortcut có thể lấy shortcut của
+     một bản khác.
+
+  Ngoài ra còn các lỗi nhỏ: `WM_ENDSESSION` bị mất khi hộp thoại mở; lưu thất bại không được thử
+  lại; câu báo lỗi lưu khởi động; sửa tay `startup`; tệp đang ghi dở khi poll.
+- Sửa: hộp thoại chạy trên luồng riêng (`spawn_message_box`), câu trả lời đi qua inbox, và thoát
+  thì đóng các hộp thoại đang mở; thêm lại icon ở mỗi nhịp timer khi lần thêm hoặc đổi thất bại;
+  `raumakey startup <mode>` ghi chế độ qua `Settings`; không tạo shortcut cho exe trong `%TEMP%`,
+  chỉ sửa shortcut khi nó mất hoặc trỏ tới một exe không còn, không bao giờ trỏ lại shortcut của một
+  bản khác; sửa tay `startup` cũng tạo hoặc xoá shortcut; thay đổi chưa lưu được thì thử lại ở mỗi
+  lần poll và khi thoát; đọc lại tệp hỏng sau 300 ms; gộp các sự kiện phím tắt và lưu chúng trước
+  khi thoát. Đỏ: API hộp thoại của `raumakey-windows`; 14 lỗi biên dịch của `settings`
+  (`has_unsaved`, `save_unsaved`, `is_temporary_path`); 14 lỗi của `worker`; `run.rs` không build
+  được; `temporary_exe_notice`; 18 lỗi của `tray` (`coalesce`, `flush_hotkeys`,
+  `Event::Answered`); 2 assertion của `commands` (chế độ chưa được ghi, không có thông báo stderr).
+- Smoke test sau khi sửa: lần chạy đầu tạo `raumakey.toml` cạnh exe; khi hộp thoại chào còn mở,
+  WM_CLOSE gửi tới cửa sổ khay cho mã thoát 0. `taskkill /PID` (không `/F`) chỉ gửi WM_CLOSE tới
+  cửa sổ đang hiện, tức là hộp thoại, nên lần smoke test trước đó chỉ đóng hộp thoại; đây là cách
+  `taskkill` hoạt động, không phải lỗi của Raumakey.
+- Bằng chứng của bản sửa đổi `4278a32` nằm ở kế hoạch §16.2.
