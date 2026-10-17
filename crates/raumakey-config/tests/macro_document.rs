@@ -42,7 +42,7 @@ fn defaults_are_empty_v1() {
     assert!(doc.entries.is_empty());
     assert!(doc.extensions.is_empty());
     assert_eq!(MacroDocument::default(), doc);
-    assert_eq!(MacroDocument::FILE_NAME, "macros.toml");
+    assert_eq!(MacroDocument::FILE_NAME, "raumakey-macros.toml");
     assert_eq!(MacroDocument::CURRENT_VERSION, 1);
 }
 

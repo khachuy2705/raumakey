@@ -74,7 +74,7 @@ fn defaults_are_not_started() {
     assert_eq!(record.result, None);
     assert!(record.extensions.is_empty());
     assert_eq!(MigrationRecord::default(), record);
-    assert_eq!(MigrationRecord::FILE_NAME, "migration.json");
+    assert_eq!(MigrationRecord::FILE_NAME, "raumakey-migration.json");
     assert_eq!(MigrationRecord::CURRENT_VERSION, 1);
 }
 

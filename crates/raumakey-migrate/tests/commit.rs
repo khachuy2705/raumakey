@@ -266,7 +266,7 @@ fn a_full_import_commits_the_documents_and_records_completion() {
 
     // FIELD_MAP is empty, so config.toml is not rewritten.
     let after = snapshot(dir.path());
-    assert_eq!(after["config.toml"], before["config.toml"]);
+    assert_eq!(after["raumakey.toml"], before["raumakey.toml"]);
 
     let record = stores.record.load().unwrap().document;
     assert_eq!(record.status, MigrationStatus::Completed);
@@ -280,12 +280,12 @@ fn a_full_import_commits_the_documents_and_records_completion() {
     assert_eq!(&record.preserved, parsed.preserved());
     let mut checksums = BTreeMap::new();
     checksums.insert(
-        "app_rules.toml".to_owned(),
-        sha256_hex(&bytes_of(&after, "app_rules.toml")),
+        "raumakey-app-rules.toml".to_owned(),
+        sha256_hex(&bytes_of(&after, "raumakey-app-rules.toml")),
     );
     checksums.insert(
-        "macros.toml".to_owned(),
-        sha256_hex(&bytes_of(&after, "macros.toml")),
+        "raumakey-macros.toml".to_owned(),
+        sha256_hex(&bytes_of(&after, "raumakey-macros.toml")),
     );
     let expected = CommitResult {
         config_revision: 1,
@@ -425,8 +425,14 @@ fn a_failing_second_store_rolls_back_every_document() {
     assert_eq!(config.revision, 3);
     assert_eq!(without_revision(config), without_revision(config_before));
     let after = snapshot(dir.path());
-    assert_eq!(after["macros.toml"], before["macros.toml"]);
-    assert_eq!(after["app_rules.toml"], before["app_rules.toml"]);
+    assert_eq!(
+        after["raumakey-macros.toml"],
+        before["raumakey-macros.toml"]
+    );
+    assert_eq!(
+        after["raumakey-app-rules.toml"],
+        before["raumakey-app-rules.toml"]
+    );
     let record = stores.record.load().unwrap().document;
     assert_eq!(record.status, MigrationStatus::RolledBack);
     assert_eq!(record.result, None);
@@ -470,8 +476,8 @@ fn a_failing_third_store_restores_the_first_two() {
     assert_eq!(macros.revision, 3);
     assert_eq!(without_revision(macros), without_revision(macros_before));
     assert_eq!(
-        snapshot(dir.path())["app_rules.toml"],
-        before["app_rules.toml"]
+        snapshot(dir.path())["raumakey-app-rules.toml"],
+        before["raumakey-app-rules.toml"]
     );
     assert_eq!(
         stores.record.load().unwrap().document.status,
@@ -525,7 +531,7 @@ fn a_concurrent_edit_fails_verification_and_is_never_overwritten() {
     seed(dir.path());
     let rules_before = Stores::open(dir.path()).app_rules.load().unwrap().document;
     let tamper: Arc<dyn FileReplacer> = Arc::new(TamperingReplacer {
-        other: dir.path().join("macros.toml"),
+        other: dir.path().join("raumakey-macros.toml"),
     });
     let stores = Stores::open_with(
         dir.path(),
@@ -610,10 +616,14 @@ fn an_unwritable_record_aborts_before_any_document_changes() {
         }
     );
     let after = snapshot(dir.path());
-    for file in ["config.toml", "macros.toml", "app_rules.toml"] {
+    for file in [
+        "raumakey.toml",
+        "raumakey-macros.toml",
+        "raumakey-app-rules.toml",
+    ] {
         assert_eq!(after[file], before[file], "{file}");
     }
-    assert!(!after.contains_key("migration.json"));
+    assert!(!after.contains_key("raumakey-migration.json"));
 }
 
 #[test]
@@ -747,10 +757,10 @@ fn preview_of_an_empty_data_root_creates_nothing() {
 #[test]
 fn a_corrupt_document_aborts_before_anything_is_written() {
     for (file, document) in [
-        ("app_rules.toml", DocumentKind::AppRules),
-        ("macros.toml", DocumentKind::Macros),
-        ("config.toml", DocumentKind::Config),
-        ("migration.json", DocumentKind::Record),
+        ("raumakey-app-rules.toml", DocumentKind::AppRules),
+        ("raumakey-macros.toml", DocumentKind::Macros),
+        ("raumakey.toml", DocumentKind::Config),
+        ("raumakey-migration.json", DocumentKind::Record),
     ] {
         let dir = tempfile::tempdir().unwrap();
         seed(dir.path());
@@ -787,7 +797,7 @@ fn imported_macros_get_identifiers_above_every_existing_one() {
     let dir = tempfile::tempdir().unwrap();
     // id 20 belongs to an entry without a replacement, which the document keeps verbatim.
     fs::write(
-        dir.path().join("macros.toml"),
+        dir.path().join("raumakey-macros.toml"),
         "version = 1\nrevision = 4\n\n[[macro]]\nid = 3\ntrigger = \"vie\u{302}\u{323}t\"\nreplacement = \"x\"\n\n[[macro]]\nid = 9\ntrigger = \"hn\"\nreplacement = \"y\"\n\n[[macro]]\nid = 20\ntrigger = \"dc\"\n",
     )
     .unwrap();

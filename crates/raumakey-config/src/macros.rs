@@ -1,4 +1,4 @@
-//! `macros.toml`: persisted macro entries.
+//! `raumakey-macros.toml`: persisted macro entries.
 
 use serde::Serialize;
 
@@ -35,7 +35,7 @@ pub const MACRO_ARRAY_KEY: &str = "macro";
 /// exactly as written; one that `raumakey-macro` normalizes to NFC counts as a new trigger.
 pub type MacroIdentity = (MacroId, String);
 
-/// `macros.toml`: the macro table as an array of `[[macro]]` tables.
+/// `raumakey-macros.toml`: the macro table as an array of `[[macro]]` tables.
 ///
 /// Decoding is structural only; semantic checks (NFC, lengths, duplicate ids) happen when
 /// `raumakey-macro` builds its table. Each entry is decoded field by field (matrix #45):
@@ -103,7 +103,7 @@ fn build(
 }
 
 impl StoreDocument for MacroDocument {
-    const FILE_NAME: &'static str = "macros.toml";
+    const FILE_NAME: &'static str = "raumakey-macros.toml";
     const CURRENT_VERSION: u32 = 1;
 
     fn revision(&self) -> u64 {

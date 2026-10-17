@@ -1,4 +1,4 @@
-//! The table of EVKey settings that are imported into `config.toml` (plan D18).
+//! The table of EVKey settings that are imported into `raumakey.toml` (plan D18).
 
 use core::fmt;
 
@@ -30,7 +30,7 @@ impl fmt::Debug for SettingValue<'_> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct InvalidSetting;
 
-/// One EVKey setting and how it is stored in `config.toml`.
+/// One EVKey setting and how it is stored in `raumakey.toml`.
 ///
 /// A mapping names the setting in the registry and/or in `setting.ini` (both compare ignoring
 /// case) and converts a raw value with `apply`, which must be a pure function of the value: it
@@ -48,11 +48,11 @@ pub struct FieldMapping {
     pub apply: fn(&mut ConfigDocument, SettingValue<'_>) -> Result<(), InvalidSetting>,
 }
 
-/// The settings imported into `config.toml` (plan D18).
+/// The settings imported into `raumakey.toml` (plan D18).
 ///
 /// **The table is empty on purpose.** No source that Raumakey may use documents EVKey's
 /// setting names or value encodings, so mapping any of them would be a guess. Every settings
 /// field is therefore preserved raw in the migration record (or quarantined when unreadable),
-/// lists of executables become named sets without an action, and `config.toml` keeps its
+/// lists of executables become named sets without an action, and `raumakey.toml` keeps its
 /// current values. A mapping is added here only once a permitted source documents the setting.
 pub const FIELD_MAP: &[FieldMapping] = &[];

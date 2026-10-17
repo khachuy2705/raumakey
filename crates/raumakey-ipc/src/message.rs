@@ -236,7 +236,7 @@ pub enum Command {
 /// Immutable configuration published by the controller.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSnapshot {
-    /// Revision of `config.toml` that produced this snapshot.
+    /// Revision of `raumakey.toml` that produced this snapshot.
     pub config_revision: u64,
     /// Engine options.
     pub options: EngineOptions,
@@ -343,7 +343,7 @@ impl RuntimeSnapshot {
 /// replacements never reach a log through formatting.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MacroSnapshot {
-    /// Revision of `macros.toml` that produced this snapshot.
+    /// Revision of `raumakey-macros.toml` that produced this snapshot.
     pub macro_revision: u64,
     /// Entries (NFC). Semantic validation happens when `raumakey-macro` builds a table.
     pub entries: Vec<MacroEntry>,

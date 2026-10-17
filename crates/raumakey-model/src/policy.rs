@@ -129,7 +129,7 @@ pub enum ProbeResult {
     TsfRangeEditFailed,
 }
 
-/// Compatibility configuration persisted in `app_rules.toml`.
+/// Compatibility configuration persisted in `raumakey-app-rules.toml`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompatibilityConfig {
     /// Clipboard transport may be selected by rules.

@@ -3,30 +3,32 @@
 use core::fmt;
 use std::io;
 
-use raumakey_config::ConfigError;
+use raumakey_config::{
+    AppRulesDocument, ConfigDocument, ConfigError, MacroDocument, MigrationRecord, StoreDocument,
+};
 use raumakey_model::diag::DiagCode;
 
 /// A Raumakey document that a migration reads and writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DocumentKind {
-    /// `config.toml`.
+    /// `raumakey.toml`.
     Config,
-    /// `macros.toml`.
+    /// `raumakey-macros.toml`.
     Macros,
-    /// `app_rules.toml`.
+    /// `raumakey-app-rules.toml`.
     AppRules,
-    /// `migration.json`.
+    /// `raumakey-migration.json`.
     Record,
 }
 
 impl DocumentKind {
-    /// File name of the document inside the data root.
+    /// File name of the document inside the data root (its [`StoreDocument::FILE_NAME`]).
     pub const fn file_name(self) -> &'static str {
         match self {
-            Self::Config => "config.toml",
-            Self::Macros => "macros.toml",
-            Self::AppRules => "app_rules.toml",
-            Self::Record => "migration.json",
+            Self::Config => ConfigDocument::FILE_NAME,
+            Self::Macros => MacroDocument::FILE_NAME,
+            Self::AppRules => AppRulesDocument::FILE_NAME,
+            Self::Record => MigrationRecord::FILE_NAME,
         }
     }
 }

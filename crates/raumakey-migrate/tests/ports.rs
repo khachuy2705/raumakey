@@ -6,7 +6,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use raumakey_config::ConfigError;
+use raumakey_config::{
+    AppRulesDocument, ConfigDocument, ConfigError, MacroDocument, MigrationRecord, StoreDocument,
+};
 use raumakey_migrate::{
     DocumentKind, FakeFs, FakeRegistry, LegacyRegistry, LegacyValue, MAX_SOURCE_BYTES,
     MigrateError, REG_BINARY, REG_DWORD, REG_EXPAND_SZ, REG_MULTI_SZ, REG_QWORD, REG_SZ, SourceFs,
@@ -325,14 +327,29 @@ fn errors_display_no_content_and_have_distinct_codes() {
         assert!(codes.insert(error.diag_code().0), "{error:?}");
         assert!((8000..8100).contains(&error.diag_code().0));
     }
-    assert!(errors[3].to_string().contains("macros.toml"));
-    assert!(errors[6].to_string().contains("config.toml"));
+    assert!(errors[3].to_string().contains("raumakey-macros.toml"));
+    assert!(errors[6].to_string().contains("raumakey.toml"));
 }
 
 #[test]
 fn document_kinds_name_their_files() {
-    assert_eq!(DocumentKind::Config.file_name(), "config.toml");
-    assert_eq!(DocumentKind::Macros.file_name(), "macros.toml");
-    assert_eq!(DocumentKind::AppRules.file_name(), "app_rules.toml");
-    assert_eq!(DocumentKind::Record.file_name(), "migration.json");
+    assert_eq!(DocumentKind::Config.file_name(), "raumakey.toml");
+    assert_eq!(DocumentKind::Macros.file_name(), "raumakey-macros.toml");
+    assert_eq!(
+        DocumentKind::AppRules.file_name(),
+        "raumakey-app-rules.toml"
+    );
+    assert_eq!(DocumentKind::Record.file_name(), "raumakey-migration.json");
+}
+
+/// The names come from the documents themselves, so they cannot drift apart.
+#[test]
+fn document_kinds_use_the_store_file_names() {
+    assert_eq!(DocumentKind::Config.file_name(), ConfigDocument::FILE_NAME);
+    assert_eq!(DocumentKind::Macros.file_name(), MacroDocument::FILE_NAME);
+    assert_eq!(
+        DocumentKind::AppRules.file_name(),
+        AppRulesDocument::FILE_NAME
+    );
+    assert_eq!(DocumentKind::Record.file_name(), MigrationRecord::FILE_NAME);
 }

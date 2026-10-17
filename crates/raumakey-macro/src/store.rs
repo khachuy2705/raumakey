@@ -10,7 +10,7 @@
 //!
 //! # Loading stored data
 //!
-//! Load user data (`macros.toml`, imports kept from earlier versions) with
+//! Load user data (`raumakey-macros.toml`, imports kept from earlier versions) with
 //! [`MacroStore::from_entries_lenient`], never with [`MacroStore::from_entries`]. Data written
 //! before plan D29 and D30 can hold entries that are invalid now: triggers of 33–64 scalars,
 //! and replacements that do not fit one engine insert with a delimiter. The lenient loader

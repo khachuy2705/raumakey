@@ -147,7 +147,7 @@ pub struct DiscoveredSource {
 }
 
 impl DiscoveredSource {
-    /// The fingerprint recorded in `migration.json`.
+    /// The fingerprint recorded in `raumakey-migration.json`.
     pub fn fingerprint(&self) -> SourceFingerprint {
         SourceFingerprint {
             kind: self.kind.as_str().to_owned(),

@@ -1,4 +1,4 @@
-//! `migration.json`: the record of an EVKey import (plan §9).
+//! `raumakey-migration.json`: the record of an EVKey import (plan §9).
 
 use std::collections::BTreeMap;
 
@@ -64,7 +64,7 @@ pub enum MigrationStatus {
 }
 
 impl MigrationStatus {
-    /// Stable name used in `migration.json`.
+    /// Stable name used in `raumakey-migration.json`.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NotStarted => "not-started",
@@ -93,16 +93,16 @@ pub struct SourceFingerprint {
 /// How many items each target received.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ImportedCounts {
-    /// Settings fields mapped into `config.toml`.
+    /// Settings fields mapped into `raumakey.toml`.
     #[serde(default)]
     pub settings: u64,
-    /// Macro entries written to `macros.toml`.
+    /// Macro entries written to `raumakey-macros.toml`.
     #[serde(default)]
     pub macros: u64,
-    /// Named sets written to `app_rules.toml`.
+    /// Named sets written to `raumakey-app-rules.toml`.
     #[serde(default)]
     pub named_sets: u64,
-    /// Probe records written to `app_rules.toml`.
+    /// Probe records written to `raumakey-app-rules.toml`.
     #[serde(default)]
     pub probes: u64,
 }
@@ -121,18 +121,18 @@ pub struct QuarantinedField {
 /// What a completed migration committed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitResult {
-    /// Revision of `config.toml` after the commit.
+    /// Revision of `raumakey.toml` after the commit.
     pub config_revision: u64,
-    /// Revision of `macros.toml` after the commit.
+    /// Revision of `raumakey-macros.toml` after the commit.
     pub macros_revision: u64,
-    /// Revision of `app_rules.toml` after the commit.
+    /// Revision of `raumakey-app-rules.toml` after the commit.
     pub app_rules_revision: u64,
     /// Lowercase hexadecimal SHA-256 of each committed file, keyed by file name.
     #[serde(default)]
     pub checksums: BTreeMap<String, String>,
 }
 
-/// `migration.json`, schema v1.
+/// `raumakey-migration.json`, schema v1.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MigrationRecord {
     /// Schema version.
@@ -301,7 +301,7 @@ fn decode_checksums(fields: &mut JsonFields<'_>) -> BTreeMap<String, String> {
 }
 
 impl StoreDocument for MigrationRecord {
-    const FILE_NAME: &'static str = "migration.json";
+    const FILE_NAME: &'static str = "raumakey-migration.json";
     const CURRENT_VERSION: u32 = 1;
 
     fn revision(&self) -> u64 {

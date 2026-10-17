@@ -115,7 +115,7 @@ impl<D> Loaded<D> {
 /// field does not accept do not survive: they are replaced by the field's default (see the
 /// [crate documentation](crate)).
 pub trait StoreDocument: Clone + Send + Sync + Sized + 'static {
-    /// File name inside the data root, such as `config.toml`.
+    /// File name inside the data root, such as `raumakey.toml`.
     const FILE_NAME: &'static str;
     /// Schema version written by this build.
     const CURRENT_VERSION: u32;

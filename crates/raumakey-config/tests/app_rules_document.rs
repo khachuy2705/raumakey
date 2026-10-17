@@ -81,7 +81,7 @@ fn defaults_wrap_compatibility_defaults_v1() {
     assert_eq!(doc.compatibility, CompatibilityConfig::defaults_v1());
     assert!(doc.extensions.is_empty());
     assert_eq!(AppRulesDocument::default(), doc);
-    assert_eq!(AppRulesDocument::FILE_NAME, "app_rules.toml");
+    assert_eq!(AppRulesDocument::FILE_NAME, "raumakey-app-rules.toml");
     assert_eq!(AppRulesDocument::CURRENT_VERSION, 1);
 }
 

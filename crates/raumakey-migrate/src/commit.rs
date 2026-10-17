@@ -2,9 +2,9 @@
 //!
 //! [`commit`] merges a [`ParsedMigration`] into the Raumakey documents:
 //!
-//! 1. **Idempotence.** When `migration.json` says [`MigrationStatus::Completed`] for exactly the
-//!    same source fingerprints (in any order), nothing is written and the outcome is
-//!    [`MigrationOutcome::NoChange`].
+//! 1. **Idempotence.** When `raumakey-migration.json` says [`MigrationStatus::Completed`] for
+//!    exactly the same source fingerprints (in any order), nothing is written and the outcome
+//!    is [`MigrationOutcome::NoChange`].
 //! 2. **Snapshot.** Every document is loaded with
 //!    [`AtomicStore::load_or_default`]; a document that cannot be loaded (corrupt, newer
 //!    version, unreadable) aborts the migration before anything is written. The loaded
@@ -12,17 +12,18 @@
 //! 3. **Merge.** Macros are appended with fresh identifiers above every identifier in use
 //!    (also those of entries the document keeps verbatim); an entry whose NFC trigger already
 //!    exists, or appeared earlier in the import, is skipped as a conflict. Named sets are
-//!    appended unless a set with the same name exists (a conflict). `config.toml` changes only
-//!    through [`FIELD_MAP`](crate::FIELD_MAP). A document is written only when it changes, and
+//!    appended unless a set with the same name exists (a conflict). `raumakey.toml` changes
+//!    only through [`FIELD_MAP`](crate::FIELD_MAP). A document is written only when it changes, and
 //!    every changed document is encoded before the first write, so a value its format cannot
 //!    hold or a document over the store's size limit also aborts before anything is written.
-//! 4. **Record.** `migration.json` is written with status
+//! 4. **Record.** `raumakey-migration.json` is written with status
 //!    [`MigrationStatus::InProgress`], the source fingerprints, the quarantined fields, and the
 //!    preserved raw values.
-//! 5. **Commit and verify.** The changed documents are committed in the order `config.toml`,
-//!    `macros.toml`, `app_rules.toml`, each with the revision it was loaded at (so a concurrent
-//!    change is a [`ConfigError::Conflict`], never overwritten). Each is then read back from
-//!    disk: its revision and the SHA-256 of its bytes must match what was committed.
+//! 5. **Commit and verify.** The changed documents are committed in the order `raumakey.toml`,
+//!    `raumakey-macros.toml`, `raumakey-app-rules.toml`, each with the revision it was loaded
+//!    at (so a concurrent change is a [`ConfigError::Conflict`], never overwritten). Each is
+//!    then read back from disk: its revision and the SHA-256 of its bytes must match what was
+//!    committed.
 //! 6. **Complete.** Only then is the record written as [`MigrationStatus::Completed`] with the
 //!    imported counts and the [`CommitResult`] (revisions and checksums).
 //!
@@ -56,7 +57,7 @@ use crate::discover::SourceKind;
 use crate::error::{DocumentKind, MigrateError};
 use crate::parse::ParsedMigration;
 
-/// Largest macro identifier `macros.toml` can hold (TOML integers are signed 64-bit).
+/// Largest macro identifier `raumakey-macros.toml` can hold (TOML integers are signed 64-bit).
 const MAX_MACRO_ID: u64 = 0x7FFF_FFFF_FFFF_FFFF;
 
 /// The stores of the Raumakey data root that a migration reads and writes.
@@ -64,13 +65,13 @@ const MAX_MACRO_ID: u64 = 0x7FFF_FFFF_FFFF_FFFF;
 /// Pass the controller's own store instances so that their subscribers see the commits.
 #[derive(Clone, Copy)]
 pub struct MigrationStores<'a> {
-    /// `config.toml`.
+    /// `raumakey.toml`.
     pub config: &'a AtomicStore<ConfigDocument>,
-    /// `macros.toml`.
+    /// `raumakey-macros.toml`.
     pub macros: &'a AtomicStore<MacroDocument>,
-    /// `app_rules.toml`.
+    /// `raumakey-app-rules.toml`.
     pub app_rules: &'a AtomicStore<AppRulesDocument>,
-    /// `migration.json`.
+    /// `raumakey-migration.json`.
     pub record: &'a AtomicStore<MigrationRecord>,
 }
 
@@ -98,13 +99,13 @@ impl fmt::Debug for MigrationStores<'_> {
 /// The [`fmt::Debug`] output shows revisions and counts, never macro text.
 #[derive(Clone, PartialEq)]
 pub struct CurrentDocuments {
-    /// `config.toml`.
+    /// `raumakey.toml`.
     pub config: ConfigDocument,
-    /// `macros.toml`.
+    /// `raumakey-macros.toml`.
     pub macros: MacroDocument,
-    /// `app_rules.toml`.
+    /// `raumakey-app-rules.toml`.
     pub app_rules: AppRulesDocument,
-    /// `migration.json`.
+    /// `raumakey-migration.json`.
     pub record: MigrationRecord,
 }
 
@@ -189,7 +190,7 @@ pub struct MigrationReport {
     pub named_set_conflicts: u64,
     /// Quarantined source fields.
     pub quarantined: u64,
-    /// Revision of `migration.json` after the call.
+    /// Revision of `raumakey-migration.json` after the call.
     pub record_revision: u64,
     /// Revisions and checksums of the committed documents; `None` for
     /// [`MigrationOutcome::NoChange`].

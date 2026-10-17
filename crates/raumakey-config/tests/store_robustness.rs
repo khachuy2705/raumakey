@@ -95,7 +95,7 @@ impl FileReplacer for ProbingReplacer {
 fn commit_follows_the_planned_sequence() {
     let dir = tempfile::tempdir().unwrap();
     let probe = Arc::new(ProbingReplacer {
-        lock_path: dir.path().join("config.toml.lock"),
+        lock_path: dir.path().join("raumakey.toml.lock"),
         seen: Mutex::new(Vec::new()),
     });
     let store: AtomicStore<ConfigDocument> = AtomicStore::new(dir.path(), probe.clone());
@@ -114,7 +114,7 @@ fn commit_follows_the_planned_sequence() {
 
     let seen = probe.seen.lock().unwrap();
     assert_eq!(seen.len(), 2);
-    let prefix = format!("config.toml.tmp-{}-", std::process::id());
+    let prefix = format!("raumakey.toml.tmp-{}-", std::process::id());
     for (observation, (expected_revision, before)) in
         seen.iter().zip([(1, None), (2, Some(first_file.clone()))])
     {

@@ -1,8 +1,11 @@
 //! Raumakey versioned configuration documents and atomic file storage.
 //!
-//! The data root (plan D9) holds `config.toml`, `macros.toml`, `app_rules.toml`,
-//! `migration.json`, and `logs/`. Each document carries a schema `version` and a monotonically
-//! increasing `revision`.
+//! The data root ([`DataRoot`], decision D40) is the folder of `raumakey.exe` when that folder
+//! can be written, otherwise `%LOCALAPPDATA%\Raumakey`. It holds `raumakey.toml`,
+//! `raumakey-macros.toml`, `raumakey-app-rules.toml`, `raumakey-migration.json`, the
+//! `<file>.lock` file of each store, and `raumakey-logs/`: names that say they belong to
+//! Raumakey, because the executable's folder usually holds the user's other files too. Each
+//! document carries a schema `version` and a monotonically increasing `revision`.
 //!
 //! Loading is lenient per field (matrix #45): a bad field takes its default and is reported, a
 //! bad list element is dropped and reported, and an array entry whose identity cannot be read
@@ -46,7 +49,7 @@ pub use config::{
     BINDINGS_KEY, CaseTransform, ConfigDocument, ConversionSection, HOTKEYS_KEY, InputSection,
     MacroSection, StartupMode, SystemSection,
 };
-pub use data_root::DataRoot;
+pub use data_root::{DataRoot, is_writable_dir};
 pub use diagnostics::DiagnosticsLog;
 pub use document::{FieldIssue, IssueReason, Loaded, StoreDocument};
 pub use entries::EntryExtras;

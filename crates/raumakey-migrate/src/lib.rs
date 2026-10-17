@@ -6,15 +6,17 @@
 //!    and [`SourceFs`], and fingerprints them (registry `HKCU\Software\MyQ\EVKey` and
 //!    `HKCU\Software\EVKey\TsfCache`; `setting.ini`, `setting.tree`, and `evkmacro.txt` in the
 //!    first candidate folder that holds any of them).
-//! 2. [`parse`](fn@parse) classifies every field without I/O: imported into `config.toml` through
-//!    [`FIELD_MAP`] (which ships empty, plan D18), turned into an `evkey-import-<n>` named set
-//!    when it lists executables ([`exe_list`]), preserved raw in the migration record, or
-//!    quarantined with a reason code. Macros go through `raumakey-macro`'s legacy import.
+//! 2. [`parse`](fn@parse) classifies every field without I/O: imported into `raumakey.toml`
+//!    through [`FIELD_MAP`] (which ships empty, plan D18), turned into an `evkey-import-<n>`
+//!    named set when it lists executables ([`exe_list`]), preserved raw in the migration
+//!    record, or quarantined with a reason code. Macros go through `raumakey-macro`'s legacy
+//!    import.
 //! 3. [`preview`] computes what a commit would change, without writing anything.
-//! 4. [`commit`](fn@commit) merges into `config.toml`, `macros.toml`, and `app_rules.toml` through
-//!    [`AtomicStore`](raumakey_config::AtomicStore), reads every written document back to verify
-//!    its revision and SHA-256, and records the outcome in `migration.json`. Any failure after
-//!    the first write restores the previous documents (see [`commit`](mod@commit)).
+//! 4. [`commit`](fn@commit) merges into `raumakey.toml`, `raumakey-macros.toml`, and
+//!    `raumakey-app-rules.toml` through [`AtomicStore`](raumakey_config::AtomicStore), reads
+//!    every written document back to verify its revision and SHA-256, and records the outcome
+//!    in `raumakey-migration.json`. Any failure after the first write restores the previous
+//!    documents (see [`commit`](mod@commit)).
 //!
 //! # Guarantees
 //!

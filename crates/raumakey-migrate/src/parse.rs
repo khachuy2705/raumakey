@@ -3,7 +3,7 @@
 //! [`parse`] turns a [`DiscoveryReport`] into a [`ParsedMigration`] without any I/O. Every
 //! field of every source ends in exactly one [`Disposition`], reported as a [`FieldReport`]:
 //!
-//! - **Imported** into `config.toml`, only through [`FIELD_MAP`] (which ships empty, plan D18).
+//! - **Imported** into `raumakey.toml`, only through [`FIELD_MAP`] (which ships empty, plan D18).
 //! - **NamedSet**: a string value of the settings key or of `setting.ini` that lists executable
 //!   names ([`exe_list`](crate::exe_list)) becomes the named set `evkey-import-<n>` with no
 //!   action (matrix #28: the user decides what the set does). `n` counts from 1 in parse
@@ -194,7 +194,7 @@ impl FieldRef {
 /// What happened to a field.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Disposition {
-    /// Imported into `config.toml` through [`FIELD_MAP`].
+    /// Imported into `raumakey.toml` through [`FIELD_MAP`].
     Imported,
     /// Imported as the named set with this name.
     NamedSet(String),
@@ -231,7 +231,7 @@ impl RawSetting {
     }
 }
 
-/// A setting to store in `config.toml`.
+/// A setting to store in `raumakey.toml`.
 #[derive(Clone)]
 pub(crate) struct MappedSetting {
     apply: fn(&mut ConfigDocument, SettingValue<'_>) -> Result<(), InvalidSetting>,
@@ -294,7 +294,7 @@ impl ParsedMigration {
         &self.settings
     }
 
-    /// The quarantined fields as recorded in `migration.json`, in report order.
+    /// The quarantined fields as recorded in `raumakey-migration.json`, in report order.
     ///
     /// At most [`MAX_RECORDED_QUARANTINE`] fields are listed; when there are more, one final
     /// entry with source `*`, field `+<count of the others>`, and reason `limit-exceeded`

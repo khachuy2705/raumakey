@@ -16,6 +16,9 @@
 //!   notification icon, popup menu, message loop), with its manual check list;
 //! - [`install`]: `install` and `uninstall`, with dry runs, verification, the installation
 //!   record, and rollback;
+//! - [`settings`]: the configuration lifecycle of the portable controller (D40): where
+//!   `raumakey.toml` lives, the first run, changes from the tray, hand edits, and the
+//!   snapshots for the session core;
 //! - [`startup`]: `startup <none|shortcut|elevated-task>`;
 //! - [`convert`]: `convert` of files and of the clipboard;
 //! - [`elevation`]: the elevated restart of the privileged commands;
@@ -61,6 +64,7 @@ pub mod elevation;
 pub mod install;
 pub mod output;
 pub mod run;
+pub mod settings;
 pub mod startup;
 pub mod system;
 pub mod tray;

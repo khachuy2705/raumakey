@@ -80,10 +80,10 @@ impl FileReplacer for FailingReplacer {
 fn store_paths_follow_the_document_file_name() {
     let dir = tempfile::tempdir().unwrap();
     let store = config_store(dir.path());
-    assert_eq!(store.path(), dir.path().join("config.toml"));
-    assert_eq!(store.lock_path(), dir.path().join("config.toml.lock"));
+    assert_eq!(store.path(), dir.path().join("raumakey.toml"));
+    assert_eq!(store.lock_path(), dir.path().join("raumakey.toml.lock"));
     let macros: AtomicStore<MacroDocument> = AtomicStore::new(dir.path(), std_replacer());
-    assert_eq!(macros.path(), dir.path().join("macros.toml"));
+    assert_eq!(macros.path(), dir.path().join("raumakey-macros.toml"));
 }
 
 #[test]
@@ -471,7 +471,7 @@ fn a_read_back_mismatch_fails_and_restores_the_previous_file() {
     config_store(dir.path())
         .commit(0, &doc_with_method(InputMethod::Vni))
         .unwrap();
-    let before = fs::read(dir.path().join("config.toml")).unwrap();
+    let before = fs::read(dir.path().join("raumakey.toml")).unwrap();
     let replacer = Arc::new(CorruptingReplacer::new(1));
     let store: AtomicStore<ConfigDocument> = AtomicStore::new(dir.path(), replacer.clone());
     assert_eq!(
@@ -503,7 +503,7 @@ fn a_failed_replace_reports_the_error_and_removes_the_temp_file() {
     config_store(dir.path())
         .commit(0, &ConfigDocument::defaults())
         .unwrap();
-    let before = fs::read(dir.path().join("config.toml")).unwrap();
+    let before = fs::read(dir.path().join("raumakey.toml")).unwrap();
     for (kind, error) in [
         (
             io::ErrorKind::PermissionDenied,
@@ -548,9 +548,9 @@ fn an_unencodable_document_is_refused_before_anything_is_written() {
 #[test]
 fn stale_temp_files_of_a_crashed_writer_are_removed_by_the_next_commit() {
     let dir = tempfile::tempdir().unwrap();
-    let stale = dir.path().join("config.toml.tmp-4242-7");
+    let stale = dir.path().join("raumakey.toml.tmp-4242-7");
     fs::write(&stale, "half written").unwrap();
-    let unrelated = dir.path().join("macros.toml.tmp-4242-7");
+    let unrelated = dir.path().join("raumakey-macros.toml.tmp-4242-7");
     fs::write(&unrelated, "other store").unwrap();
     config_store(dir.path())
         .commit(0, &ConfigDocument::defaults())
@@ -595,7 +595,7 @@ fn commit_creates_a_missing_directory() {
     let nested = dir.path().join("a").join("b");
     let store = config_store(&nested);
     assert_eq!(store.commit(0, &ConfigDocument::defaults()).unwrap(), 1);
-    assert!(nested.join("config.toml").is_file());
+    assert!(nested.join("raumakey.toml").is_file());
 }
 
 #[test]
@@ -643,7 +643,7 @@ fn set_aside_moves_a_corrupt_file_so_the_store_can_start_over() {
     let backup: PathBuf = store.set_aside().unwrap().unwrap();
     assert_eq!(backup.parent(), Some(dir.path()));
     let name = backup.file_name().unwrap().to_str().unwrap().to_owned();
-    assert!(name.starts_with("config.toml.bak-"), "{name}");
+    assert!(name.starts_with("raumakey.toml.bak-"), "{name}");
     assert_eq!(fs::read(&backup).unwrap(), corrupt);
     assert_eq!(store.load().unwrap_err(), ConfigError::NotFound);
     assert_eq!(store.commit(0, &ConfigDocument::defaults()).unwrap(), 1);
@@ -688,7 +688,7 @@ fn every_document_type_commits_and_loads() {
     let loaded = migration.load().unwrap().document;
     assert_eq!(loaded.status, MigrationStatus::InProgress);
     assert_eq!(loaded.revision, 1);
-    assert!(dir.path().join("migration.json").is_file());
+    assert!(dir.path().join("raumakey-migration.json").is_file());
 }
 
 /// The controller polls while a worker commits: readers must never make a commit fail, and a

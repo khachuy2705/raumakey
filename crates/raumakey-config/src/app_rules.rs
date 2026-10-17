@@ -1,4 +1,4 @@
-//! `app_rules.toml`: per-application compatibility policy data (plan §5.1).
+//! `raumakey-app-rules.toml`: per-application compatibility policy data (plan §5.1).
 
 use serde::Serialize;
 
@@ -58,8 +58,8 @@ pub const ACTION_KEY: &str = "action";
 /// Identity of a `[[rule]]` entry: its executable and optional window class.
 pub type RuleIdentity = (ExeName, Option<String>);
 
-/// `app_rules.toml`: a [`CompatibilityConfig`] whose fields sit at the top level of the file
-/// next to `version` and `revision`.
+/// `raumakey-app-rules.toml`: a [`CompatibilityConfig`] whose fields sit at the top level of
+/// the file next to `version` and `revision`.
 ///
 /// Missing scalar fields take the model's defaults and missing arrays are empty; the D13 named
 /// sets come from [`CompatibilityConfig::defaults_v1`] only when the file does not exist.
@@ -204,7 +204,7 @@ fn build_probe(
 }
 
 impl StoreDocument for AppRulesDocument {
-    const FILE_NAME: &'static str = "app_rules.toml";
+    const FILE_NAME: &'static str = "raumakey-app-rules.toml";
     const CURRENT_VERSION: u32 = 1;
 
     fn revision(&self) -> u64 {

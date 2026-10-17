@@ -1,4 +1,4 @@
-//! `config.toml`: user settings (plan §5.1).
+//! `raumakey.toml`: user settings (plan §5.1).
 
 use std::collections::BTreeSet;
 
@@ -72,7 +72,7 @@ pub enum StartupMode {
 }
 
 impl StartupMode {
-    /// Stable name used in `config.toml`.
+    /// Stable name used in `raumakey.toml`.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
@@ -98,7 +98,7 @@ pub enum CaseTransform {
 }
 
 impl CaseTransform {
-    /// Stable name used in `config.toml`.
+    /// Stable name used in `raumakey.toml`.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
@@ -239,7 +239,7 @@ impl Default for ConversionSection {
     }
 }
 
-/// `config.toml`, schema v1 (plan §5.1).
+/// `raumakey.toml`, schema v1 (plan §5.1).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConfigDocument {
     /// Schema version.
@@ -644,7 +644,7 @@ fn decode_actions(binding: &mut TomlFields<'_>) -> Option<Vec<KeyAction>> {
 }
 
 impl StoreDocument for ConfigDocument {
-    const FILE_NAME: &'static str = "config.toml";
+    const FILE_NAME: &'static str = "raumakey.toml";
     const CURRENT_VERSION: u32 = 1;
 
     fn revision(&self) -> u64 {

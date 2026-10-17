@@ -56,7 +56,7 @@ impl CompatibilityPolicy {
         &self.config
     }
 
-    /// The probe records in effect, which the controller persists in `app_rules.toml`.
+    /// The probe records in effect, which the controller persists in `raumakey-app-rules.toml`.
     pub fn probes(&self) -> &[ProbeRecord] {
         self.probes.records()
     }

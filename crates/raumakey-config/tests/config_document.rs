@@ -67,7 +67,7 @@ fn defaults_mirror_engine_defaults_v1_and_default_hotkeys() {
     assert!(doc.input.extensions.is_empty());
     assert_eq!(ConfigDocument::default_document(), doc);
     assert_eq!(ConfigDocument::default(), doc);
-    assert_eq!(ConfigDocument::FILE_NAME, "config.toml");
+    assert_eq!(ConfigDocument::FILE_NAME, "raumakey.toml");
     assert_eq!(ConfigDocument::CURRENT_VERSION, 1);
 }
 
