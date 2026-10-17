@@ -14,7 +14,7 @@ use raumakey_config::{
 #[cfg(windows)]
 use raumakey_controller::settings::is_protected_dir;
 use raumakey_controller::settings::{
-    Change, DocumentStatus, Location, OpenReport, Recovery, Settings,
+    Change, DocumentStatus, Location, OpenReport, Recovery, Settings, is_temporary_path,
 };
 use raumakey_ipc::message::{MAX_HOTKEYS, MAX_KEYMAPS, MAX_NAMED_SETS, RuntimeSnapshot};
 use raumakey_macro::{EntryError, EntryIssue, MacroError, MacroTable};
@@ -1025,4 +1025,123 @@ fn app_rules_the_session_core_would_refuse_fall_back_to_the_defaults() {
         CompatibilityConfig::defaults_v1()
     );
     assert_consumable(&settings);
+}
+
+/// A change that could not be saved is kept for a retry; once the user fixes the damaged file
+/// by hand, the reload keeps the change in effect on top of the fixed file, and the retry
+/// writes both.
+#[test]
+fn a_change_that_could_not_be_saved_is_kept_and_saved_by_a_retry() {
+    let folders = Folders::new();
+    fs::write(folders.config(), "[[[ damaged").unwrap();
+    let (mut settings, _) = folders.open();
+    assert!(!settings.has_unsaved());
+    assert_eq!(
+        settings.apply(Change::SpellCheck(false)),
+        Err(ConfigError::Corrupt)
+    );
+    assert!(settings.has_unsaved());
+    // Still damaged: the retry fails the same way and keeps the change.
+    assert_eq!(settings.save_unsaved(), Err(ConfigError::Corrupt));
+    assert!(settings.has_unsaved());
+    assert_eq!(fs::read(folders.config()).unwrap(), b"[[[ damaged");
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 3\n[input]\nmodern_tone = true\n",
+    )
+    .unwrap();
+    let runtime = settings.poll().unwrap().runtime.unwrap();
+    assert!(runtime.options.modern_tone, "the hand edit is taken");
+    assert!(
+        !runtime.options.spell_check,
+        "the unsaved change stays in effect"
+    );
+    assert_eq!(settings.save_unsaved(), Ok(true));
+    assert!(!settings.has_unsaved());
+    let document = stored(&folders.config());
+    assert!(document.input.modern_tone);
+    assert!(!document.input.spell_check);
+    assert_eq!(document.revision, 4);
+    assert_eq!(settings.save_unsaved(), Ok(false), "nothing left to save");
+}
+
+/// The next change that is saved writes the earlier unsaved one as well, even when the file
+/// changed meanwhile (the commit's conflict loads it again).
+#[test]
+fn a_later_save_writes_the_earlier_unsaved_change_too() {
+    let folders = Folders::new();
+    fs::write(folders.config(), "[[[ damaged").unwrap();
+    let (mut settings, _) = folders.open();
+    assert!(settings.apply(Change::Macros(false)).is_err());
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 1\n[input]\nmethod = \"vni\"\n",
+    )
+    .unwrap();
+    settings.apply(Change::ModernTone(true)).unwrap();
+    assert!(!settings.has_unsaved());
+    let document = stored(&folders.config());
+    assert_eq!(document.input.method, InputMethod::Vni);
+    assert!(!document.macros.enabled);
+    assert!(document.input.modern_tone);
+}
+
+/// Of two unsaved changes of the same setting, the last one is kept.
+#[test]
+fn the_last_unsaved_change_of_a_setting_wins() {
+    let folders = Folders::new();
+    fs::write(folders.config(), "[[[ damaged").unwrap();
+    let (mut settings, _) = folders.open();
+    let _ = settings.apply(Change::InputMethod(InputMethod::Vni));
+    let _ = settings.apply(Change::InputMethod(InputMethod::Viqr));
+    fs::write(folders.config(), "version = 1\nrevision = 1\n").unwrap();
+    settings.poll().unwrap();
+    assert_eq!(settings.save_unsaved(), Ok(true));
+    assert_eq!(stored(&folders.config()).input.method, InputMethod::Viqr);
+}
+
+/// Without a folder nothing can ever be saved, so nothing is kept for a retry.
+#[test]
+fn nothing_is_kept_for_a_retry_without_a_folder() {
+    let (mut settings, report) = Settings::open(Path::new(""), None, &|_| true, &|_| false);
+    assert_eq!(report.location, Location::Unavailable);
+    assert_eq!(
+        settings.apply(Change::Macros(false)),
+        Err(ConfigError::NotFound)
+    );
+    assert!(!settings.has_unsaved());
+    assert_eq!(settings.save_unsaved(), Ok(false));
+}
+
+/// A file that another program holds open for a moment: the change is saved by the retry once
+/// the file is free, without any reload.
+#[cfg(windows)]
+#[test]
+fn a_change_blocked_by_another_program_is_saved_by_the_retry() {
+    let folders = Folders::new();
+    let (mut settings, _) = folders.open();
+    let handle = lock(&folders.config());
+    assert!(settings.apply(Change::SpellCheck(false)).is_err());
+    assert!(settings.has_unsaved());
+    drop(handle);
+    assert_eq!(settings.save_unsaved(), Ok(true));
+    assert!(!stored(&folders.config()).input.spell_check);
+}
+
+/// The temporary folder, where Explorer runs an executable from inside a ZIP and deletes it
+/// later: a shortcut to an executable there would soon point at nothing (D41).
+#[test]
+fn executables_in_the_temporary_folder_are_temporary() {
+    let temp = std::env::temp_dir();
+    assert!(is_temporary_path(
+        &temp.join("Temp1_raumakey.zip").join("raumakey.exe")
+    ));
+    assert!(
+        !is_temporary_path(&temp),
+        "the folder itself is not inside it"
+    );
+    assert!(!is_temporary_path(Path::new("raumakey.exe")));
+    assert!(!is_temporary_path(Path::new("")));
+    let elsewhere = Path::new(r"Q:\Tools\Raumakey\raumakey.exe");
+    assert!(!is_temporary_path(elsewhere));
 }

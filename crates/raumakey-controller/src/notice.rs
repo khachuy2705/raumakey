@@ -111,15 +111,20 @@ fn location_text(location: Location) -> &'static str {
 
 /// `a, b, c`, or the first [`LISTED_PATHS`] and how many more.
 fn paths(issues: &[FieldIssue]) -> String {
-    let mut listed: Vec<&str> = issues
+    let mut distinct: Vec<&str> = Vec::new();
+    for issue in issues {
+        if !distinct.contains(&issue.path.as_str()) {
+            distinct.push(&issue.path);
+        }
+    }
+    let mut text = distinct
         .iter()
         .take(LISTED_PATHS)
-        .map(|issue| issue.path.as_str())
-        .collect();
-    listed.dedup();
-    let mut text = listed.join(", ");
-    if issues.len() > LISTED_PATHS {
-        text.push_str(&format!(" và {} mục khác", issues.len() - LISTED_PATHS));
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if distinct.len() > LISTED_PATHS {
+        text.push_str(&format!(" và {} mục khác", distinct.len() - LISTED_PATHS));
     }
     text
 }
@@ -183,7 +188,7 @@ fn problems(
         match &now.macros {
             DocumentStatus::Unreadable(error) => lines.push(match when {
                 When::Start => format!(
-                    "Không đọc được raumakey-macros.toml: {}. Gõ tắt chưa có mục nào.",
+                    "Không đọc được raumakey-macros.toml: {}. Chưa nạp được mục gõ tắt nào.",
                     reason(*error)
                 ),
                 When::Reload => format!(
@@ -358,12 +363,31 @@ pub fn save_error_notice(config_path: Option<&Path>, error: ConfigError) -> Noti
 /// "Khởi động cùng Windows" could not be turned on (`on`) or off.
 pub fn startup_error_notice(config_path: Option<&Path>, on: bool, error: StartupError) -> Notice {
     match error {
-        StartupError::Save(error) => save_error_notice(config_path, error),
+        StartupError::Temporary => temporary_exe_notice(),
+        StartupError::Save(error) => {
+            let config = config_name(config_path);
+            let text = if on {
+                format!(
+                    "Raumakey đã tạo shortcut Raumakey.lnk trong thư mục Startup, nhưng không lưu \
+                     được lựa chọn này vào {config}: {}. Raumakey vẫn khởi động cùng Windows nhờ \
+                     shortcut đó, và sẽ thử lưu lại lựa chọn.",
+                    reason(error)
+                )
+            } else {
+                format!(
+                    "Raumakey đã xoá shortcut Raumakey.lnk trong thư mục Startup, nhưng không lưu \
+                     được lựa chọn này vào {config}: {}. Raumakey sẽ không tự khởi động cùng \
+                     Windows, và sẽ thử lưu lại lựa chọn.",
+                    reason(error)
+                )
+            };
+            Notice::new(NoticeKind::Warning, text)
+        }
         StartupError::Shortcut(error) if on => Notice::new(
             NoticeKind::Error,
             format!(
-                "Không tạo được shortcut Raumakey.lnk trong thư mục Startup ({}). Raumakey chưa \
-                 khởi động cùng Windows.",
+                "Không tạo được shortcut Raumakey.lnk trong thư mục Startup ({}). Raumakey sẽ \
+                 không tự khởi động cùng Windows.",
                 win_error_text(&error)
             ),
         ),
@@ -376,6 +400,18 @@ pub fn startup_error_notice(config_path: Option<&Path>, on: bool, error: Startup
             ),
         ),
     }
+}
+
+/// `raumakey.exe` runs from the temporary folder (opened inside a ZIP), which Windows deletes
+/// later: no Startup shortcut is made to it, and the user is told to extract Raumakey first.
+pub fn temporary_exe_notice() -> Notice {
+    Notice::new(
+        NoticeKind::Warning,
+        "raumakey.exe đang chạy từ thư mục tạm của Windows (có thể bạn mở nó ngay trong tệp ZIP). \
+         Windows sẽ xoá thư mục này, nên Raumakey không tạo shortcut khởi động cùng Windows tới \
+         đó.\n\nHãy giải nén Raumakey vào một thư mục cố định, ví dụ D:\\Tools\\Raumakey, chạy \
+         raumakey.exe ở đó, rồi bật lại mục \"Khởi động cùng Windows\".",
+    )
 }
 
 /// "Khởi động cùng Windows" is on through the elevated logon task, which only an elevated

@@ -10,7 +10,7 @@ use raumakey_config::{ConfigError, FieldIssue, IssueReason};
 use raumakey_controller::notice::{
     LICENSE, Notice, NoticeKind, Question, REPOSITORY_URL, about_notice, about_text,
     elevated_task_notice, heal_notice, open_error_notice, recovery_notice, save_error_notice,
-    start_notice, startup_error_notice, status_notice,
+    start_notice, startup_error_notice, status_notice, temporary_exe_notice,
 };
 use raumakey_controller::settings::{
     DocumentStatus, Location, OpenReport, Recovery, Settings, Status,
@@ -305,23 +305,108 @@ fn startup_errors_say_whether_raumakey_still_starts_with_windows() {
     assert!(text.contains("Raumakey.lnk"), "{text}");
     assert!(text.contains("0x80070005"), "{text}");
     assert!(text.contains("IPersistFile::Save"), "{text}");
-    assert!(text.contains("chưa khởi động cùng Windows"), "{text}");
+    assert!(
+        text.contains("Raumakey sẽ không tự khởi động cùng Windows"),
+        "{text}"
+    );
     let off = startup_error_notice(Some(&path()), false, StartupError::Shortcut(error));
     assert!(
         shown(&off).contains("vẫn khởi động cùng Windows"),
         "{}",
         off.text
     );
-    // The shortcut is right but the choice was not saved.
-    let saved = startup_error_notice(
+}
+
+/// The shortcut was created or removed, but the choice could not be saved: the text says
+/// both, and that the start with Windows follows the shortcut.
+#[test]
+fn a_startup_choice_that_was_not_saved_says_what_happened_to_the_shortcut() {
+    let on = startup_error_notice(
         Some(&path()),
         true,
         StartupError::Save(ConfigError::PermissionDenied),
     );
-    assert_eq!(
-        saved,
+    assert_eq!(on.kind, NoticeKind::Warning);
+    assert_eq!(on.question, None);
+    let text = shown(&on);
+    assert!(text.contains("đã tạo shortcut Raumakey.lnk"), "{text}");
+    assert!(text.contains("không lưu được"), "{text}");
+    assert!(text.contains(r"D:\Tools\Raumakey\raumakey.toml"), "{text}");
+    assert!(text.contains("từ chối"), "the reason: {text}");
+    assert_ne!(
+        on,
         save_error_notice(Some(&path()), ConfigError::PermissionDenied)
     );
+    let off = startup_error_notice(
+        Some(&path()),
+        false,
+        StartupError::Save(ConfigError::IoFailure),
+    );
+    let text = shown(&off);
+    assert!(text.contains("đã xoá shortcut Raumakey.lnk"), "{text}");
+    assert!(text.contains("không lưu được"), "{text}");
+}
+
+/// Raumakey run from inside a ZIP lies in the temporary folder, which Windows deletes: the
+/// user is told to extract it to a fixed folder first.
+#[test]
+fn a_shortcut_from_the_temporary_folder_asks_to_extract_raumakey_first() {
+    let notice = temporary_exe_notice();
+    assert_eq!(notice.kind, NoticeKind::Warning);
+    let text = shown(&notice);
+    assert!(text.contains("thư mục tạm"), "{text}");
+    assert!(text.contains("ZIP"), "{text}");
+    assert!(text.contains("giải nén"), "{text}");
+    assert!(text.contains("thư mục cố định"), "{text}");
+    assert_eq!(
+        startup_error_notice(Some(&path()), true, StartupError::Temporary),
+        notice
+    );
+}
+
+/// A path that repeats is listed once, and only distinct paths are counted.
+#[test]
+fn repeated_schema_paths_are_listed_once() {
+    let mut issues = vec![issue("input.method"); 3];
+    issues.extend(
+        ["a", "b", "c", "d", "e", "f"]
+            .into_iter()
+            .map(|path| issue(&format!("keymaps.{path}"))),
+    );
+    let status = Status {
+        config: DocumentStatus::Loaded { issues },
+        ..clean()
+    };
+    let text = start_notice(&report(Location::ExeDir, false, status))
+        .unwrap()
+        .text;
+    assert_eq!(text.matches("input.method").count(), 1, "{text}");
+    assert!(text.contains("keymaps.e"), "{text}");
+    assert!(!text.contains("keymaps.f"), "{text}");
+    assert!(text.contains("và 1 mục khác"), "{text}");
+    let same = Status {
+        config: DocumentStatus::Loaded {
+            issues: vec![issue("input.method"); 9],
+        },
+        ..clean()
+    };
+    let text = start_notice(&report(Location::ExeDir, false, same))
+        .unwrap()
+        .text;
+    assert!(!text.contains("mục khác"), "{text}");
+}
+
+/// The macros file cannot be read at the start: no macro was loaded.
+#[test]
+fn unreadable_macros_at_the_start_say_that_no_macro_was_loaded() {
+    let status = Status {
+        macros: DocumentStatus::Unreadable(ConfigError::Corrupt),
+        ..clean()
+    };
+    let text = start_notice(&report(Location::ExeDir, false, status))
+        .unwrap()
+        .text;
+    assert!(text.contains("Chưa nạp được mục gõ tắt nào"), "{text}");
 }
 
 /// The elevated logon task is changed only from an elevated command line.

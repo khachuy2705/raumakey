@@ -19,10 +19,12 @@
 //!    with the settings' runtime and macro snapshots. A hook that cannot start ends the start:
 //!    without it Raumakey cannot type ([`typing_error_text`], [`EXIT_FAILED`]).
 //! 4. **Start with Windows (D41).** When `startup = "shortcut"` is saved, the shortcut
-//!    `Raumakey.lnk` in the user's Startup folder must exist and start this `raumakey.exe`
-//!    ([`needs_repair`], [`shortcut_points_to`]): a missing one, one that starts another path
-//!    (the exe was moved), or one that cannot be read is created again. A repair that fails is
-//!    told by the tray ([`heal_notice`](crate::notice::heal_notice)); the controller runs on.
+//!    `Raumakey.lnk` in the user's Startup folder is created again when it is missing or
+//!    starts an exe that no longer exists (this exe was moved) ([`needs_repair`],
+//!    [`shortcut_state`]). A shortcut of another copy that still exists is never re-pointed,
+//!    one that cannot be read is left alone, an exe in the temporary folder repairs nothing,
+//!    and `elevated-task` never repairs a shortcut. A repair that fails is told by the tray
+//!    ([`heal_notice`](crate::notice::heal_notice)); the controller runs on.
 //! 5. **Tray.** [`Desktop::run_tray`] runs the tray in the saved mode ([`TrayStart`]) until
 //!    Exit, `WM_CLOSE`, or the end of the session (`crate::tray`): the hidden window, its
 //!    notification icon, the poll timer, the settings worker, and the message loop. The first
@@ -61,17 +63,40 @@ pub struct Opened {
     pub runtime: RuntimeSnapshot,
     /// `[system] startup` in effect.
     pub startup: StartupMode,
+    /// The running `raumakey.exe` lies in the temporary folder
+    /// ([`is_temporary_path`](crate::settings::is_temporary_path)): no shortcut is made to it.
+    pub temporary_exe: bool,
 }
 
-/// The shortcut `Raumakey.lnk` in the user's Startup folder.
+/// The shortcut `Raumakey.lnk` in the user's Startup folder ([`shortcut_state`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ShortcutState {
     /// There is none.
     Missing,
     /// It starts this `raumakey.exe` without arguments.
     PointsHere,
-    /// It starts something else (another copy, a moved exe) or passes arguments.
-    PointsElsewhere,
+    /// It starts an exe that no longer exists: a copy that was moved or deleted.
+    PointsToMissing,
+    /// It starts another copy of Raumakey that still exists (or passes arguments): it is that
+    /// copy's, and is never re-pointed.
+    PointsToOther,
+}
+
+/// The state of a shortcut whose target is `target` (which exists or not) with `arguments`,
+/// seen from the `raumakey.exe` at `exe`.
+pub fn shortcut_state(
+    target: &Path,
+    arguments: &str,
+    exe: &Path,
+    target_exists: bool,
+) -> ShortcutState {
+    if shortcut_points_to(target, arguments, exe) {
+        ShortcutState::PointsHere
+    } else if target_exists {
+        ShortcutState::PointsToOther
+    } else {
+        ShortcutState::PointsToMissing
+    }
 }
 
 /// Why the typing hook did not start.
@@ -150,9 +175,9 @@ fn run_instance(desktop: &mut dyn Desktop) -> Result<i32, String> {
         return Err(typing_error_text(&error));
     }
     let mut notices: Vec<_> = start_notice(&opened.report).into_iter().collect();
-    if opened.startup == StartupMode::Shortcut {
+    if opened.startup == StartupMode::Shortcut && !opened.temporary_exe {
         let shortcut = desktop.startup_shortcut();
-        if needs_repair(opened.startup, &shortcut)
+        if needs_repair(opened.startup, opened.temporary_exe, &shortcut)
             && let Err(error) = desktop.create_startup_shortcut()
         {
             notices.push(heal_notice(&error));
@@ -162,6 +187,7 @@ fn run_instance(desktop: &mut dyn Desktop) -> Result<i32, String> {
         report,
         runtime,
         startup,
+        temporary_exe,
     } = opened;
     let start = TrayStart {
         runtime,
@@ -170,16 +196,28 @@ fn run_instance(desktop: &mut dyn Desktop) -> Result<i32, String> {
         config_path: report.config_path,
         status: report.status,
         notices,
+        temporary_exe,
     };
     let ran = desktop.run_tray(start);
     desktop.stop_typing();
     ran.map_err(|error| start_error_text(&error))
 }
 
-/// Whether the start must create the Startup shortcut again (D41): `shortcut` is saved and the
-/// shortcut is missing, starts something else, or cannot be read.
-pub fn needs_repair(startup: StartupMode, shortcut: &WinResult<ShortcutState>) -> bool {
-    startup == StartupMode::Shortcut && !matches!(shortcut, Ok(ShortcutState::PointsHere))
+/// Whether the start must create the Startup shortcut again (D41): `shortcut` is saved, the
+/// exe is not in the temporary folder, and the shortcut is missing or starts an exe that no
+/// longer exists (this exe was moved). A shortcut of another copy that still exists, or one
+/// that cannot be read, is left alone; `elevated-task` never repairs a shortcut.
+pub fn needs_repair(
+    startup: StartupMode,
+    temporary_exe: bool,
+    shortcut: &WinResult<ShortcutState>,
+) -> bool {
+    startup == StartupMode::Shortcut
+        && !temporary_exe
+        && matches!(
+            shortcut,
+            Ok(ShortcutState::Missing | ShortcutState::PointsToMissing)
+        )
 }
 
 /// Whether a shortcut with `target` and `arguments` starts `exe` without arguments. Paths are

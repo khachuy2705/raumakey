@@ -13,7 +13,7 @@ use raumakey_controller::cli::{EXIT_FAILED, EXIT_OK};
 use raumakey_controller::notice::{Question, heal_notice, start_notice};
 use raumakey_controller::run::{
     ShortcutState, TypingStartError, needs_repair, run_controller, shortcut_points_to,
-    start_error_text, typing_error_text,
+    shortcut_state, start_error_text, typing_error_text,
 };
 use raumakey_controller::settings::DocumentStatus;
 use raumakey_controller::tray::TrayStart;
@@ -31,6 +31,7 @@ fn tray_start(desktop: &FakeDesktop) -> TrayStart {
         config_path: opened.report.config_path.clone(),
         status: opened.report.status.clone(),
         notices: start_notice(&opened.report).into_iter().collect(),
+        temporary_exe: opened.temporary_exe,
     }
 }
 
@@ -237,14 +238,13 @@ fn a_problem_at_the_start_goes_to_the_tray() {
     );
 }
 
-/// D41: with `startup = "shortcut"` saved, the start makes sure the shortcut exists and
-/// starts this `raumakey.exe` (the exe may have moved).
+/// D41: with `startup = "shortcut"` saved, the start repairs a shortcut that is missing or
+/// whose exe no longer exists (this exe was moved).
 #[test]
-fn a_saved_shortcut_that_is_missing_or_points_elsewhere_is_recreated() {
+fn a_saved_shortcut_that_is_missing_or_dead_is_recreated() {
     for shortcut in [
         Ok(ShortcutState::Missing),
-        Ok(ShortcutState::PointsElsewhere),
-        Err(WinError::new(E_FAIL, "IPersistFile::Load")),
+        Ok(ShortcutState::PointsToMissing),
     ] {
         let mut desktop = FakeDesktop {
             shortcut,
@@ -271,16 +271,44 @@ fn a_saved_shortcut_that_is_missing_or_points_elsewhere_is_recreated() {
     }
 }
 
+/// A shortcut that starts this exe is right; one that starts another copy that still exists
+/// is that copy's and is never re-pointed; one that cannot be read is not overwritten blindly.
 #[test]
-fn a_saved_shortcut_that_starts_this_exe_is_left_alone() {
-    let mut desktop = FakeDesktop {
-        shortcut: Ok(ShortcutState::PointsHere),
-        ..FakeDesktop::default()
-    };
+fn a_saved_shortcut_of_this_or_another_existing_copy_is_left_alone() {
+    for shortcut in [
+        Ok(ShortcutState::PointsHere),
+        Ok(ShortcutState::PointsToOther),
+        Err(WinError::new(E_FAIL, "IPersistFile::Load")),
+    ] {
+        let mut desktop = FakeDesktop {
+            shortcut,
+            ..FakeDesktop::default()
+        };
+        desktop.opened.startup = StartupMode::Shortcut;
+        assert_eq!(run_controller(&mut desktop), EXIT_OK);
+        assert!(
+            desktop.calls.contains(&DesktopCall::StartupShortcut),
+            "{shortcut:?}"
+        );
+        assert!(
+            !desktop.calls.contains(&DesktopCall::CreateStartupShortcut),
+            "{shortcut:?}"
+        );
+        assert!(started(&desktop).notices.is_empty(), "{shortcut:?}");
+    }
+}
+
+/// From the temporary folder (an exe run from inside a ZIP, which Explorer deletes later)
+/// nothing is repaired: the shortcut would soon start nothing.
+#[test]
+fn an_exe_in_the_temporary_folder_repairs_no_shortcut() {
+    let mut desktop = FakeDesktop::default();
     desktop.opened.startup = StartupMode::Shortcut;
+    desktop.opened.temporary_exe = true;
     assert_eq!(run_controller(&mut desktop), EXIT_OK);
-    assert!(desktop.calls.contains(&DesktopCall::StartupShortcut));
+    assert!(!desktop.calls.contains(&DesktopCall::StartupShortcut));
     assert!(!desktop.calls.contains(&DesktopCall::CreateStartupShortcut));
+    assert!(started(&desktop).temporary_exe, "the tray refuses it too");
 }
 
 /// Without the shortcut mode saved, the start does not look at the Startup folder at all.
@@ -322,19 +350,66 @@ fn a_shortcut_that_cannot_be_repaired_is_told_by_the_tray() {
     );
 }
 
+/// Repair only when the shortcut mode is saved, the exe is not temporary, and the shortcut is
+/// missing or starts an exe that no longer exists; never for `elevated-task`.
 #[test]
-fn only_a_missing_or_foreign_shortcut_of_the_shortcut_mode_is_repaired() {
-    use ShortcutState::{Missing, PointsElsewhere, PointsHere};
+fn only_a_missing_or_dead_shortcut_of_the_shortcut_mode_is_repaired() {
+    use ShortcutState::{Missing, PointsHere, PointsToMissing, PointsToOther};
     let failed = Err(WinError::new(E_FAIL, "IPersistFile::Load"));
-    assert!(needs_repair(StartupMode::Shortcut, &Ok(Missing)));
-    assert!(needs_repair(StartupMode::Shortcut, &Ok(PointsElsewhere)));
-    assert!(needs_repair(StartupMode::Shortcut, &failed));
-    assert!(!needs_repair(StartupMode::Shortcut, &Ok(PointsHere)));
-    for mode in [StartupMode::None, StartupMode::ElevatedTask] {
-        for state in [Ok(Missing), Ok(PointsElsewhere), Ok(PointsHere), failed] {
-            assert!(!needs_repair(mode, &state), "{mode:?} {state:?}");
+    assert!(needs_repair(StartupMode::Shortcut, false, &Ok(Missing)));
+    assert!(needs_repair(
+        StartupMode::Shortcut,
+        false,
+        &Ok(PointsToMissing)
+    ));
+    assert!(!needs_repair(
+        StartupMode::Shortcut,
+        false,
+        &Ok(PointsToOther)
+    ));
+    assert!(!needs_repair(StartupMode::Shortcut, false, &Ok(PointsHere)));
+    assert!(!needs_repair(StartupMode::Shortcut, false, &failed));
+    let all = [
+        Ok(Missing),
+        Ok(PointsToMissing),
+        Ok(PointsToOther),
+        Ok(PointsHere),
+        failed,
+    ];
+    for state in all {
+        assert!(
+            !needs_repair(StartupMode::Shortcut, true, &state),
+            "{state:?}"
+        );
+        for mode in [StartupMode::None, StartupMode::ElevatedTask] {
+            assert!(!needs_repair(mode, false, &state), "{mode:?} {state:?}");
         }
     }
+}
+
+/// Which of the states a shortcut is in: this exe, an exe that no longer exists, or another
+/// copy.
+#[test]
+fn a_shortcut_is_classified_by_its_target() {
+    let exe = Path::new(r"D:\Tools\Raumakey\raumakey.exe");
+    let other = Path::new(r"E:\Copy\raumakey.exe");
+    assert_eq!(
+        shortcut_state(exe, "", exe, true),
+        ShortcutState::PointsHere
+    );
+    assert_eq!(
+        shortcut_state(other, "", exe, true),
+        ShortcutState::PointsToOther
+    );
+    assert_eq!(
+        shortcut_state(other, "", exe, false),
+        ShortcutState::PointsToMissing
+    );
+    // This exe with arguments is not the controller's shortcut, and it exists.
+    assert_eq!(
+        shortcut_state(exe, "--elevated", exe, true),
+        ShortcutState::PointsToOther
+    );
 }
 
 /// The shortcut starts this exe when its target is this exe, as Windows compares paths

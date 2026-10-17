@@ -9,16 +9,19 @@
 //!
 //! | Command | What the worker does | Answer |
 //! |---|---|---|
-//! | [`WorkerCommand::Apply`] | [`Settings::apply`]: the change takes effect and is committed | [`Outcome::Applied`] with the commit's result |
-//! | [`WorkerCommand::Poll`] (the tray's timer, every 2 s) | [`Settings::poll`]; new macros go to the typing hook ([`WorkerPorts::post_macros`]) | [`Outcome::Polled`]: `None` when nothing changed, else the state of the files |
-//! | [`WorkerCommand::Startup`] `(true)` | creates `Raumakey.lnk` in the Startup folder, then saves `startup = "shortcut"` | [`Outcome::Startup`] |
+//! | [`WorkerCommand::Apply`] | [`Settings::apply`]: the change takes effect and is committed | [`Outcome::Applied`] with the commit's result and whether it wrote anything ([`Saved`]) |
+//! | [`WorkerCommand::Poll`] (the tray's timer, every 2 s) | [`Settings::poll`], once more after [`REREAD_DELAY`] when a reloaded file looks half-written (it cannot be decoded, or has no `version`); new macros go to the typing hook ([`WorkerPorts::post_macros`]); a hand edit of `[system] startup` creates or removes the shortcut ([`ShortcutSync`]); changes not saved yet are retried ([`Settings::save_unsaved`]) | [`Outcome::Polled`] with a [`PollReport`] |
+//! | [`WorkerCommand::Startup`] `(true)` | creates `Raumakey.lnk` in the Startup folder (never for an exe in the temporary folder, [`StartupError::Temporary`]), then saves `startup = "shortcut"` | [`Outcome::Startup`] |
 //! | [`WorkerCommand::Startup`] `(false)` | removes the shortcut, then saves `startup = "none"` | [`Outcome::Startup`] |
 //! | [`WorkerCommand::Recover`] (the user said yes) | [`Settings::recover`] | [`Outcome::Recovered`] |
 //! | [`WorkerCommand::OpenConfig`] | opens `raumakey.toml` in Notepad when the file exists | [`Outcome::Opened`] |
 //!
 //! A shortcut that cannot be created leaves `startup` as it was (nothing would start Raumakey
 //! at logon), and one that cannot be removed leaves `shortcut` saved (it still starts
-//! Raumakey).
+//! Raumakey). A hand edit to `shortcut` creates the shortcut only when there is none or it
+//! starts an exe that no longer exists (another copy that still exists keeps its shortcut);
+//! a hand edit to `none` removes only the shortcut of this exe; `elevated-task` touches no
+//! shortcut.
 //!
 //! Every answer carries the number of its command ([`Answer::seq`]) and the settings in effect
 //! afterwards ([`SettingsState`]: the runtime snapshot, with the mode the worker last saved,
@@ -35,8 +38,9 @@
 //!
 //! [`WorkerThread`] runs a [`SettingsWorker`] on its own thread. A command that panics is
 //! contained there ([`Outcome::Failed`]) and the worker goes on. [`WorkerThread::finish`]
-//! closes the queue and waits a bounded time for the commands already sent, so a change made
-//! just before Exit is still saved.
+//! closes the queue and waits a bounded time for the commands already sent and for a last
+//! retry of what is unsaved ([`SettingsWorker::finish`]), so a change made just before Exit
+//! is still saved.
 //!
 //! Nothing here logs. `Debug` of an answer shows revisions, states, and paths, never macro
 //! text: macros never travel in an answer.
@@ -47,12 +51,13 @@ use std::path::Path;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 
-use raumakey_config::{ConfigError, StartupMode};
+use raumakey_config::{ConfigError, IssueReason, StartupMode};
 use raumakey_ipc::message::{MacroSnapshot, RuntimeSnapshot};
 use raumakey_windows::error::{WinError, WinResult};
 use raumakey_windows::panic::guard_value;
 
-use crate::settings::{Change, Recovery, Settings, Status};
+use crate::run::ShortcutState;
+use crate::settings::{Change, DocumentStatus, Recovery, Reloaded, Settings, Status};
 
 /// Name of the worker thread.
 pub const THREAD_NAME: &str = "raumakey-settings";
@@ -82,14 +87,62 @@ pub struct SettingsState {
     pub startup: StartupMode,
 }
 
+/// Whether a change that worked wrote `raumakey.toml`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Saved {
+    /// The file now holds the change.
+    Written,
+    /// Nothing was written: the value was in effect already.
+    Unchanged,
+}
+
 /// Why the Startup-folder shortcut could not be set as asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartupError {
+    /// `raumakey.exe` runs from the temporary folder (from inside a ZIP, which Explorer
+    /// deletes later): no shortcut is made to it, and nothing is changed.
+    Temporary,
     /// The shortcut could not be created or removed; the saved choice is unchanged.
     Shortcut(WinError),
     /// The shortcut was created or removed, but the choice could not be saved; it is in
-    /// effect until Raumakey exits.
+    /// effect, and retried, until Raumakey exits.
     Save(ConfigError),
+}
+
+/// What a hand edit of `[system] startup` between `none` and `shortcut` did to the shortcut
+/// (D41). An edit to or from `elevated-task` touches no shortcut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShortcutSync {
+    /// `shortcut`: the shortcut was missing, or started an exe that no longer exists (the exe
+    /// was moved), so a shortcut to this `raumakey.exe` was created.
+    Created,
+    /// `none`: the shortcut to this `raumakey.exe` was removed.
+    Removed,
+    /// Nothing to do: the shortcut is right already, starts another copy that still exists
+    /// (never re-pointed), or is not this exe's to remove.
+    Unchanged,
+    /// `shortcut`, but `raumakey.exe` runs from the temporary folder: nothing was created.
+    RefusedTemporary,
+    /// The shortcut could not be read, created, or removed.
+    Failed {
+        /// Whether it was to be created (`true`) or removed.
+        on: bool,
+        /// Why.
+        error: WinError,
+    },
+}
+
+/// What a poll found and did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PollReport {
+    /// The state of every file after a reload ([`Settings::status`]); `None` when nothing
+    /// changed on disk.
+    pub status: Option<Status>,
+    /// What a hand edit of `[system] startup` did to the shortcut.
+    pub shortcut: Option<ShortcutSync>,
+    /// The retry of changes not saved yet ([`Settings::save_unsaved`]); `None` when there
+    /// were none.
+    pub retry: Option<Result<(), ConfigError>>,
 }
 
 /// Why `raumakey.toml` was not opened.
@@ -108,18 +161,18 @@ pub enum Outcome {
     Applied {
         /// The change.
         change: Change,
-        /// The commit's result ([`Settings::apply`]).
-        result: Result<(), ConfigError>,
+        /// The commit's result ([`Settings::apply`]), and whether it wrote anything.
+        result: Result<Saved, ConfigError>,
     },
-    /// [`WorkerCommand::Poll`]: `None` when nothing changed; otherwise the state of every file
-    /// after the reload ([`Settings::status`]).
-    Polled(Option<Status>),
+    /// [`WorkerCommand::Poll`].
+    Polled(PollReport),
     /// [`WorkerCommand::Startup`].
     Startup {
         /// Start with Windows (`true`) or not.
         on: bool,
-        /// Whether the shortcut and the choice were both set.
-        result: Result<(), StartupError>,
+        /// Whether the shortcut and the choice were both set, and whether the choice was
+        /// written.
+        result: Result<Saved, StartupError>,
     },
     /// [`WorkerCommand::Recover`]: [`Settings::recover`]'s result.
     Recovered(Result<Recovery, ConfigError>),
@@ -146,6 +199,8 @@ pub trait WorkerPorts {
     /// Hands a new macro snapshot to the typing hook (its mailbox builds the table on this
     /// thread).
     fn post_macros(&mut self, macros: &MacroSnapshot);
+    /// What `Raumakey.lnk` in the user's Startup folder starts.
+    fn shortcut_state(&mut self) -> WinResult<ShortcutState>;
     /// Creates (or replaces) `Raumakey.lnk` in the user's Startup folder, pointing at the
     /// running `raumakey.exe`.
     fn create_shortcut(&mut self) -> WinResult<()>;
@@ -160,20 +215,65 @@ pub trait WorkerPorts {
 pub struct SettingsWorker<P> {
     settings: Settings,
     ports: P,
+    /// `raumakey.exe` runs from the temporary folder: no shortcut is made to it.
+    temporary_exe: bool,
+    /// How long a poll waits before it reads a file that looks half-written once more.
+    reread_delay: Duration,
 }
 
 impl<P> fmt::Debug for SettingsWorker<P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SettingsWorker")
             .field("settings", &self.settings)
+            .field("temporary_exe", &self.temporary_exe)
             .finish_non_exhaustive()
     }
 }
 
+/// How long a poll waits before it reads a file that looks half-written once more.
+pub const REREAD_DELAY: Duration = Duration::from_millis(300);
+
+/// Whether a reloaded file looks like an editor caught half-way through saving it: it cannot
+/// be decoded, or it has no `version` (an empty or cut file).
+fn looks_half_written(status: &Status) -> bool {
+    [&status.config, &status.macros, &status.app_rules]
+        .into_iter()
+        .any(|file| match file {
+            DocumentStatus::Unreadable(ConfigError::Corrupt) => true,
+            DocumentStatus::Loaded { issues } => issues
+                .iter()
+                .any(|issue| issue.path == "version" && issue.reason == IssueReason::Missing),
+            DocumentStatus::Missing
+            | DocumentStatus::Unreadable(_)
+            | DocumentStatus::Unusable(_) => false,
+        })
+}
+
 impl<P: WorkerPorts> SettingsWorker<P> {
-    /// The worker of `settings`, with `ports`.
+    /// The worker of `settings`, with `ports`, for a `raumakey.exe` outside the temporary
+    /// folder, reading a half-written file again after [`REREAD_DELAY`].
     pub fn new(settings: Settings, ports: P) -> Self {
-        Self { settings, ports }
+        Self {
+            settings,
+            ports,
+            temporary_exe: false,
+            reread_delay: REREAD_DELAY,
+        }
+    }
+
+    /// The same worker for a `raumakey.exe` that runs from the temporary folder (`true`):
+    /// it makes no shortcut ([`crate::settings::is_temporary_path`]).
+    #[must_use]
+    pub fn with_temporary_exe(mut self, temporary: bool) -> Self {
+        self.temporary_exe = temporary;
+        self
+    }
+
+    /// The same worker, waiting `delay` before it reads a half-written file again.
+    #[must_use]
+    pub fn with_reread_delay(mut self, delay: Duration) -> Self {
+        self.reread_delay = delay;
+        self
     }
 
     /// The settings it owns.
@@ -184,19 +284,11 @@ impl<P: WorkerPorts> SettingsWorker<P> {
     /// Runs `command`, numbered `seq` by the tray, and answers it.
     pub fn handle(&mut self, seq: u64, command: WorkerCommand) -> Answer {
         let outcome = match command {
-            WorkerCommand::Apply(change) => {
-                let result = self.settings.apply(change);
-                Outcome::Applied { change, result }
-            }
-            WorkerCommand::Poll => match self.settings.poll() {
-                None => Outcome::Polled(None),
-                Some(reloaded) => {
-                    if let Some(macros) = &reloaded.macros {
-                        self.ports.post_macros(macros);
-                    }
-                    Outcome::Polled(Some(self.settings.status().clone()))
-                }
+            WorkerCommand::Apply(change) => Outcome::Applied {
+                change,
+                result: self.save(change),
             },
+            WorkerCommand::Poll => Outcome::Polled(self.poll()),
             WorkerCommand::Startup(on) => Outcome::Startup {
                 on,
                 result: self.startup(on),
@@ -211,6 +303,11 @@ impl<P: WorkerPorts> SettingsWorker<P> {
         }
     }
 
+    /// Saves what is still unsaved, as the worker's last act before it ends.
+    pub fn finish(&mut self) {
+        let _ = self.settings.save_unsaved();
+    }
+
     fn state(&self) -> SettingsState {
         SettingsState {
             runtime: self.settings.runtime_snapshot().clone(),
@@ -218,10 +315,91 @@ impl<P: WorkerPorts> SettingsWorker<P> {
         }
     }
 
+    /// [`Settings::apply`], telling whether the file was written (its revision moved).
+    fn save(&mut self, change: Change) -> Result<Saved, ConfigError> {
+        let revision = self.settings.document().revision;
+        self.settings.apply(change)?;
+        Ok(if self.settings.document().revision == revision {
+            Saved::Unchanged
+        } else {
+            Saved::Written
+        })
+    }
+
+    /// Reloads changed files (once more after [`REREAD_DELAY`] when one looks half-written),
+    /// hands new macros to the hook, follows a hand edit of `[system] startup`, and retries
+    /// the changes not saved yet.
+    fn poll(&mut self) -> PollReport {
+        let before = self.settings.document().system.startup;
+        let mut reloaded = self.settings.poll();
+        if reloaded.is_some() && looks_half_written(self.settings.status()) {
+            std::thread::sleep(self.reread_delay);
+            if let Some(again) = self.settings.poll() {
+                let first = reloaded.take();
+                let first_macros = first.and_then(|first| first.macros);
+                reloaded = Some(Reloaded {
+                    runtime: again.runtime,
+                    macros: again.macros.or(first_macros),
+                });
+            }
+        }
+        let mut report = PollReport::default();
+        if let Some(reloaded) = reloaded {
+            if let Some(macros) = &reloaded.macros {
+                self.ports.post_macros(macros);
+            }
+            report.status = Some(self.settings.status().clone());
+            let after = self.settings.document().system.startup;
+            report.shortcut = self.follow_startup(before, after);
+        }
+        report.retry = match self.settings.save_unsaved() {
+            Ok(false) => None,
+            Ok(true) => Some(Ok(())),
+            Err(error) => Some(Err(error)),
+        };
+        report
+    }
+
+    /// A hand edit of `[system] startup` from `before` to `after` (D41): turning the shortcut
+    /// on creates a missing or dead one (never re-points another copy that still exists, and
+    /// never from the temporary folder); turning it off removes only this exe's.
+    fn follow_startup(&mut self, before: StartupMode, after: StartupMode) -> Option<ShortcutSync> {
+        let on = match (before, after) {
+            (StartupMode::None, StartupMode::Shortcut) => true,
+            (StartupMode::Shortcut, StartupMode::None) => false,
+            _ => return None,
+        };
+        if on && self.temporary_exe {
+            return Some(ShortcutSync::RefusedTemporary);
+        }
+        let failed = |error| ShortcutSync::Failed { on, error };
+        let state = match self.ports.shortcut_state() {
+            Ok(state) => state,
+            Err(error) => return Some(failed(error)),
+        };
+        let sync = match (on, state) {
+            (true, ShortcutState::Missing | ShortcutState::PointsToMissing) => {
+                match self.ports.create_shortcut() {
+                    Ok(()) => ShortcutSync::Created,
+                    Err(error) => failed(error),
+                }
+            }
+            (false, ShortcutState::PointsHere) => match self.ports.remove_shortcut() {
+                Ok(_) => ShortcutSync::Removed,
+                Err(error) => failed(error),
+            },
+            _ => ShortcutSync::Unchanged,
+        };
+        Some(sync)
+    }
+
     /// The shortcut first, then the choice: a choice is saved only when the shortcut matches
-    /// it.
-    fn startup(&mut self, on: bool) -> Result<(), StartupError> {
+    /// it. No shortcut is made to an exe in the temporary folder.
+    fn startup(&mut self, on: bool) -> Result<Saved, StartupError> {
         let mode = if on {
+            if self.temporary_exe {
+                return Err(StartupError::Temporary);
+            }
             self.ports
                 .create_shortcut()
                 .map_err(StartupError::Shortcut)?;
@@ -232,9 +410,7 @@ impl<P: WorkerPorts> SettingsWorker<P> {
                 .map_err(StartupError::Shortcut)?;
             StartupMode::None
         };
-        self.settings
-            .apply(Change::Startup(mode))
-            .map_err(StartupError::Save)
+        self.save(Change::Startup(mode)).map_err(StartupError::Save)
     }
 
     fn open_config(&mut self) -> Result<(), OpenError> {
@@ -284,6 +460,8 @@ impl WorkerThread {
                     );
                     guard_value((), || deliver(answer));
                 }
+                // The queue is closed: save what is still unsaved before the thread ends.
+                guard_value((), || worker.finish());
             })?;
         Ok(Self { commands, ended })
     }

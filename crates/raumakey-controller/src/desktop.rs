@@ -25,20 +25,22 @@
 //!   It starts the poll timer ([`POLL_TIMER`], every [`POLL_INTERVAL_MS`]) and posts
 //!   [`START`].
 //! - [`TrayWindow`] is the window's handler: it passes each message to [`Tray::on_message`],
-//!   carries out the effects on a [`TrayShell`] (icon, menu, message boxes) and on
-//!   [`TrayServices`] (hook and worker), and then drains the inbox ([`Tray::on_event`]).
-//!   At each tick of the poll timer it first checks the typing hook
-//!   ([`TrayServices::keep_typing_alive`]), which Windows may have removed silently.
-//!   [`ShellTray`] and [`WinServices`] are the real ones; tests use fakes on a real window,
-//!   message loop, and timer.
+//!   carries out the effects on a [`TrayShell`] (icon, menu, notices) and on
+//!   [`TrayServices`] (hook and worker), and then drains the inbox ([`Tray::on_event`]), the
+//!   hotkey changes coalesced ([`coalesce`]). At each tick of the poll timer it first checks
+//!   the typing hook ([`TrayServices::keep_typing_alive`]), which Windows may have removed
+//!   silently, and makes sure the icon is shown. [`ShellTray`] (over a [`NotifyArea`],
+//!   [`WinNotifyArea`] for real) and [`WinServices`] are the real ones; tests use fakes on a
+//!   real window, message loop, and timer.
 //!
 //! # Threads and messages
 //!
 //! | Thread | Owns | Talks to the tray by |
 //! |---|---|---|
-//! | main (tray) | the window, the icon, the menu, message boxes, the [`Tray`] | — |
+//! | main (tray) | the window, the icon, the menu, the [`Tray`] | — |
 //! | hook (`raumakey_windows::hooks`) | `WH_KEYBOARD_LL`, `WH_MOUSE_LL`, the session core | the observer: [`Event::Hotkey`] into the inbox, then [`WAKE`] |
 //! | settings worker ([`crate::worker`]) | `Settings`, the files, the shortcut, Notepad | [`Event::Worker`] answers into the inbox, then [`WAKE`] |
+//! | one per notice (`raumakey_windows::dialog::spawn_message_box`) | a message box without owner | a "yes" as [`Event::Answered`] into the inbox, then [`WAKE`] |
 //!
 //! The tray thread sends the worker numbered commands (`WorkerThread::send`) and hands the
 //! hook modes and runtime snapshots (`TypingHook::update`); the worker hands the hook macro
@@ -46,34 +48,38 @@
 //! `poll`, and `recover` may wait up to two seconds for a store lock. The observer runs
 //! inside the hook callback and only sends into a channel and posts a message.
 //!
-//! A posted message that arrives while a modal loop runs inside the handler (the menu, a
-//! message box) gets the default processing and is lost (`raumakey_windows::window`), so the
-//! events travel in the inbox, a channel that the handler drains after every message it
-//! handles: a lost [`WAKE`] is made up by the next message, at the latest the next tick of
-//! the poll timer. A lost tick only delays a poll.
+//! A posted message that arrives while the menu's modal loop runs inside the handler gets the
+//! default processing and is lost (`raumakey_windows::window`), so the events travel in the
+//! inbox, a channel that the handler drains after every message it handles: a lost [`WAKE`]
+//! is made up by the next message, at the latest the next tick of the poll timer. A lost
+//! tick only delays a poll. Message boxes run no modal loop on the tray's thread: each runs
+//! on a thread of its own, without an owner window (so it has its own taskbar button and
+//! cannot get lost behind other windows), and the tray keeps handling `WM_CLOSE`,
+//! `WM_ENDSESSION`, `TaskbarCreated`, clicks, and the timer while it is open.
 //!
 //! # Exit and failures
 //!
 //! Exit, `WM_CLOSE`, and the end of the session stop the hook first (typing is plain at
-//! once), remove the icon, let the worker finish the commands sent (at most
-//! [`WORKER_FINISH_TIMEOUT`], so a change made just before is saved), and end the loop with 0,
-//! all inside the message: after `WM_ENDSESSION` the process may end at any time. Any other
-//! way out stops the hook too: when the window is destroyed while the menu or a box is open
-//! (a `WM_CLOSE` reaches `DefWindowProcW` during the modal loop), the handler does the same
-//! when it is freed; when the tray cannot start, the run mode stops the hook. A panic in the
-//! handler is contained by the window procedure's guard (`raumakey_windows::window`); one in
-//! the observer by the hook handler's guard; one in a worker command by the worker.
+//! once), close the open message boxes without waiting for them, save the hotkey changes
+//! left in the inbox, let the worker finish the commands sent and save what is unsaved (at
+//! most [`WORKER_FINISH_TIMEOUT`], so a change made just before is saved), remove the icon,
+//! and end the loop with 0, all inside the message: after `WM_ENDSESSION` the process may end
+//! at any time. Any other way out stops the hook too: when the window is destroyed while the
+//! menu is open (a `WM_CLOSE` reaches `DefWindowProcW` during its modal loop), the handler
+//! takes the same steps when it is freed; when the tray cannot start, the run mode stops the
+//! hook. A box that is still open when the process ends goes with it. A panic in the handler
+//! is contained by the window procedure's guard (`raumakey_windows::window`); one in the
+//! observer by the hook handler's guard; one in a worker command by the worker; one in a box's
+//! callback on its thread.
 //!
-//! If the icon cannot be added at the start (Explorer has not created the taskbar yet, as
-//! may happen to the elevated logon task), the controller keeps running and adds it when
-//! `TaskbarCreated` arrives. If `TaskbarCreated` itself cannot be registered
-//! (`RegisterWindowMessageW` fails), the controller runs without it: then the icon does not
-//! come back after an Explorer restart. A `TaskbarCreated` without an Explorer restart finds
-//! the icon in place: the icon is updated and adding it again fails harmlessly. If the poll
-//! timer cannot be started, the controller runs without reloading hand edits.
-//!
-//! Message boxes have no owner window, so each has its own taskbar button and cannot get lost
-//! behind other windows; while one is open, clicks on the icon are ignored.
+//! If the icon cannot be added (Explorer has not created the taskbar yet, as may happen to the
+//! elevated logon task), or a change of it fails (Explorer went away without
+//! `TaskbarCreated`), the controller keeps running and adds the icon again at the next tick
+//! of the poll timer, or when `TaskbarCreated` arrives. If `TaskbarCreated` itself cannot be
+//! registered (`RegisterWindowMessageW` fails), the controller runs without it. A
+//! `TaskbarCreated` without an Explorer restart finds the icon in place: the icon is updated.
+//! If the poll timer cannot be started, the controller runs without reloading hand edits or
+//! retrying the icon.
 //!
 //! The glue tests (`tests/desktop.rs`) run a real hidden window, message loop, and timer with
 //! a fake shell and fake services. They also read back that the tray window is top-level and
@@ -132,7 +138,22 @@
 //! 14. **Elevated:** start it with "Run as administrator" and repeat 2, 3, and 12; an elevated
 //!     PowerShell types Vietnamese then.
 //! 15. **Unwritable folder:** with `raumakey.toml` beside the exe made read-only, change a
-//!     setting: one warning box says it cannot be saved and the change stays in effect.
+//!     setting: one warning box says it cannot be saved and the change stays in effect. Make
+//!     the file writable again: within about 2 s the change is in the file (the retry), and
+//!     a change before "Thoát" is saved at the exit.
+//! 16. **Boxes never block:** on a first run, leave the welcome box open and run
+//!     `taskkill /PID <pid>` (without `/F`): the process ends within a second and the box
+//!     goes with it. With a box open, click the icon (it switches), restart Explorer (the icon
+//!     comes back), and sign out (no hang).
+//! 17. **Temporary folder:** open the package ZIP in Explorer and run `raumakey.exe` from
+//!     inside it: "Khởi động cùng Windows" explains that Raumakey must be extracted first and
+//!     makes no shortcut; a saved `shortcut` is not repaired there.
+//! 18. **Two copies:** with copy A's shortcut in `shell:startup` and A still in place, start
+//!     copy B with `startup = "shortcut"`: the shortcut still points at A. Delete A, start B:
+//!     the shortcut now points at B.
+//! 19. **Hand edit of `startup`:** set `startup = "shortcut"` by hand: within about 2 s the
+//!     shortcut appears; set `"none"`: the shortcut of this exe goes. `raumakey.exe startup
+//!     shortcut` from a prompt saves `startup = "shortcut"`, and the menu shows it checked.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -142,7 +163,9 @@ use std::time::Duration;
 
 use raumakey_ipc::message::{MacroSnapshot, RuntimeSnapshot};
 use raumakey_model::identity::PRODUCT_NAME;
-use raumakey_windows::dialog::{MessageKind, MessageResponse, message_box};
+use raumakey_windows::dialog::{
+    DetachedMessageBox, MessageKind, MessageResponse, message_box, spawn_message_box,
+};
 use raumakey_windows::error::{E_UNEXPECTED, WinError, WinResult};
 use raumakey_windows::icon::{Icon, IconKind, IconSize, icon_size};
 use raumakey_windows::menu::{MenuItem, PopupMenu};
@@ -160,12 +183,12 @@ use raumakey_windows::window::{
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 
 use crate::notice::{Notice, NoticeKind};
-use crate::run::{Desktop, Opened, ShortcutState, TypingStartError, shortcut_points_to};
-use crate::settings::Settings;
+use crate::run::{Desktop, Opened, ShortcutState, TypingStartError, shortcut_state};
+use crate::settings::{Settings, is_temporary_path};
 use crate::system::{shortcut_spec, startup_shortcut_path};
 use crate::tray::{
     Effect, Event, IconState, InputMode, LOOP_EXIT_CODE, POLL_INTERVAL_MS, POLL_TIMER, START,
-    TRAY_CALLBACK, TRAY_ICON_ID, Tray, TrayStart, WAKE,
+    TRAY_CALLBACK, TRAY_ICON_ID, Tray, TrayStart, WAKE, coalesce,
 };
 use crate::typing::{Mailbox, TypingError, TypingHook, TypingUpdate};
 use crate::worker::{SettingsWorker, WorkerCommand, WorkerPorts, WorkerThread};
@@ -238,6 +261,7 @@ impl Desktop for WinDesktop {
             report,
             runtime: settings.runtime_snapshot().clone(),
             startup: settings.document().system.startup,
+            temporary_exe: is_temporary_path(&self.exe),
         };
         self.settings = Some(settings);
         opened
@@ -266,19 +290,7 @@ impl Desktop for WinDesktop {
     }
 
     fn startup_shortcut(&mut self) -> WinResult<ShortcutState> {
-        let lnk = startup_shortcut_path()?;
-        match lnk.try_exists() {
-            Ok(false) => return Ok(ShortcutState::Missing),
-            Ok(true) => {}
-            Err(error) => return Err(WinError::from_io(&error, "startup shortcut")),
-        }
-        let spec = read_shortcut(&lnk)?;
-        let here = shortcut_points_to(&spec.target, &spec.arguments, &self.exe);
-        Ok(if here {
-            ShortcutState::PointsHere
-        } else {
-            ShortcutState::PointsElsewhere
-        })
+        read_startup_shortcut(&self.exe)
     }
 
     fn create_startup_shortcut(&mut self) -> WinResult<()> {
@@ -323,6 +335,21 @@ impl Desktop for WinDesktop {
     }
 }
 
+/// What `Raumakey.lnk` in the user's Startup folder starts, seen from the `raumakey.exe` at
+/// `exe` (`crate::run::shortcut_state`).
+fn read_startup_shortcut(exe: &Path) -> WinResult<ShortcutState> {
+    let lnk = startup_shortcut_path()?;
+    match lnk.try_exists() {
+        Ok(false) => return Ok(ShortcutState::Missing),
+        Ok(true) => {}
+        Err(error) => return Err(WinError::from_io(&error, "startup shortcut")),
+    }
+    let spec = read_shortcut(&lnk)?;
+    // A target that cannot be checked counts as existing: it is never re-pointed.
+    let exists = spec.target.try_exists().unwrap_or(true);
+    Ok(shortcut_state(&spec.target, &spec.arguments, exe, exists))
+}
+
 /// Everything [`run_tray`] needs.
 #[derive(Debug)]
 pub struct TrayParts {
@@ -359,12 +386,15 @@ pub fn run_tray(parts: TrayParts) -> WinResult<i32> {
     // not bring the icon back.
     let tray = Tray::new(start, taskbar_created_message().unwrap_or(0));
     let class = WindowClass::register(WINDOW_CLASS_LABEL)?;
+    let temporary_exe = is_temporary_path(&exe);
     let ports = WinWorkerPorts {
         exe,
         mailbox: typing.as_ref().map(TypingHook::mailbox),
     };
     let deliver_target = Arc::clone(&target);
-    let worker = WorkerThread::spawn(SettingsWorker::new(settings, ports), move |answer| {
+    let sender_for_notices = sender.clone();
+    let worker = SettingsWorker::new(settings, ports).with_temporary_exe(temporary_exe);
+    let worker = WorkerThread::spawn(worker, move |answer| {
         let _ = sender.send(Event::Worker(answer));
         wake(&deliver_target);
     })
@@ -379,7 +409,7 @@ pub fn run_tray(parts: TrayParts) -> WinResult<i32> {
     let window = create_tray_window(
         &class,
         tray,
-        ShellTray::new(icons),
+        ShellTray::new(icons, sender_for_notices, Arc::clone(&target)),
         services,
         elevated,
         POLL_INTERVAL_MS,
@@ -419,14 +449,20 @@ pub fn create_tray_window<S: TrayShell + 'static, V: TrayServices + 'static>(
 }
 
 /// What the tray asks of the shell; [`ShellTray`] is the real one. Every method runs on the
-/// thread of the tray window, inside its handler.
+/// thread of the tray window, inside its handler, and only the menu waits (while the user
+/// holds it open).
 pub trait TrayShell {
     /// Adds the icon showing `icon` (its image and tooltip) for window `owner`; if it was
     /// added before, adds it again (`TaskbarCreated`) or, when it still exists, updates it.
     fn show(&mut self, owner: HWND, icon: IconState);
 
-    /// Shows `icon` on the icon, if the icon exists.
+    /// Shows `icon` on the icon, if the icon exists; a change that fails leaves the icon to
+    /// [`ensure`](Self::ensure).
     fn update(&mut self, icon: IconState);
+
+    /// Adds the icon showing `icon` again when it is not shown: its add or its last change
+    /// failed (every tick of the poll timer).
+    fn ensure(&mut self, owner: HWND, icon: IconState);
 
     /// Shows the popup menu of `items` for window `owner` at (`x`, `y`) in screen
     /// coordinates, and returns the chosen command id, or `None` when it was dismissed.
@@ -438,12 +474,27 @@ pub trait TrayShell {
         items: &[MenuItem<'static>],
     ) -> Option<u16>;
 
-    /// Shows `notice` in a message box and waits; true when it asked a question and the
-    /// answer was yes.
-    fn notify(&mut self, notice: &Notice) -> bool;
+    /// Shows `notice` without waiting for it: a message box on a thread of its own. A "yes"
+    /// to its question arrives later in the inbox ([`Event::Answered`]).
+    fn notify(&mut self, notice: Notice);
+
+    /// Closes every notice that is still open, without waiting.
+    fn dismiss_notices(&mut self);
 
     /// Removes the icon, if it exists.
     fn remove(&mut self);
+}
+
+/// The notification icon as the shell sees it; [`WinNotifyArea`] is the real one.
+/// [`ShellTray`] keeps track of whether the icon is shown and adds it again when not.
+pub trait NotifyArea {
+    /// Adds the icon showing `icon` for window `owner` (or adds it again); whether the
+    /// shell took it.
+    fn add(&mut self, owner: HWND, icon: IconState) -> bool;
+    /// Changes the image and tooltip of the icon; whether the shell took the change.
+    fn modify(&mut self, icon: IconState) -> bool;
+    /// Removes the icon.
+    fn delete(&mut self);
 }
 
 /// What the tray asks of the typing hook and the settings worker; [`WinServices`] is the
@@ -512,35 +563,42 @@ impl<S: TrayShell, V: TrayServices> TrayWindow<S, V> {
                     let next = self.tray.menu_choice(chosen);
                     self.run(owner, next);
                 }
-                Effect::Notify(notice) => {
-                    if self.shell.notify(&notice)
-                        && let Some(question) = notice.question
-                    {
-                        let next = self.tray.answered_yes(question);
-                        self.run(owner, next);
-                    }
-                }
+                Effect::Notify(notice) => self.shell.notify(notice),
+                Effect::EnsureIcon(icon) => self.shell.ensure(owner, icon),
                 Effect::HookMode(vietnamese) => self.services.hook_mode(vietnamese),
                 Effect::HookRuntime(runtime) => self.services.hook_runtime(*runtime),
                 Effect::Worker { seq, command } => self.services.send(seq, command),
                 Effect::StopTyping => self.services.stop_typing(),
-                Effect::RemoveIcon => self.shell.remove(),
-                Effect::EndLoop => {
-                    self.services.finish_worker();
-                    post_quit(LOOP_EXIT_CODE);
+                Effect::DismissNotices => self.shell.dismiss_notices(),
+                Effect::FlushHotkeys => {
+                    let events = self.take_events();
+                    let next = self.tray.flush_hotkeys(events);
+                    self.run(owner, next);
                 }
+                Effect::FinishWorker => self.services.finish_worker(),
+                Effect::RemoveIcon => self.shell.remove(),
+                Effect::EndLoop => post_quit(LOOP_EXIT_CODE),
             }
         }
     }
 
-    /// Takes every event waiting in the inbox while the tray runs.
+    /// Every event waiting in the inbox now.
+    fn take_events(&mut self) -> Vec<Event> {
+        core::iter::from_fn(|| self.services.next_event()).collect()
+    }
+
+    /// Takes the events waiting in the inbox while the tray runs, the hotkey changes among
+    /// them coalesced ([`coalesce`]), until the inbox is empty (an effect may add to it).
     fn drain(&mut self, owner: HWND) {
         while self.tray.is_running() {
-            let Some(event) = self.services.next_event() else {
+            let events = self.take_events();
+            if events.is_empty() {
                 break;
-            };
-            let effects = self.tray.on_event(event);
-            self.run(owner, effects);
+            }
+            for event in coalesce(events) {
+                let effects = self.tray.on_event(event);
+                self.run(owner, effects);
+            }
         }
     }
 }
@@ -568,9 +626,17 @@ impl<S: TrayShell, V: TrayServices> WindowHandler for TrayWindow<S, V> {
 impl<S: TrayShell, V: TrayServices> Drop for TrayWindow<S, V> {
     fn drop(&mut self) {
         if self.tray.ends_loop_when_dropped() {
+            // The order of an exit (`crate::tray`), without the window.
             self.services.stop_typing();
-            self.shell.remove();
+            self.shell.dismiss_notices();
+            let events = self.take_events();
+            for effect in self.tray.flush_hotkeys(events) {
+                if let Effect::Worker { seq, command } = effect {
+                    self.services.send(seq, command);
+                }
+            }
             self.services.finish_worker();
+            self.shell.remove();
             post_quit(LOOP_EXIT_CODE);
         }
     }
@@ -643,6 +709,10 @@ impl WorkerPorts for WinWorkerPorts {
         }
     }
 
+    fn shortcut_state(&mut self) -> WinResult<ShortcutState> {
+        read_startup_shortcut(&self.exe)
+    }
+
     fn create_shortcut(&mut self) -> WinResult<()> {
         create_shortcut(&startup_shortcut_path()?, &shortcut_spec(&self.exe))
     }
@@ -682,16 +752,16 @@ impl ModeIcons {
     }
 }
 
-/// The real shell of the tray: the notification icon, the popup menu, and message boxes.
+/// The real notification icon (`raumakey_windows::shell::NotifyIcon`).
 #[derive(Debug)]
-pub struct ShellTray {
+pub struct WinNotifyArea {
     icons: ModeIcons,
-    /// The icon, once the shell accepted it.
+    /// The icon, once the shell accepted its first add.
     notify: Option<NotifyIcon>,
 }
 
-impl ShellTray {
-    /// A shell showing `icons`; the icon is added by the first [`TrayShell::show`].
+impl WinNotifyArea {
+    /// The area showing `icons`; the icon is added by the first [`NotifyArea::add`].
     pub fn new(icons: ModeIcons) -> Self {
         Self {
             icons,
@@ -700,19 +770,18 @@ impl ShellTray {
     }
 }
 
-impl TrayShell for ShellTray {
-    fn show(&mut self, owner: HWND, icon: IconState) {
+impl NotifyArea for WinNotifyArea {
+    fn add(&mut self, owner: HWND, icon: IconState) -> bool {
         match &mut self.notify {
             Some(notify) => {
-                // The data first: an icon that still exists is updated here (and adding it
-                // again fails); after an Explorer restart these fail and the icon is added
-                // with the current state.
-                let _ = notify.set_icon(self.icons.icon(icon.mode));
-                let _ = notify.set_tooltip(icon.tooltip());
-                let _ = notify.readd();
+                // The data first: an icon that still exists takes the change (and adding it
+                // again would fail); after an Explorer restart the change fails and the icon
+                // is added again with the current state.
+                let changed = notify.set_icon(self.icons.icon(icon.mode)).is_ok()
+                    & notify.set_tooltip(icon.tooltip()).is_ok();
+                changed || notify.readd().is_ok()
             }
             None => {
-                // Without a taskbar yet, the next TaskbarCreated adds the icon.
                 self.notify = NotifyIcon::add(
                     owner,
                     u32::from(TRAY_ICON_ID),
@@ -721,14 +790,75 @@ impl TrayShell for ShellTray {
                     icon.tooltip(),
                 )
                 .ok();
+                self.notify.is_some()
             }
         }
     }
 
+    fn modify(&mut self, icon: IconState) -> bool {
+        let Some(notify) = &mut self.notify else {
+            return false;
+        };
+        notify.set_icon(self.icons.icon(icon.mode)).is_ok()
+            & notify.set_tooltip(icon.tooltip()).is_ok()
+    }
+
+    fn delete(&mut self) {
+        if let Some(notify) = self.notify.take() {
+            let _ = notify.delete();
+        }
+    }
+}
+
+/// The real shell of the tray: the notification icon (over a [`NotifyArea`]), the popup menu,
+/// and message boxes on threads of their own.
+#[derive(Debug)]
+pub struct ShellTray<A: NotifyArea = WinNotifyArea> {
+    area: A,
+    /// The icon is shown: its last add or change worked.
+    shown: bool,
+    /// The notices shown so far that may still be open.
+    notices: Vec<DetachedMessageBox>,
+    /// Where a "yes" to a notice goes: the tray's inbox, then [`WAKE`].
+    inbox: Sender<Event>,
+    wake: WakeTarget,
+}
+
+impl ShellTray<WinNotifyArea> {
+    /// A shell showing `icons`, answering notices into `inbox` (then [`WAKE`] to `wake`).
+    pub fn new(icons: ModeIcons, inbox: Sender<Event>, wake: WakeTarget) -> Self {
+        Self::with_area(WinNotifyArea::new(icons), inbox, wake)
+    }
+}
+
+impl<A: NotifyArea> ShellTray<A> {
+    /// A shell over `area`; the icon is added by the first [`TrayShell::show`].
+    pub fn with_area(area: A, inbox: Sender<Event>, wake: WakeTarget) -> Self {
+        Self {
+            area,
+            shown: false,
+            notices: Vec::new(),
+            inbox,
+            wake,
+        }
+    }
+}
+
+impl<A: NotifyArea> TrayShell for ShellTray<A> {
+    fn show(&mut self, owner: HWND, icon: IconState) {
+        // Without a taskbar yet, the next tick or TaskbarCreated adds the icon.
+        self.shown = self.area.add(owner, icon);
+    }
+
     fn update(&mut self, icon: IconState) {
-        if let Some(notify) = &mut self.notify {
-            let _ = notify.set_icon(self.icons.icon(icon.mode));
-            let _ = notify.set_tooltip(icon.tooltip());
+        if self.shown {
+            self.shown = self.area.modify(icon);
+        }
+    }
+
+    fn ensure(&mut self, owner: HWND, icon: IconState) {
+        if !self.shown {
+            self.shown = self.area.add(owner, icon);
         }
     }
 
@@ -746,23 +876,41 @@ impl TrayShell for ShellTray {
         menu.track(owner, POINT { x, y })
     }
 
-    fn notify(&mut self, notice: &Notice) -> bool {
+    fn notify(&mut self, notice: Notice) {
+        self.notices.retain(|shown| !shown.is_closed());
         let kind = match (notice.question, notice.kind) {
             (Some(_), _) => MessageKind::Question,
             (None, NoticeKind::Information) => MessageKind::Information,
             (None, NoticeKind::Warning) => MessageKind::Warning,
             (None, NoticeKind::Error) => MessageKind::Error,
         };
-        // No owner: the box gets a taskbar button of its own and cannot get lost.
-        matches!(
-            message_box(None, &notice.text, PRODUCT_NAME, kind),
-            Ok(MessageResponse::Yes)
-        )
+        let question = notice.question;
+        let inbox = self.inbox.clone();
+        let target = Arc::clone(&self.wake);
+        // No owner: the box gets a taskbar button of its own and cannot get lost; on a
+        // thread of its own, it never holds up the tray's messages.
+        let shown = spawn_message_box(&notice.text, PRODUCT_NAME, kind, move |answer| {
+            if answer == Some(MessageResponse::Yes)
+                && let Some(question) = question
+            {
+                let _ = inbox.send(Event::Answered(question));
+                wake(&target);
+            }
+        });
+        // A box that cannot be shown loses only the notice.
+        if let Ok(shown) = shown {
+            self.notices.push(shown);
+        }
+    }
+
+    fn dismiss_notices(&mut self) {
+        for shown in self.notices.drain(..) {
+            shown.dismiss();
+        }
     }
 
     fn remove(&mut self) {
-        if let Some(notify) = self.notify.take() {
-            let _ = notify.delete();
-        }
+        self.area.delete();
+        self.shown = false;
     }
 }

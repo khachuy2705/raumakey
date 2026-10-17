@@ -1,8 +1,11 @@
-//! The tray window glue (`desktop::create_tray_window`, `desktop::TrayWindow`) on a real
-//! hidden window, message loop, and window timer, with a fake shell in place of the
-//! notification icon, popup menu, and message boxes, and fake services in place of the typing
-//! hook and the settings worker, so nothing is shown, no hook is installed, and no file is
-//! touched.
+//! The tray window glue (`desktop::create_tray_window`, `desktop::TrayWindow`,
+//! `desktop::ShellTray`) on a real hidden window, message loop, and window timer, with fakes
+//! in place of the notification icon, popup menu, message boxes, typing hook, and settings
+//! worker, so nothing is shown, no hook is installed, and no file is touched.
+//!
+//! Notices never block the tray's thread (message boxes run on threads of their own), so the
+//! fake shell keeps them "open" for as long as a test wants, and the window goes on handling
+//! `WM_CLOSE`, `WM_ENDSESSION`, `TaskbarCreated`, clicks, and the timer meanwhile.
 //!
 //! Each test runs on a fresh thread, which owns the window and destroys it before it ends.
 //! Messages are posted or sent to the test window only: `TaskbarCreated` is never broadcast.
@@ -17,14 +20,18 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use raumakey_config::{ConfigError, StartupMode};
-use raumakey_controller::desktop::{ModeIcons, TrayServices, TrayShell, create_tray_window};
-use raumakey_controller::notice::{Notice, Question, save_error_notice};
+use raumakey_controller::desktop::{
+    ModeIcons, NotifyArea, ShellTray, TrayServices, TrayShell, create_tray_window,
+};
+use raumakey_controller::notice::{
+    Notice, NoticeKind, Question, save_error_notice, temporary_exe_notice,
+};
 use raumakey_controller::settings::{Change, DocumentStatus, Location, Status};
 use raumakey_controller::tray::{
-    Event, IconState, InputMode, LOOP_EXIT_CODE, POLL_INTERVAL_MS, TRAY_CALLBACK, TRAY_ICON_ID,
-    Tray, TrayCommand, TrayStart, WAKE,
+    Event, IconState, InputMode, LOOP_EXIT_CODE, POLL_INTERVAL_MS, START, TRAY_CALLBACK,
+    TRAY_ICON_ID, Tray, TrayCommand, TrayStart, WAKE,
 };
-use raumakey_controller::worker::{Answer, Outcome, WorkerCommand};
+use raumakey_controller::worker::{Answer, Outcome, PollReport, WorkerCommand};
 use raumakey_ipc::message::RuntimeSnapshot;
 use raumakey_model::options::InputMethod;
 use raumakey_windows::icon::{IconKind, icon_size};
@@ -54,12 +61,14 @@ const NO_TICKS: u32 = 600_000;
 enum Call {
     Show(IconState),
     Update(IconState),
+    Ensure(IconState),
     Menu {
         x: i32,
         y: i32,
         items: Vec<MenuItem<'static>>,
     },
     Notify(Notice),
+    Dismiss,
     Remove,
     HookMode(bool),
     HookRuntime(Box<RuntimeSnapshot>),
@@ -72,12 +81,14 @@ enum Call {
 type Log = Rc<RefCell<Vec<Call>>>;
 
 /// Records every call; the menu returns the queued choices in turn (then "dismissed") and runs
-/// `during_menu` with its owner window while it is "open"; message boxes answer the queued
-/// answers in turn (then "no").
+/// `during_menu` with its owner window while it is "open". Notices stay "open" and never
+/// block; a queued "yes" is answered into the inbox as `Event::Answered`, as the box's thread
+/// does.
 struct FakeShell {
     log: Log,
     choices: VecDeque<Option<u16>>,
     answers: VecDeque<bool>,
+    inbox: Option<mpsc::Sender<Event>>,
     during_menu: Option<Box<dyn FnMut(HWND)>>,
 }
 
@@ -87,6 +98,7 @@ impl FakeShell {
             log: Rc::clone(log),
             choices: VecDeque::new(),
             answers: VecDeque::new(),
+            inbox: None,
             during_menu: None,
         }
     }
@@ -96,8 +108,10 @@ impl FakeShell {
         self
     }
 
-    fn answering(mut self, answers: &[bool]) -> Self {
+    /// Answers the questions of the next notices, into `inbox`.
+    fn answering(mut self, answers: &[bool], inbox: &mpsc::Sender<Event>) -> Self {
         self.answers = answers.iter().copied().collect();
+        self.inbox = Some(inbox.clone());
         self
     }
 
@@ -114,6 +128,10 @@ impl TrayShell for FakeShell {
 
     fn update(&mut self, icon: IconState) {
         self.log.borrow_mut().push(Call::Update(icon));
+    }
+
+    fn ensure(&mut self, _owner: HWND, icon: IconState) {
+        self.log.borrow_mut().push(Call::Ensure(icon));
     }
 
     fn open_menu(
@@ -134,9 +152,16 @@ impl TrayShell for FakeShell {
         self.choices.pop_front().flatten()
     }
 
-    fn notify(&mut self, notice: &Notice) -> bool {
-        self.log.borrow_mut().push(Call::Notify(notice.clone()));
-        self.answers.pop_front().unwrap_or(false)
+    fn notify(&mut self, notice: Notice) {
+        let yes = self.answers.pop_front().unwrap_or(false);
+        if yes && let (Some(question), Some(inbox)) = (notice.question, &self.inbox) {
+            inbox.send(Event::Answered(question)).unwrap();
+        }
+        self.log.borrow_mut().push(Call::Notify(notice));
+    }
+
+    fn dismiss_notices(&mut self) {
+        self.log.borrow_mut().push(Call::Dismiss);
     }
 
     fn remove(&mut self) {
@@ -148,13 +173,15 @@ impl TrayShell for FakeShell {
 type OnSend = Box<dyn FnMut(u64, WorkerCommand, &mpsc::Sender<Event>)>;
 
 /// Records every call; the inbox is a channel that other threads may fill; `on_send` plays
-/// the worker and answers the commands it is sent.
+/// the worker and answers the commands it is sent; `on_stop` plays the hook's last events.
 struct FakeServices {
     log: Log,
     inbox: mpsc::Receiver<Event>,
     /// Feeds the inbox from this thread (for the answers of `on_send`).
     feed: mpsc::Sender<Event>,
     on_send: Option<OnSend>,
+    /// Left in the inbox when the hook stops (hotkey changes it made just before).
+    on_stop: Vec<Event>,
 }
 
 impl FakeServices {
@@ -165,6 +192,7 @@ impl FakeServices {
             inbox,
             feed: feed.clone(),
             on_send: None,
+            on_stop: Vec::new(),
         };
         (services, feed)
     }
@@ -174,6 +202,11 @@ impl FakeServices {
         action: impl FnMut(u64, WorkerCommand, &mpsc::Sender<Event>) + 'static,
     ) -> Self {
         self.on_send = Some(Box::new(action));
+        self
+    }
+
+    fn on_stop(mut self, events: Vec<Event>) -> Self {
+        self.on_stop = events;
         self
     }
 }
@@ -191,6 +224,9 @@ impl TrayServices for FakeServices {
 
     fn stop_typing(&mut self) {
         self.log.borrow_mut().push(Call::StopTyping);
+        for event in self.on_stop.drain(..) {
+            self.feed.send(event).unwrap();
+        }
     }
 
     fn keep_typing_alive(&mut self) {
@@ -210,6 +246,39 @@ impl TrayServices for FakeServices {
 
     fn next_event(&mut self) -> Option<Event> {
         self.inbox.try_recv().ok()
+    }
+}
+
+/// What a fake notification area was asked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AreaCall {
+    Add(IconState),
+    Modify(IconState),
+    Delete,
+}
+
+type AreaLog = Rc<RefCell<Vec<AreaCall>>>;
+
+/// A notification area whose adds and modifies answer the queued results (then "it worked").
+struct FakeArea {
+    log: AreaLog,
+    adds: VecDeque<bool>,
+    modifies: VecDeque<bool>,
+}
+
+impl NotifyArea for FakeArea {
+    fn add(&mut self, _owner: HWND, icon: IconState) -> bool {
+        self.log.borrow_mut().push(AreaCall::Add(icon));
+        self.adds.pop_front().unwrap_or(true)
+    }
+
+    fn modify(&mut self, icon: IconState) -> bool {
+        self.log.borrow_mut().push(AreaCall::Modify(icon));
+        self.modifies.pop_front().unwrap_or(true)
+    }
+
+    fn delete(&mut self) {
+        self.log.borrow_mut().push(AreaCall::Delete);
     }
 }
 
@@ -234,8 +303,8 @@ fn runtime(mode: InputMode) -> RuntimeSnapshot {
     runtime
 }
 
-fn tray(mode: InputMode) -> Tray {
-    let start = TrayStart {
+fn start(mode: InputMode) -> TrayStart {
+    TrayStart {
         runtime: runtime(mode),
         startup: StartupMode::None,
         location: Location::ExeDir,
@@ -247,21 +316,42 @@ fn tray(mode: InputMode) -> Tray {
             skipped_macros: Vec::new(),
         },
         notices: Vec::new(),
-    };
-    Tray::new(start, taskbar_created())
+        temporary_exe: false,
+    }
+}
+
+fn tray(mode: InputMode) -> Tray {
+    Tray::new(start(mode), taskbar_created())
 }
 
 fn icon(mode: InputMode, method: InputMethod) -> IconState {
     IconState { mode, method }
 }
 
-/// The calls of an exit, in order.
-fn exit_calls() -> [Call; 3] {
-    [Call::StopTyping, Call::Remove, Call::FinishWorker]
+/// The calls of an exit, in order: the hook stops, open notices close, the worker finishes,
+/// and only then the icon goes.
+fn exit_calls() -> [Call; 4] {
+    [
+        Call::StopTyping,
+        Call::Dismiss,
+        Call::FinishWorker,
+        Call::Remove,
+    ]
 }
 
-/// The tray window in `mode` with `shell` and `services`, created the way the controller
-/// creates it.
+/// The tray window created the way the controller creates it.
+fn window_for(
+    class_label: &str,
+    tray: Tray,
+    shell: impl TrayShell + 'static,
+    services: FakeServices,
+    poll_interval_ms: u32,
+) -> Window {
+    let class = WindowClass::register(class_label).unwrap();
+    create_tray_window(&class, tray, shell, services, false, poll_interval_ms).unwrap()
+}
+
+/// The tray window in `mode` with `shell` and `services`.
 fn tray_window(
     class_label: &str,
     mode: InputMode,
@@ -269,8 +359,7 @@ fn tray_window(
     services: FakeServices,
     poll_interval_ms: u32,
 ) -> Window {
-    let class = WindowClass::register(class_label).unwrap();
-    create_tray_window(&class, tray(mode), shell, services, false, poll_interval_ms).unwrap()
+    window_for(class_label, tray(mode), shell, services, poll_interval_ms)
 }
 
 /// Posts `message` to `window` with `PostMessageW` itself, as the shell or another process
@@ -307,8 +396,15 @@ fn run_loop_with_watchdog() -> i32 {
     code
 }
 
-/// Exit from the menu stops the hook, removes the icon, lets the worker finish, and ends the
-/// loop with 0, in that order.
+/// The menu of a running tray in `mode`.
+fn menu_of(mode: InputMode) -> Vec<MenuItem<'static>> {
+    let mut tray = tray(mode);
+    tray.on_message(START.id(), 0, 0);
+    tray.menu()
+}
+
+/// Exit from the menu stops the hook, closes the notices, lets the worker finish, removes
+/// the icon, and ends the loop with 0, in that order.
 #[test]
 fn start_shows_the_icon_a_click_switches_it_and_exit_from_the_menu_ends_the_loop_with_0() {
     on_fresh_thread(|| {
@@ -327,11 +423,7 @@ fn start_shows_the_icon_a_click_switches_it_and_exit_from_the_menu_ends_the_loop
             Call::Menu {
                 x: -25,
                 y: 1040,
-                items: {
-                    let mut english = tray(English);
-                    english.on_message(raumakey_controller::tray::START.id(), 0, 0);
-                    english.menu()
-                },
+                items: menu_of(English),
             },
         ];
         expected.extend(exit_calls());
@@ -426,6 +518,51 @@ fn the_end_of_the_session_stops_the_hook_and_ends_the_loop_like_exit() {
     });
 }
 
+/// A notice is open (the welcome box of the first run): the tray thread still handles
+/// `TaskbarCreated`, a click, and `WM_ENDSESSION` or `WM_CLOSE`; the exit closes the open
+/// notice and never waits for it (the smoke test of the first run, `taskkill` while the box
+/// was open).
+#[test]
+fn messages_arriving_while_a_notice_is_open_are_handled_and_the_exit_closes_it() {
+    for (label, last) in [
+        ("test-tray-notice-session", (WM_ENDSESSION, 1)),
+        ("test-tray-notice-close", (WM_CLOSE, 0)),
+    ] {
+        on_fresh_thread(move || {
+            let log = Log::default();
+            let welcome = Notice {
+                kind: NoticeKind::Information,
+                text: "chào".to_owned(),
+                question: None,
+            };
+            let mut start = start(Vietnamese);
+            start.notices = vec![welcome.clone()];
+            let (services, _feed) = FakeServices::new(&log);
+            let window = window_for(
+                label,
+                Tray::new(start, taskbar_created()),
+                FakeShell::new(&log),
+                services,
+                NO_TICKS,
+            );
+            post(&window, taskbar_created(), 0, 0);
+            post_icon(&window, NIN_SELECT, 0, 0);
+            post(&window, last.0, last.1, 0);
+            assert_eq!(run_loop_with_watchdog(), LOOP_EXIT_CODE, "{label}");
+            let mut expected = vec![
+                Call::Show(icon(Vietnamese, InputMethod::Telex)),
+                Call::Notify(welcome),
+                Call::Show(icon(Vietnamese, InputMethod::Telex)),
+                Call::Update(icon(English, InputMethod::Telex)),
+                Call::HookMode(false),
+                Call::Send(1, WorkerCommand::Apply(Change::VietnameseMode(false))),
+            ];
+            expected.extend(exit_calls());
+            assert_eq!(log.take(), expected, "{label}");
+        });
+    }
+}
+
 /// A method chosen in the menu reaches the icon, the hook (a snapshot), and the worker; a
 /// dismissed menu changes nothing.
 #[test]
@@ -462,10 +599,39 @@ fn choosing_an_input_method_in_the_menu_reaches_the_icon_the_hook_and_the_worker
     });
 }
 
+/// From the temporary folder, "Khởi động cùng Windows" explains and sends nothing.
+#[test]
+fn startup_from_the_temporary_folder_is_refused_in_the_menu() {
+    on_fresh_thread(|| {
+        let log = Log::default();
+        let shell = FakeShell::new(&log).choosing(&[Some(TrayCommand::Startup.id())]);
+        let (services, _feed) = FakeServices::new(&log);
+        let mut start = start(Vietnamese);
+        start.temporary_exe = true;
+        let window = window_for(
+            "test-tray-temporary",
+            Tray::new(start, taskbar_created()),
+            shell,
+            services,
+            NO_TICKS,
+        );
+        post_icon(&window, WM_CONTEXTMENU, 1, 1);
+        post(&window, WM_CLOSE, 0, 0);
+        assert_eq!(run_loop_with_watchdog(), LOOP_EXIT_CODE);
+        let calls = log.take();
+        assert_eq!(calls[2], Call::Notify(temporary_exe_notice()), "{calls:?}");
+        assert!(
+            !calls.iter().any(|call| matches!(call, Call::Send(..))),
+            "{calls:?}"
+        );
+    });
+}
+
 /// While the menu's modal loop runs inside the handler, the window's messages go to
 /// `DefWindowProcW`, which answers a `WM_CLOSE` (here sent by the fake menu, as `taskkill`
-/// would post one) by destroying the window. The tray still stops the hook, removes its
-/// icon, finishes the worker, and ends the loop once the handler returns and is freed.
+/// would post one) by destroying the window. The tray still stops the hook, closes the
+/// notices, finishes the worker, removes its icon, and ends the loop once the handler
+/// returns and is freed.
 #[test]
 fn a_window_destroyed_while_the_menu_is_open_still_stops_everything_and_ends_the_loop() {
     on_fresh_thread(|| {
@@ -490,8 +656,9 @@ fn a_window_destroyed_while_the_menu_is_open_still_stops_everything_and_ends_the
 }
 
 /// The window timer asks the worker to poll; the next tick polls again once the answer came.
-/// Each tick also checks the typing hook first: Windows removes a slow low-level hook without
-/// telling it, and `TypingHook::ensure_alive` installs it again (design §21.2).
+/// Each tick also checks the typing hook first (Windows removes a slow low-level hook without
+/// telling it, and `TypingHook::ensure_alive` installs it again, design §21.2) and makes sure
+/// the icon is shown.
 #[test]
 fn the_poll_timer_asks_the_worker_to_poll_again_and_again() {
     on_fresh_thread(|| {
@@ -500,7 +667,7 @@ fn the_poll_timer_asks_the_worker_to_poll_again_and_again() {
         let services = services.on_send(|seq, _command, feed| {
             feed.send(Event::Worker(Answer {
                 seq,
-                outcome: Outcome::Polled(None),
+                outcome: Outcome::Polled(PollReport::default()),
                 state: None,
             }))
             .unwrap();
@@ -516,19 +683,113 @@ fn the_poll_timer_asks_the_worker_to_poll_again_and_again() {
             10,
         );
         assert_eq!(run_loop_with_watchdog(), 5);
+        let shown = Call::Ensure(icon(Vietnamese, InputMethod::Telex));
         assert_eq!(
             log.take(),
             [
                 Call::Show(icon(Vietnamese, InputMethod::Telex)),
                 Call::KeepTypingAlive,
+                shown.clone(),
                 Call::Send(1, WorkerCommand::Poll),
                 Call::KeepTypingAlive,
+                shown.clone(),
                 Call::Send(2, WorkerCommand::Poll),
                 Call::KeepTypingAlive,
+                shown,
                 Call::Send(3, WorkerCommand::Poll),
             ]
         );
         assert_eq!(POLL_INTERVAL_MS, 2_000);
+    });
+}
+
+/// The shell of the tray over a notification area that refuses the first add (no taskbar
+/// yet, as for the elevated logon task): the next tick adds the icon again, and only once.
+#[test]
+fn an_icon_that_could_not_be_added_is_added_at_the_next_tick() {
+    on_fresh_thread(|| {
+        let area_log = AreaLog::default();
+        let area = FakeArea {
+            log: Rc::clone(&area_log),
+            adds: VecDeque::from([false]),
+            modifies: VecDeque::new(),
+        };
+        let log = Log::default();
+        let (services, _feed) = FakeServices::new(&log);
+        let services = services.on_send(|seq, _command, feed| {
+            feed.send(Event::Worker(Answer {
+                seq,
+                outcome: Outcome::Polled(PollReport::default()),
+                state: None,
+            }))
+            .unwrap();
+            if seq == 3 {
+                post_quit(5);
+            }
+        });
+        let (inbox, _answers) = mpsc::channel();
+        let shell = ShellTray::with_area(area, inbox, Default::default());
+        let _window = window_for(
+            "test-tray-icon-retry",
+            tray(Vietnamese),
+            shell,
+            services,
+            10,
+        );
+        assert_eq!(run_loop_with_watchdog(), 5);
+        let state = icon(Vietnamese, InputMethod::Telex);
+        assert_eq!(
+            area_log.take(),
+            [AreaCall::Add(state), AreaCall::Add(state)],
+            "added at START (refused), added again at the first tick, then left alone"
+        );
+    });
+}
+
+/// A change of the icon that the shell refused (Explorer went away without
+/// `TaskbarCreated`): the next tick adds the icon again with the current state.
+#[test]
+fn an_icon_whose_change_failed_is_added_again_at_the_next_tick() {
+    on_fresh_thread(|| {
+        let area_log = AreaLog::default();
+        let area = FakeArea {
+            log: Rc::clone(&area_log),
+            adds: VecDeque::new(),
+            modifies: VecDeque::from([false]),
+        };
+        let log = Log::default();
+        let (services, _feed) = FakeServices::new(&log);
+        let services = services.on_send(|seq, command, feed| {
+            if command == WorkerCommand::Poll {
+                feed.send(Event::Worker(Answer {
+                    seq,
+                    outcome: Outcome::Polled(PollReport::default()),
+                    state: None,
+                }))
+                .unwrap();
+                post_quit(6);
+            }
+        });
+        let (inbox, _answers) = mpsc::channel();
+        let shell = ShellTray::with_area(area, inbox, Default::default());
+        let window = window_for(
+            "test-tray-icon-modify",
+            tray(Vietnamese),
+            shell,
+            services,
+            50,
+        );
+        post_icon(&window, NIN_SELECT, 0, 0);
+        assert_eq!(run_loop_with_watchdog(), 6);
+        let english = icon(English, InputMethod::Telex);
+        assert_eq!(
+            area_log.take(),
+            [
+                AreaCall::Add(icon(Vietnamese, InputMethod::Telex)),
+                AreaCall::Modify(english),
+                AreaCall::Add(english),
+            ]
+        );
     });
 }
 
@@ -566,14 +827,75 @@ fn events_from_other_threads_are_drained_after_wake() {
     });
 }
 
-/// A save error is shown in a message box; "yes" to its recovery question goes to the
-/// worker.
+/// Hotkey changes waiting together in the inbox count as the last one: one icon change, one
+/// mode for the hook, one save.
+#[test]
+fn hotkey_changes_waiting_together_are_coalesced() {
+    on_fresh_thread(|| {
+        let log = Log::default();
+        let (services, feed) = FakeServices::new(&log);
+        for vietnamese in [false, true, false] {
+            feed.send(Event::Hotkey(vietnamese)).unwrap();
+        }
+        let window = tray_window(
+            "test-tray-coalesce",
+            Vietnamese,
+            FakeShell::new(&log),
+            services,
+            NO_TICKS,
+        );
+        post(&window, WM_CLOSE, 0, 0);
+        assert_eq!(run_loop_with_watchdog(), LOOP_EXIT_CODE);
+        let mut expected = vec![
+            Call::Show(icon(Vietnamese, InputMethod::Telex)),
+            Call::Update(icon(English, InputMethod::Telex)),
+            Call::HookMode(false),
+            Call::Send(1, WorkerCommand::Apply(Change::VietnameseMode(false))),
+        ];
+        expected.extend(exit_calls());
+        assert_eq!(log.take(), expected);
+    });
+}
+
+/// Hotkey changes the hook made just before it stopped are saved at the exit, before the
+/// worker finishes.
+#[test]
+fn hotkey_changes_left_at_the_exit_are_saved_before_the_worker_finishes() {
+    on_fresh_thread(|| {
+        let log = Log::default();
+        let (services, _feed) = FakeServices::new(&log);
+        let services = services.on_stop(vec![Event::Hotkey(false), Event::Hotkey(true)]);
+        let window = window_for(
+            "test-tray-flush",
+            tray(English),
+            FakeShell::new(&log),
+            services,
+            NO_TICKS,
+        );
+        post(&window, WM_CLOSE, 0, 0);
+        assert_eq!(run_loop_with_watchdog(), LOOP_EXIT_CODE);
+        assert_eq!(
+            log.take(),
+            [
+                Call::Show(icon(English, InputMethod::Telex)),
+                Call::StopTyping,
+                Call::Dismiss,
+                Call::Send(1, WorkerCommand::Apply(Change::VietnameseMode(true))),
+                Call::FinishWorker,
+                Call::Remove,
+            ]
+        );
+    });
+}
+
+/// A save error is shown in a message box; the "yes" to its recovery question comes back
+/// through the inbox and goes to the worker.
 #[test]
 fn a_notice_is_shown_and_yes_to_its_question_reaches_the_worker() {
     on_fresh_thread(|| {
         let log = Log::default();
-        let shell = FakeShell::new(&log).answering(&[true]);
-        let (services, _feed) = FakeServices::new(&log);
+        let (services, feed) = FakeServices::new(&log);
+        let shell = FakeShell::new(&log).answering(&[true], &feed);
         // The worker cannot save over the damaged file.
         let services = services.on_send(|seq, command, feed| {
             if let WorkerCommand::Apply(change) = command {

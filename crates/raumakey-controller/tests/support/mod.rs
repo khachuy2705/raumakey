@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use raumakey_config::StartupMode;
+use raumakey_config::{ConfigError, StartupMode};
 use raumakey_controller::commands::System;
 use raumakey_controller::elevation::Elevation;
 use raumakey_controller::install::{InstallRecord, InstallSystem};
@@ -240,6 +240,7 @@ pub fn opened_settings() -> Opened {
         },
         runtime,
         startup: StartupMode::None,
+        temporary_exe: false,
     }
 }
 
@@ -407,6 +408,10 @@ pub struct FakeSystem {
     pub clipboard: FakeClipboard,
     /// The desktop of the run mode.
     pub desktop: FakeDesktop,
+    /// The startup modes saved in `raumakey.toml`, in order.
+    pub saved_startup: Vec<StartupMode>,
+    /// Saving the startup mode fails with this error.
+    pub save_startup_error: Option<ConfigError>,
     /// Every call, in order (the desktop logs its own).
     pub calls: Vec<Call>,
 }
@@ -439,6 +444,8 @@ impl Default for FakeSystem {
             task_delete_fails: false,
             clipboard: FakeClipboard::default(),
             desktop: FakeDesktop::default(),
+            saved_startup: Vec::new(),
+            save_startup_error: None,
             calls: Vec::new(),
         }
     }
@@ -701,6 +708,14 @@ impl System for FakeSystem {
 
     fn desktop(&mut self) -> &mut dyn Desktop {
         &mut self.desktop
+    }
+
+    fn save_startup_mode(&mut self, mode: StartupMode) -> Result<(), ConfigError> {
+        if let Some(error) = self.save_startup_error {
+            return Err(error);
+        }
+        self.saved_startup.push(mode);
+        Ok(())
     }
 }
 

@@ -8,7 +8,11 @@
 //!
 //! The text and caption are shown to the user and never logged. Called from a window handler,
 //! the box runs a modal loop: messages for that window that arrive meanwhile get the default
-//! processing (see [`crate::window`]).
+//! processing (see [`crate::window`]). A window thread that must go on handling its messages
+//! while a box is open shows it with `spawn_message_box` instead: the box runs on a thread of
+//! its own, its answer goes to a callback, and `DetachedMessageBox::dismiss` closes it
+//! without waiting (`dismiss_message_boxes` posts the button of
+//! [`MessageKind::dismiss_answer`] to the box).
 
 use crate::error::WinResult;
 use crate::strings::WideString;
@@ -56,6 +60,15 @@ impl MessageKind {
         };
         buttons_and_icon | styles::MB_SETFOREGROUND
     }
+
+    /// The button that closes a box of this kind without an answer of the user: No for a
+    /// question (it has no Cancel button, so `WM_CLOSE` and Esc do not close it), OK otherwise.
+    pub const fn dismiss_answer(self) -> MessageResponse {
+        match self {
+            Self::Question => MessageResponse::No,
+            Self::Information | Self::Warning | Self::Error => MessageResponse::Ok,
+        }
+    }
 }
 
 /// The button that closed a message box. Boxes with only an OK button also answer `Ok` when
@@ -79,6 +92,15 @@ impl MessageResponse {
             6 => Some(Self::Yes),
             7 => Some(Self::No),
             _ => None,
+        }
+    }
+
+    /// The button's id (`IDOK`, `IDYES`, `IDNO`), as `MessageBoxW` returns it.
+    pub const fn id(self) -> i32 {
+        match self {
+            Self::Ok => 1,
+            Self::Yes => 6,
+            Self::No => 7,
         }
     }
 }
@@ -123,4 +145,157 @@ pub fn message_box(
         return Err(WinError::last("MessageBoxW"));
     }
     MessageResponse::from_id(answer.0).ok_or(WinError::new(E_UNEXPECTED, "MessageBoxW answer"))
+}
+
+#[cfg(windows)]
+pub use detached::{DetachedMessageBox, dismiss_message_boxes, spawn_message_box};
+
+#[cfg(windows)]
+mod detached {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumThreadWindows, GetClassNameW, PostMessageW, WM_COMMAND,
+    };
+    use windows::core::BOOL;
+
+    use super::{MessageKind, MessageResponse, message_box, message_box_texts};
+    use crate::error::{WinError, WinResult};
+    use crate::panic::{guard_bool, guard_value};
+
+    /// The window class of dialog boxes, which message boxes are.
+    const DIALOG_CLASS: &str = "#32770";
+
+    /// Name of the threads that show detached boxes.
+    const THREAD_NAME: &str = "raumakey-message-box";
+
+    /// What the box's thread and its owner share.
+    #[derive(Debug)]
+    struct Shared {
+        kind: MessageKind,
+        /// The id of the box's thread, once it runs (0 before).
+        thread_id: AtomicU32,
+        /// The owner dismissed it: a box not shown yet is never shown.
+        dismissed: AtomicBool,
+        /// The box was closed (or never shown).
+        closed: AtomicBool,
+    }
+
+    /// A message box shown on a thread of its own ([`spawn_message_box`]).
+    ///
+    /// Dropping it leaves the box open; [`dismiss`](Self::dismiss) closes it.
+    #[derive(Debug)]
+    pub struct DetachedMessageBox {
+        shared: Arc<Shared>,
+    }
+
+    impl DetachedMessageBox {
+        /// True once the box was closed, by the user or by [`dismiss`](Self::dismiss), or
+        /// when it could not be shown.
+        pub fn is_closed(&self) -> bool {
+            self.shared.closed.load(Ordering::Acquire)
+        }
+
+        /// Closes the box without waiting: posts the button of
+        /// [`MessageKind::dismiss_answer`] to it ([`dismiss_message_boxes`]). A box whose
+        /// thread has not shown it yet is not shown at all. A box that its thread is creating
+        /// at this very moment may stay open; it closes with the process.
+        pub fn dismiss(&self) {
+            self.shared.dismissed.store(true, Ordering::Release);
+            let thread_id = self.shared.thread_id.load(Ordering::Acquire);
+            if thread_id != 0 && !self.is_closed() {
+                dismiss_message_boxes(thread_id, self.shared.kind.dismiss_answer());
+            }
+        }
+    }
+
+    /// Shows a message box without an owner on a new thread and returns at once; when the box
+    /// closes, `on_close` gets the answer on that thread (`None` when it was dismissed before
+    /// it was shown, or could not be shown). Fails with `E_INVALIDARG`, before any thread
+    /// starts, when `text` or `caption` contains a NUL, and fails when the thread cannot
+    /// start.
+    pub fn spawn_message_box(
+        text: &str,
+        caption: &str,
+        kind: MessageKind,
+        on_close: impl FnOnce(Option<MessageResponse>) + Send + 'static,
+    ) -> WinResult<DetachedMessageBox> {
+        message_box_texts(text, caption)?;
+        let shared = Arc::new(Shared {
+            kind,
+            thread_id: AtomicU32::new(0),
+            dismissed: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+        });
+        let text = text.to_owned();
+        let caption = caption.to_owned();
+        let on_thread = Arc::clone(&shared);
+        std::thread::Builder::new()
+            .name(THREAD_NAME.to_owned())
+            .spawn(move || {
+                // SAFETY: no preconditions.
+                let thread_id = unsafe { GetCurrentThreadId() };
+                on_thread.thread_id.store(thread_id, Ordering::Release);
+                let answer = if on_thread.dismissed.load(Ordering::Acquire) {
+                    None
+                } else {
+                    guard_value(None, || message_box(None, &text, &caption, kind).ok())
+                };
+                on_thread.closed.store(true, Ordering::Release);
+                guard_value((), || on_close(answer));
+            })
+            .map_err(|error| WinError::from_io(&error, "message box thread"))?;
+        Ok(DetachedMessageBox { shared })
+    }
+
+    /// What the enumeration of [`dismiss_message_boxes`] carries.
+    struct Dismissal {
+        command: usize,
+        posted: usize,
+    }
+
+    /// Posts the button `answer` (`WM_COMMAND`) to every dialog window (class `#32770`, as a
+    /// message box is) of thread `thread_id`, and returns how many it posted to. Never waits.
+    pub fn dismiss_message_boxes(thread_id: u32, answer: MessageResponse) -> usize {
+        let mut dismissal = Dismissal {
+            command: answer.id() as usize,
+            posted: 0,
+        };
+        // SAFETY: the callback runs during the call only and receives a pointer to
+        // `dismissal`, which outlives the call; it is never kept.
+        let _ = unsafe {
+            EnumThreadWindows(
+                thread_id,
+                Some(dismiss_window),
+                LPARAM(&mut dismissal as *mut Dismissal as isize),
+            )
+        };
+        dismissal.posted
+    }
+
+    /// The callback of [`dismiss_message_boxes`]: posts the command to a dialog window.
+    unsafe extern "system" fn dismiss_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        guard_bool(|| {
+            // SAFETY: `lparam` is the `Dismissal` of the enumeration that calls this.
+            let dismissal = unsafe { &mut *(lparam.0 as *mut Dismissal) };
+            let mut class = [0_u16; 16];
+            // SAFETY: the buffer is writable for its whole length; USER validates `hwnd`.
+            let len = unsafe { GetClassNameW(hwnd, &mut class) };
+            let len = usize::try_from(len).unwrap_or(0).min(class.len());
+            if String::from_utf16_lossy(&class[..len]) == DIALOG_CLASS {
+                // SAFETY: posts plain values (the button id, no pointers) to a window of this
+                // process.
+                let posted = unsafe {
+                    PostMessageW(Some(hwnd), WM_COMMAND, WPARAM(dismissal.command), LPARAM(0))
+                };
+                if posted.is_ok() {
+                    dismissal.posted += 1;
+                }
+            }
+            true
+        })
+    }
 }

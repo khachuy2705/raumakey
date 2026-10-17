@@ -74,7 +74,8 @@ Usage:
       How Raumakey starts at logon: none (it does not), shortcut (a shortcut in your
       Startup folder), or elevated-task (a scheduled task that starts it with administrator
       rights at your logon; asks for administrator rights, and raumakey.exe must be in a
-      folder that only administrators can change, such as Program Files).
+      folder that only administrators can change, such as Program Files). The choice is
+      also saved in raumakey.toml, where the tray menu shows it.
   raumakey convert --from <charset> --to <charset> (--in <file> --out <file> [--overwrite] | --clipboard)
       Converts Vietnamese text from one charset to another: a file into a new file
       (--overwrite replaces an existing one), or the text on the clipboard.

@@ -84,6 +84,17 @@ fn is_drive_path(text: &str) -> bool {
     }
 }
 
+/// Saves `[system] startup` = `mode` in the `raumakey.toml` of the running `raumakey.exe`,
+/// found by the same rule as the run mode (`Settings::open_for_current_exe`, D40; on a first
+/// run this writes the defaults first). A running controller picks the change up at its next
+/// poll.
+fn save_startup_mode(
+    mode: raumakey_config::StartupMode,
+) -> Result<(), raumakey_config::ConfigError> {
+    let (mut settings, _) = crate::settings::Settings::open_for_current_exe();
+    settings.apply(crate::settings::Change::Startup(mode))
+}
+
 /// For a subcommand of the GUI-subsystem `raumakey.exe`: when standard output or standard
 /// error is missing, attaches to the console of the parent process, so that the output and the
 /// exit code reach the caller. Redirected output keeps its target. Does nothing elsewhere.
@@ -100,6 +111,7 @@ mod win {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
+    use raumakey_config::{ConfigError, StartupMode};
     use raumakey_converter::ClipboardPort;
     use raumakey_model::identity::Guid;
     use raumakey_windows::clipboard::WinClipboard;
@@ -358,6 +370,10 @@ mod win {
         fn desktop(&mut self) -> &mut dyn Desktop {
             &mut self.desktop
         }
+
+        fn save_startup_mode(&mut self, mode: StartupMode) -> Result<(), ConfigError> {
+            super::save_startup_mode(mode)
+        }
     }
 }
 
@@ -365,6 +381,7 @@ mod win {
 mod other {
     use std::path::{Path, PathBuf};
 
+    use raumakey_config::{ConfigError, StartupMode};
     use raumakey_converter::{ClipboardError, ClipboardPort, ClipboardText};
     use raumakey_model::identity::Guid;
     use raumakey_windows::error::{E_NOTIMPL, WinError, WinResult};
@@ -398,6 +415,7 @@ mod other {
                 report,
                 runtime: settings.runtime_snapshot().clone(),
                 startup: settings.document().system.startup,
+                temporary_exe: false,
             }
         }
 
@@ -549,6 +567,10 @@ mod other {
 
         fn desktop(&mut self) -> &mut dyn Desktop {
             &mut self.desktop
+        }
+
+        fn save_startup_mode(&mut self, mode: StartupMode) -> Result<(), ConfigError> {
+            super::save_startup_mode(mode)
         }
     }
 }

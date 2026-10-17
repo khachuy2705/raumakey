@@ -43,7 +43,9 @@
 //!   commit reports a conflict, because the file was edited by hand or by another writer since
 //!   it was loaded, the file is loaded again, the change is applied again on what it holds, and
 //!   the commit is retried (up to three times). A change takes effect even when it cannot be
-//!   saved; the error says why it was not.
+//!   saved; the error says why it was not. Such a change is kept: it stays in effect over
+//!   later reloads, the next commit writes it, and [`Settings::save_unsaved`] retries it
+//!   (the worker does at every poll and before it ends).
 //! - **Hand edits.** [`Settings::poll`] (called every two seconds) notices a file that changed
 //!   on disk, even without a new revision, loads it again, and returns the new snapshots
 //!   ([`Reloaded`]). A file whose last read failed in a way that may pass (another program
@@ -419,6 +421,9 @@ pub struct Settings {
     runtime: RuntimeSnapshot,
     macros: Arc<MacroSnapshot>,
     status: Status,
+    /// Changes in effect that no commit has written yet, the last of each setting
+    /// ([`Settings::save_unsaved`]).
+    unsaved: Vec<Change>,
 }
 
 impl fmt::Debug for Settings {
@@ -430,6 +435,7 @@ impl fmt::Debug for Settings {
             .field("vietnamese_mode", &self.config.input.enabled)
             .field("macros", &self.macros)
             .field("status", &self.status)
+            .field("unsaved", &self.unsaved.len())
             .finish_non_exhaustive()
     }
 }
@@ -518,6 +524,7 @@ impl Settings {
             runtime: RuntimeSnapshot::defaults_v1(),
             macros: Arc::new(MacroSnapshot::empty(0)),
             status: Status::NOTHING,
+            unsaved: Vec::new(),
         };
         match read(&stores.macros) {
             Read::Found(loaded) => settings.install_macros(loaded),
@@ -567,6 +574,7 @@ impl Settings {
             runtime: RuntimeSnapshot::defaults_v1(),
             macros: Arc::new(MacroSnapshot::empty(0)),
             status: Status::NOTHING,
+            unsaved: Vec::new(),
         };
         settings.rebuild();
         settings
@@ -621,12 +629,59 @@ impl Settings {
     /// - [`ConfigError::NotFound`]: [`Location::Unavailable`], nothing can be saved.
     /// - [`ConfigError::PermissionDenied`], [`ConfigError::IoFailure`]: the file could not be
     ///   written (or read again after a conflict).
+    ///
+    /// A change that could not be saved is kept ([`Settings::has_unsaved`]): it stays in effect
+    /// over later reloads, the next commit writes it with its own change, and
+    /// [`Settings::save_unsaved`] retries it. Without a folder ([`Location::Unavailable`])
+    /// nothing is kept, since nothing can ever be saved.
     pub fn apply(&mut self, change: Change) -> Result<(), ConfigError> {
         if change.holds_in(&self.config) {
             return Ok(());
         }
         change.apply_to(&mut self.config);
         self.rebuild();
+        if self.stores.is_none() {
+            return Err(ConfigError::NotFound);
+        }
+        self.remember(change);
+        self.commit_unsaved()
+    }
+
+    /// Whether a change in effect was not saved yet (see [`Settings::apply`]).
+    pub fn has_unsaved(&self) -> bool {
+        !self.unsaved.is_empty()
+    }
+
+    /// Commits the changes that could not be saved before, on what the file holds now:
+    /// `Ok(true)` when they were written, `Ok(false)` when there were none. On failure they
+    /// stay in effect and are kept for the next try. The worker calls this at every poll and
+    /// before it ends.
+    pub fn save_unsaved(&mut self) -> Result<bool, ConfigError> {
+        if self.unsaved.is_empty() {
+            return Ok(false);
+        }
+        self.commit_unsaved().map(|()| true)
+    }
+
+    /// Keeps `change` as unsaved, replacing an earlier change of the same setting.
+    fn remember(&mut self, change: Change) {
+        let kind = core::mem::discriminant(&change);
+        self.unsaved
+            .retain(|kept| core::mem::discriminant(kept) != kind);
+        self.unsaved.push(change);
+    }
+
+    /// Applies the unsaved changes on the document in effect (after a reload).
+    fn apply_unsaved(&mut self) {
+        for change in &self.unsaved {
+            change.apply_to(&mut self.config);
+        }
+    }
+
+    /// Commits the settings in effect, which hold every unsaved change. When the commit
+    /// reports a conflict, the file is loaded again, the unsaved changes are applied again on
+    /// what it holds, and the commit is retried (up to three times). Success clears them.
+    fn commit_unsaved(&mut self) -> Result<(), ConfigError> {
         let mut retries = 0;
         loop {
             let Some(stores) = self.stores.as_ref() else {
@@ -655,16 +710,21 @@ impl Settings {
                     self.config_read = DocumentStatus::Missing;
                 }
                 Read::Failed(error) => {
-                    // The settings in effect (with the change) stay; the file is kept.
+                    // The settings in effect (with the changes) stay; the file is kept.
                     self.config_read = DocumentStatus::Unreadable(error);
                     self.rebuild();
                     return Err(error);
                 }
             }
-            let holds = change.holds_in(&self.config);
-            change.apply_to(&mut self.config);
+            let holds = self
+                .unsaved
+                .iter()
+                .all(|change| change.holds_in(&self.config));
+            self.apply_unsaved();
             self.rebuild();
             if holds {
+                // The file holds them already: nothing is left to write.
+                self.unsaved.clear();
                 return Ok(());
             }
         }
@@ -695,11 +755,14 @@ impl Settings {
                 self.config_read = DocumentStatus::Loaded {
                     issues: loaded.issues,
                 };
+                // Changes not saved yet stay in effect on the edited file.
+                self.apply_unsaved();
                 runtime_changed = true;
             }
             Some(Read::Missing) => {
                 self.config = ConfigDocument::defaults();
                 self.config_read = DocumentStatus::Missing;
+                self.apply_unsaved();
                 runtime_changed = true;
             }
             Some(Read::Failed(error)) => {
@@ -778,6 +841,7 @@ impl Settings {
                 self.config_read = DocumentStatus::Loaded {
                     issues: loaded.issues,
                 };
+                self.apply_unsaved();
                 self.rebuild();
                 return Ok(Recovery::Adopted);
             }
@@ -801,6 +865,8 @@ impl Settings {
     /// `raumakey.toml` now holds [`Settings::document`] as `revision`: its status becomes what
     /// a load of that file would report.
     fn committed(&mut self, revision: u64) {
+        // The commit wrote the whole document in effect, unsaved changes included.
+        self.unsaved.clear();
         self.config.revision = revision;
         self.config_read = DocumentStatus::Loaded {
             issues: committed_issues(&self.config),
@@ -978,6 +1044,28 @@ pub fn is_protected_dir(dir: &Path) -> bool {
             let file = dir.join(ConfigDocument::FILE_NAME);
             folders.iter().any(|folder| is_inside_folder(&file, folder))
         })
+}
+
+/// Whether `path` (such as the running `raumakey.exe`) lies inside the user's temporary folder
+/// ([`std::env::temp_dir`]), where Explorer runs an executable from inside a ZIP and deletes it
+/// later: a Startup shortcut to it would soon start nothing (D41). Compared like
+/// [`is_protected_dir`], as given and in canonical form; a relative or empty path is not
+/// temporary.
+pub fn is_temporary_path(path: &Path) -> bool {
+    let temp = std::env::temp_dir();
+    let folders: Vec<PathBuf> = [Some(temp.clone()), canonical(&temp)]
+        .into_iter()
+        .flatten()
+        .collect();
+    let parent_resolved = path
+        .parent()
+        .and_then(canonical)
+        .zip(path.file_name())
+        .map(|(dir, name)| dir.join(name));
+    [Some(path.to_path_buf()), parent_resolved]
+        .into_iter()
+        .flatten()
+        .any(|path| folders.iter().any(|folder| is_inside_folder(&path, folder)))
 }
 
 /// `path` with links and short names resolved and without the `\\?\` prefix; `None` when it

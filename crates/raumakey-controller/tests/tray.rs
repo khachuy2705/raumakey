@@ -9,17 +9,19 @@ use std::path::PathBuf;
 use raumakey_config::{ConfigError, StartupMode};
 use raumakey_controller::notice::{
     Notice, NoticeKind, Question, about_notice, elevated_task_notice, open_error_notice,
-    recovery_notice, save_error_notice, startup_error_notice, status_notice,
+    recovery_notice, save_error_notice, startup_error_notice, status_notice, temporary_exe_notice,
 };
 use raumakey_controller::settings::{Change, DocumentStatus, Location, Recovery, Settings, Status};
 use raumakey_controller::tray::{
     Effect, Event, IconState, InputMode, LOOP_EXIT_CODE, MENU_ABOUT, MENU_EXIT, MENU_MACROS,
     MENU_MODERN_TONE, MENU_OPEN_CONFIG, MENU_SPELL_CHECK, MENU_STARTUP, MENU_TELEX,
     MENU_VIETNAMESE_MODE, MENU_VIQR, MENU_VNI, POLL_INTERVAL_MS, POLL_TIMER, Reply, START,
-    TOOLTIP_ENGLISH, TRAY_CALLBACK, TRAY_ICON_ID, Tray, TrayCommand, TrayStart, WAKE, with_change,
+    TOOLTIP_ENGLISH, TRAY_CALLBACK, TRAY_ICON_ID, Tray, TrayCommand, TrayStart, WAKE, coalesce,
+    with_change,
 };
 use raumakey_controller::worker::{
-    Answer, OpenError, Outcome, SettingsState, StartupError, WorkerCommand,
+    Answer, OpenError, Outcome, PollReport, Saved, SettingsState, ShortcutSync, StartupError,
+    WorkerCommand,
 };
 use raumakey_ipc::message::RuntimeSnapshot;
 use raumakey_model::options::InputMethod;
@@ -84,7 +86,28 @@ fn start(mode: InputMode) -> TrayStart {
         config_path: Some(config_path()),
         status: clean(),
         notices: Vec::new(),
+        temporary_exe: false,
     }
+}
+
+/// The effects of an exit, in order.
+fn exit_effects() -> Vec<Effect> {
+    vec![
+        Effect::StopTyping,
+        Effect::DismissNotices,
+        Effect::FlushHotkeys,
+        Effect::FinishWorker,
+        Effect::RemoveIcon,
+        Effect::EndLoop,
+    ]
+}
+
+/// A poll that reloaded files, which are now in `status`.
+fn polled(status: Status) -> Outcome {
+    Outcome::Polled(PollReport {
+        status: Some(status),
+        ..PollReport::default()
+    })
 }
 
 /// The icon's callback message (`NOTIFYICON_VERSION_4`): the anchor in `wParam`, the
@@ -172,7 +195,7 @@ fn state(runtime: RuntimeSnapshot, startup: StartupMode) -> SettingsState {
     SettingsState { runtime, startup }
 }
 
-fn applied(change: Change, result: Result<(), ConfigError>) -> Outcome {
+fn applied(change: Change, result: Result<Saved, ConfigError>) -> Outcome {
     Outcome::Applied { change, result }
 }
 
@@ -410,6 +433,71 @@ fn yes_to_the_recovery_question_sends_recover_to_the_worker() {
     assert_eq!(
         tray.answered_yes(Question::Recover),
         [worker(1, WorkerCommand::Recover)]
+    );
+}
+
+/// Message boxes run on threads of their own: a "yes" arrives later, through the inbox.
+#[test]
+fn a_yes_from_a_message_box_arrives_as_an_event() {
+    let mut tray = running(Vietnamese);
+    assert_eq!(
+        tray.on_event(Event::Answered(Question::Recover)),
+        [worker(1, WorkerCommand::Recover)]
+    );
+    // After an exit nothing acts on it any more.
+    choose(&mut tray, TrayCommand::Exit);
+    assert_eq!(tray.on_event(Event::Answered(Question::Recover)), []);
+}
+
+/// Several hotkey changes waiting in the inbox count as their last one; other events keep
+/// their order.
+#[test]
+fn hotkey_events_are_coalesced_to_the_last_one() {
+    let poll = Event::Worker(Answer {
+        seq: 1,
+        outcome: Outcome::Polled(PollReport::default()),
+        state: None,
+    });
+    assert_eq!(
+        coalesce(vec![
+            Event::Hotkey(false),
+            poll.clone(),
+            Event::Hotkey(true),
+            Event::Answered(Question::Recover),
+            Event::Hotkey(false),
+        ]),
+        [
+            poll.clone(),
+            Event::Answered(Question::Recover),
+            Event::Hotkey(false)
+        ]
+    );
+    assert_eq!(coalesce(vec![poll.clone()]), [poll]);
+    assert_eq!(coalesce(Vec::new()), []);
+}
+
+/// At exit the hotkey changes still in the inbox are saved (the last one); nothing else of
+/// the inbox acts any more.
+#[test]
+fn exit_saves_the_last_hotkey_change_left_in_the_inbox() {
+    let mut tray = running(Vietnamese);
+    assert_eq!(choose(&mut tray, TrayCommand::Exit), exit_effects());
+    assert_eq!(
+        tray.flush_hotkeys(vec![
+            Event::Hotkey(false),
+            Event::Answered(Question::Recover),
+            Event::Hotkey(true),
+            Event::Hotkey(false),
+        ]),
+        [worker(
+            1,
+            WorkerCommand::Apply(Change::VietnameseMode(false))
+        )]
+    );
+    assert_eq!(tray.mode(), English);
+    assert_eq!(
+        tray.flush_hotkeys(vec![Event::Answered(Question::Recover)]),
+        []
     );
 }
 
@@ -654,6 +742,30 @@ fn startup_on_and_off_go_to_the_worker() {
     assert_eq!(tray.startup(), StartupMode::None);
 }
 
+/// From the temporary folder (inside a ZIP) the start with Windows is refused with the
+/// request to extract Raumakey first; nothing changes. Turning a saved shortcut off still
+/// works.
+#[test]
+fn startup_from_the_temporary_folder_asks_to_extract_raumakey_first() {
+    let mut settings = start(Vietnamese);
+    settings.temporary_exe = true;
+    let mut tray = running_with(settings);
+    assert_eq!(
+        choose(&mut tray, TrayCommand::Startup),
+        [Effect::Notify(temporary_exe_notice())]
+    );
+    assert_eq!(tray.startup(), StartupMode::None);
+    assert!(!checked(&tray, TrayCommand::Startup));
+    let mut settings = start(Vietnamese);
+    settings.temporary_exe = true;
+    settings.startup = StartupMode::Shortcut;
+    let mut tray = running_with(settings);
+    assert_eq!(
+        choose(&mut tray, TrayCommand::Startup),
+        [worker(1, WorkerCommand::Startup(false))]
+    );
+}
+
 /// The elevated logon task needs administrator rights: the menu only explains.
 #[test]
 fn turning_off_the_elevated_task_explains_the_elevated_command_line() {
@@ -702,14 +814,23 @@ fn a_dismissed_menu_or_an_unknown_command_changes_nothing() {
     assert!(tray.ends_loop_when_dropped());
 }
 
-/// Exit stops the hook first (typing is plain at once), then removes the icon, then ends the
-/// loop (the glue lets the worker finish what was sent first).
+/// Exit stops the hook first (typing is plain at once), closes the open notices without
+/// waiting for them, saves the hotkey changes left in the inbox, lets the worker finish, and
+/// only then removes the icon and ends the loop.
 #[test]
-fn exit_stops_the_hook_removes_the_icon_and_ends_the_loop() {
+fn exit_stops_the_hook_finishes_the_worker_then_removes_the_icon() {
     let mut tray = running(Vietnamese);
+    assert_eq!(choose(&mut tray, TrayCommand::Exit), exit_effects());
     assert_eq!(
-        choose(&mut tray, TrayCommand::Exit),
-        [Effect::StopTyping, Effect::RemoveIcon, Effect::EndLoop]
+        exit_effects(),
+        [
+            Effect::StopTyping,
+            Effect::DismissNotices,
+            Effect::FlushHotkeys,
+            Effect::FinishWorker,
+            Effect::RemoveIcon,
+            Effect::EndLoop,
+        ]
     );
     assert!(!tray.ends_loop_when_dropped(), "Exit ends the loop itself");
     assert!(!tray.is_running());
@@ -750,25 +871,14 @@ fn close_and_the_end_of_the_session_exit_like_the_menu() {
         let mut tray = running(English);
         assert_eq!(
             send(&mut tray, message),
-            answered(vec![
-                Effect::StopTyping,
-                Effect::RemoveIcon,
-                Effect::EndLoop
-            ]),
+            answered(exit_effects()),
             "{message:x?}"
         );
         assert!(!tray.ends_loop_when_dropped());
     }
     // Before the start too; the start then adds no icon.
     let mut tray = Tray::new(start(Vietnamese), TASKBAR_CREATED);
-    assert_eq!(
-        tray.on_message(WM_CLOSE, 0, 0),
-        answered(vec![
-            Effect::StopTyping,
-            Effect::RemoveIcon,
-            Effect::EndLoop
-        ])
-    );
+    assert_eq!(tray.on_message(WM_CLOSE, 0, 0), answered(exit_effects()));
     assert_eq!(tray.on_message(START.id(), 0, 0), answered(Vec::new()));
 }
 
@@ -814,24 +924,41 @@ fn the_timer_asks_the_worker_to_poll_once_at_a_time() {
     assert_eq!(POLL_INTERVAL_MS, 2_000);
     assert_ne!(POLL_TIMER, 0);
     let mut tray = running(Vietnamese);
+    let shown = Effect::EnsureIcon(icon(Vietnamese, InputMethod::Telex));
     assert_eq!(
         send(&mut tray, tick()),
-        answered(vec![worker(1, WorkerCommand::Poll)])
+        answered(vec![shown.clone(), worker(1, WorkerCommand::Poll)])
     );
-    assert_eq!(send(&mut tray, tick()), answered(Vec::new()));
-    assert_eq!(tray.on_event(answer(1, Outcome::Polled(None), None)), []);
+    assert_eq!(send(&mut tray, tick()), answered(vec![shown.clone()]));
+    assert_eq!(
+        tray.on_event(answer(1, Outcome::Polled(PollReport::default()), None)),
+        []
+    );
     assert_eq!(
         send(&mut tray, tick()),
-        answered(vec![worker(2, WorkerCommand::Poll)])
+        answered(vec![shown.clone(), worker(2, WorkerCommand::Poll)])
     );
     // A command that panicked frees the poll as well.
     assert_eq!(tray.on_event(answer(2, Outcome::Failed, None)), []);
     assert_eq!(
         send(&mut tray, tick()),
-        answered(vec![worker(3, WorkerCommand::Poll)])
+        answered(vec![shown, worker(3, WorkerCommand::Poll)])
     );
     // Another timer of the window is not the poll timer.
     assert_eq!(tray.on_message(WM_TIMER, POLL_TIMER + 1, 0), default());
+}
+
+/// Every tick makes sure the icon is shown: an icon that could not be added (no taskbar yet)
+/// or whose change failed is added again, in the state the tray shows now.
+#[test]
+fn every_tick_makes_sure_the_icon_is_shown() {
+    let mut tray = running(Vietnamese);
+    send(&mut tray, click());
+    let effects = send(&mut tray, tick()).effects;
+    assert_eq!(
+        effects[0],
+        Effect::EnsureIcon(icon(English, InputMethod::Telex))
+    );
 }
 
 /// The worker and the hook observer post `WAKE` after leaving something in the inbox; the
@@ -855,7 +982,7 @@ fn a_reload_refreshes_the_tray_and_hands_the_new_snapshot_to_the_hook() {
     edited.options.input_method = InputMethod::Viqr;
     let effects = tray.on_event(answer(
         1,
-        Outcome::Polled(Some(clean())),
+        polled(clean()),
         Some(state(edited.clone(), StartupMode::Shortcut)),
     ));
     assert_eq!(
@@ -883,7 +1010,7 @@ fn settings_that_differ_only_in_revision_change_nothing_for_the_hook() {
     assert_eq!(
         tray.on_event(answer(
             1,
-            applied(change, Ok(())),
+            applied(change, Ok(Saved::Written)),
             Some(state(saved.clone(), StartupMode::None))
         )),
         []
@@ -903,7 +1030,7 @@ fn an_answer_older_than_the_last_command_does_not_undo_a_change() {
     assert_eq!(
         tray.on_event(answer(
             1,
-            Outcome::Polled(Some(clean())),
+            polled(clean()),
             Some(state(stale, StartupMode::None))
         )),
         []
@@ -918,7 +1045,7 @@ fn an_answer_older_than_the_last_command_does_not_undo_a_change() {
     assert_eq!(
         tray.on_event(answer(
             2,
-            applied(change, Ok(())),
+            applied(change, Ok(Saved::Written)),
             Some(state(current.clone(), StartupMode::None))
         )),
         [hook_runtime(current)]
@@ -937,7 +1064,7 @@ fn a_reload_overtaken_by_another_command_arrives_with_that_command_s_answer() {
     edited.options.input_method = InputMethod::Vni;
     let reloaded = Some(state(edited.clone(), StartupMode::None));
     assert_eq!(
-        tray.on_event(answer(1, Outcome::Polled(Some(clean())), reloaded.clone())),
+        tray.on_event(answer(1, polled(clean()), reloaded.clone())),
         []
     );
     assert_eq!(
@@ -979,7 +1106,11 @@ fn a_save_error_is_shown_once_and_the_change_stays() {
     // Once a save works again, a new failure is shown again.
     choose(&mut tray, TrayCommand::Macros);
     assert_eq!(
-        tray.on_event(answer(3, applied(Change::Macros(false), Ok(())), None)),
+        tray.on_event(answer(
+            3,
+            applied(Change::Macros(false), Ok(Saved::Written)),
+            None
+        )),
         []
     );
     choose(&mut tray, TrayCommand::Macros);
@@ -1052,6 +1183,134 @@ fn a_shortcut_that_could_not_be_made_is_shown_and_the_check_follows_the_worker()
     assert!(!checked(&tray, TrayCommand::Startup));
 }
 
+/// An answer that wrote nothing is no save that worked: the same failure stays told.
+#[test]
+fn an_answer_that_wrote_nothing_does_not_count_as_a_save() {
+    let mut tray = running(Vietnamese);
+    let denied = Err(ConfigError::PermissionDenied);
+    choose(&mut tray, TrayCommand::SpellCheck);
+    let told = tray.on_event(answer(1, applied(Change::SpellCheck(false), denied), None));
+    assert_eq!(told.len(), 1);
+    choose(&mut tray, TrayCommand::Telex);
+    choose(&mut tray, TrayCommand::Vni);
+    assert_eq!(
+        tray.on_event(answer(
+            2,
+            applied(Change::InputMethod(InputMethod::Vni), Ok(Saved::Unchanged)),
+            None
+        )),
+        []
+    );
+    choose(&mut tray, TrayCommand::Macros);
+    assert_eq!(
+        tray.on_event(answer(3, applied(Change::Macros(false), denied), None)),
+        [],
+        "still the same failure"
+    );
+}
+
+/// The poll retries what could not be saved: a retry that worked counts as a save, one that
+/// fails again the same way is not told again.
+#[test]
+fn a_poll_retry_counts_as_a_save_when_it_worked() {
+    let mut tray = running(Vietnamese);
+    let denied = Err(ConfigError::PermissionDenied);
+    choose(&mut tray, TrayCommand::SpellCheck);
+    assert_eq!(
+        tray.on_event(answer(1, applied(Change::SpellCheck(false), denied), None))
+            .len(),
+        1
+    );
+    send(&mut tray, tick());
+    let retried = |result| {
+        Outcome::Polled(PollReport {
+            retry: Some(result),
+            ..PollReport::default()
+        })
+    };
+    assert_eq!(
+        tray.on_event(answer(2, retried(Err(ConfigError::PermissionDenied)), None)),
+        []
+    );
+    send(&mut tray, tick());
+    assert_eq!(tray.on_event(answer(3, retried(Ok(())), None)), []);
+    // Told again after the retry worked.
+    choose(&mut tray, TrayCommand::Macros);
+    assert_eq!(
+        tray.on_event(answer(4, applied(Change::Macros(false), denied), None))
+            .len(),
+        1
+    );
+}
+
+/// A startup choice whose shortcut was set but which could not be saved is told once, with
+/// the text of the shortcut.
+#[test]
+fn a_startup_choice_that_was_not_saved_is_told_once_with_its_own_text() {
+    let mut tray = running(Vietnamese);
+    choose(&mut tray, TrayCommand::Startup);
+    let error = StartupError::Save(ConfigError::IoFailure);
+    let outcome = Outcome::Startup {
+        on: true,
+        result: Err(error),
+    };
+    assert_eq!(
+        tray.on_event(answer(1, outcome.clone(), None)),
+        [Effect::Notify(startup_error_notice(
+            Some(&config_path()),
+            true,
+            error
+        ))]
+    );
+    choose(&mut tray, TrayCommand::Startup);
+    choose(&mut tray, TrayCommand::Startup);
+    assert_eq!(tray.on_event(answer(3, outcome, None)), []);
+}
+
+/// A hand edit of `[system] startup` that the worker could not follow is told: the temporary
+/// folder, or a shortcut that could not be made or removed.
+#[test]
+fn a_hand_edited_startup_that_could_not_be_followed_is_told() {
+    let mut tray = running(Vietnamese);
+    let report = |shortcut| {
+        Outcome::Polled(PollReport {
+            status: Some(clean()),
+            shortcut: Some(shortcut),
+            retry: None,
+        })
+    };
+    send(&mut tray, tick());
+    assert_eq!(
+        tray.on_event(answer(1, report(ShortcutSync::RefusedTemporary), None)),
+        [Effect::Notify(temporary_exe_notice())]
+    );
+    send(&mut tray, tick());
+    let error = WinError::new(E_ACCESSDENIED, "IPersistFile::Save");
+    assert_eq!(
+        tray.on_event(answer(
+            2,
+            report(ShortcutSync::Failed { on: false, error }),
+            None
+        )),
+        [Effect::Notify(startup_error_notice(
+            Some(&config_path()),
+            false,
+            StartupError::Shortcut(error)
+        ))]
+    );
+    for quiet in [
+        ShortcutSync::Created,
+        ShortcutSync::Removed,
+        ShortcutSync::Unchanged,
+    ] {
+        assert_eq!(
+            tray.on_event(answer(99, report(quiet), None)),
+            [],
+            "{quiet:?}"
+        );
+    }
+}
+
 #[test]
 fn opening_the_configuration_reports_a_missing_file() {
     let mut tray = running(Vietnamese);
@@ -1079,7 +1338,7 @@ fn a_reload_tells_new_problems_once() {
     send(&mut tray, tick());
     let effects = tray.on_event(answer(
         1,
-        Outcome::Polled(Some(damaged.clone())),
+        polled(damaged.clone()),
         Some(state(tray.runtime().clone(), StartupMode::None)),
     ));
     assert_eq!(
@@ -1093,7 +1352,7 @@ fn a_reload_tells_new_problems_once() {
     assert_eq!(
         tray.on_event(answer(
             2,
-            Outcome::Polled(Some(clean())),
+            polled(clean()),
             Some(state(tray.runtime().clone(), StartupMode::None))
         )),
         []
@@ -1102,7 +1361,7 @@ fn a_reload_tells_new_problems_once() {
     assert_eq!(
         tray.on_event(answer(
             3,
-            Outcome::Polled(Some(damaged.clone())),
+            polled(damaged.clone()),
             Some(state(tray.runtime().clone(), StartupMode::None))
         ))
         .len(),
@@ -1116,7 +1375,7 @@ fn a_reload_tells_new_problems_once() {
     assert_eq!(
         tray.on_event(answer(
             1,
-            Outcome::Polled(Some(damaged)),
+            polled(damaged),
             Some(state(tray.runtime().clone(), StartupMode::None))
         )),
         []
@@ -1163,14 +1422,7 @@ fn only_a_registered_message_number_is_taken_for_taskbar_created() {
     assert_eq!(tray.on_message(0x1_0000, 0, 0), default());
     let mut tray = Tray::new(start(Vietnamese), WM_CLOSE);
     tray.on_message(START.id(), 0, 0);
-    assert_eq!(
-        tray.on_message(WM_CLOSE, 0, 0),
-        answered(vec![
-            Effect::StopTyping,
-            Effect::RemoveIcon,
-            Effect::EndLoop
-        ])
-    );
+    assert_eq!(tray.on_message(WM_CLOSE, 0, 0), answered(exit_effects()));
 }
 
 #[test]

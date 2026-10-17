@@ -6,6 +6,9 @@
 //! - Without arguments, `raumakey.exe` runs the controller on the [`System::desktop`]
 //!   ([`crate::run`]): a single instance that types through the keyboard hook, with its tray
 //!   icon and the settings of `raumakey.toml`. It prints nothing.
+//! - `startup <mode>` ([`crate::startup`]) saves the mode it set in `raumakey.toml`
+//!   ([`System::save_startup_mode`]) once it succeeded, so the tray shows it; a mode that
+//!   cannot be saved is reported on standard error, and the exit code stays 0.
 //! - `--version` prints the product name and version; `help` the usage.
 //! - `update` (matrix #57): Raumakey has no updater. The command says so, exits with 0, and
 //!   never touches the network (design §13: a future updater must verify an authenticated
@@ -18,6 +21,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use raumakey_config::{ConfigError, StartupMode};
 use raumakey_converter::ClipboardPort;
 use raumakey_model::identity::PRODUCT_NAME;
 use raumakey_windows::tsf_registration::{TipArch, TipBinary};
@@ -49,6 +53,10 @@ pub trait System: InstallSystem + StartupSystem {
     /// The desktop of the run mode (no arguments): the single-instance mutex, the tray, and
     /// error reports.
     fn desktop(&mut self) -> &mut dyn Desktop;
+
+    /// Saves `[system] startup` in the `raumakey.toml` of this `raumakey.exe`
+    /// (`Settings::open_for_current_exe` and `Change::Startup`), after `startup <mode>` set it.
+    fn save_startup_mode(&mut self, mode: StartupMode) -> Result<(), ConfigError>;
 }
 
 /// Where `raumakey.exe` runs.
@@ -113,7 +121,21 @@ pub fn execute(
                 uninstall(system, &context.exe_dir, *elevated, output)
             }
         }
-        Command::Startup { mode, for_user } => startup(system, *mode, for_user.as_ref(), output),
+        Command::Startup { mode, for_user } => {
+            let code = startup(system, *mode, for_user.as_ref(), output);
+            // The process the user started saves the choice; the elevated restart, which may
+            // run as another account, does not.
+            if code == EXIT_OK
+                && for_user.is_none()
+                && let Err(error) = system.save_startup_mode(*mode)
+            {
+                output.error(format_args!(
+                    "startup: the choice could not be saved in raumakey.toml ({error}); \
+                     Raumakey's menu may show the previous choice"
+                ));
+            }
+            code
+        }
         Command::Convert(args) => convert(args, system.clipboard(), output),
         Command::Migrate(_) => {
             output.error(MIGRATE_UNAVAILABLE);

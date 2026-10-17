@@ -15,7 +15,20 @@
 //! [`with_change`] exactly as `crate::settings::Settings` builds it after the change), and the
 //! settings worker commits the change ([`Effect::Worker`] with
 //! [`WorkerCommand::Apply`]). A commit that fails is shown once per kind of error
-//! (`crate::notice::save_error_notice`), and the change stays in effect.
+//! (`crate::notice::save_error_notice`; for the start with Windows, the text of the shortcut),
+//! the change stays in effect, and the worker retries it at every poll and before it ends. An
+//! answer that wrote nothing ([`Saved::Unchanged`]) is no save that worked.
+//!
+//! **Notices** ([`Effect::Notify`]) never wait: the glue shows each message box on a thread
+//! of its own, and a "yes" to its question comes back through the inbox
+//! ([`Event::Answered`]), so the tray's thread keeps handling its messages while a box is
+//! open. An exit closes the open boxes ([`Effect::DismissNotices`]) and never waits for them.
+//!
+//! **Hotkey changes** drained together count as their last one ([`coalesce`]); those left in
+//! the inbox when the hook stops at an exit are saved ([`Tray::flush_hotkeys`]).
+//!
+//! **From the temporary folder** (an exe run from inside a ZIP, [`TrayStart::temporary_exe`])
+//! "Khởi động cùng Windows" makes no shortcut and asks the user to extract Raumakey first.
 //!
 //! **Every runtime snapshot handed to the hook carries the mode the icon shows.** Applying a
 //! runtime snapshot sets the hook's mode to the one it carries, so the tray is the only one
@@ -39,16 +52,18 @@
 //! | [`TRAY_CALLBACK`] `NIN_SELECT` (click), `NIN_KEYSELECT` (keyboard) | switches the mode | 0 |
 //! | [`TRAY_CALLBACK`] `WM_CONTEXTMENU` (right click, Shift+F10, menu key) | opens the menu at the anchor ([`Effect::OpenMenu`]) | 0 |
 //! | [`TRAY_CALLBACK`], other notifications or another icon id | nothing | 0 |
-//! | `WM_TIMER` of [`POLL_TIMER`] (every [`POLL_INTERVAL_MS`]) | asks the worker to poll, unless a poll is on its way | 0 |
+//! | `WM_TIMER` of [`POLL_TIMER`] (every [`POLL_INTERVAL_MS`]) | makes sure the icon is shown ([`Effect::EnsureIcon`]: an add or a change that failed is tried again), and asks the worker to poll unless a poll is on its way | 0 |
 //! | [`WAKE`] (the worker or the hook observer left something in the inbox) | nothing: the glue drains the inbox ([`Tray::on_event`]) | 0 |
 //! | `TaskbarCreated` (Explorer restarted) | adds the icon again with the current state (matrix #58) | 0 |
 //! | `WM_CLOSE`; `WM_ENDSESSION` with a non-zero `wParam` (the session ends) | exits | 0 |
 //! | anything else, and `WM_ENDSESSION` of a cancelled end | nothing | `DefWindowProcW` |
 //!
-//! Exiting is [`Effect::StopTyping`] (typing is plain at once), [`Effect::RemoveIcon`], and
-//! [`Effect::EndLoop`] (the glue lets the worker finish what was sent, for a bounded time,
-//! and ends the message loop with [`LOOP_EXIT_CODE`]), all before the window procedure
-//! returns: after `WM_ENDSESSION` the process may end at any moment. `WM_CLOSE` is always
+//! Exiting is, in order, [`Effect::StopTyping`] (typing is plain at once),
+//! [`Effect::DismissNotices`], [`Effect::FlushHotkeys`] (hotkey changes left in the inbox are
+//! saved), [`Effect::FinishWorker`] (the worker runs what was sent and saves what is unsaved,
+//! for a bounded time), [`Effect::RemoveIcon`], and [`Effect::EndLoop`] (the message loop
+//! ends with [`LOOP_EXIT_CODE`]), all before the window procedure returns: after
+//! `WM_ENDSESSION` the process may end at any moment. `WM_CLOSE` is always
 //! answered, never left to `DefWindowProcW`, which would destroy the window under the running
 //! tray. Before [`START`] the icon does not exist, so its messages, the timer,
 //! `TaskbarCreated`, menu choices, and events do nothing, while `WM_CLOSE` and the end of the
@@ -73,11 +88,11 @@
 //!
 //! # Losing the window
 //!
-//! A modal loop that runs inside the window's handler (the tray menu, a message box) leaves
-//! the window's messages to `DefWindowProcW` (see `raumakey_windows::window`), which answers
-//! a `WM_CLOSE` that arrives meanwhile by destroying the window. The handler is then freed
-//! when it returns, and [`Tray::ends_loop_when_dropped`] tells the glue that the loop must end
-//! anyway (after stopping the hook and the worker).
+//! The tray menu runs a modal loop inside the window's handler, which leaves the window's
+//! messages to `DefWindowProcW` (see `raumakey_windows::window`); it answers a `WM_CLOSE`
+//! that arrives meanwhile by destroying the window. The handler is then freed when it
+//! returns, and [`Tray::ends_loop_when_dropped`] tells the glue that the loop must end anyway
+//! (after the steps of an exit). Message boxes run no loop on this thread.
 //!
 //! Strings shown to the user are new Raumakey strings in Vietnamese (plan §10.2,
 //! `crate::notice`). Nothing here holds keystrokes, document text, or macro text; `Debug` of
@@ -98,10 +113,12 @@ use raumakey_windows::window::{
 
 use crate::notice::{
     Notice, Question, about_notice, elevated_task_notice, open_error_notice, recovery_notice,
-    save_error_notice, startup_error_notice, status_notice,
+    save_error_notice, startup_error_notice, status_notice, temporary_exe_notice,
 };
 use crate::settings::{Change, DocumentStatus, Location, Recovery, Status};
-use crate::worker::{Answer, Outcome, SettingsState, StartupError, WorkerCommand};
+use crate::worker::{
+    Answer, Outcome, Saved, SettingsState, ShortcutSync, StartupError, WorkerCommand,
+};
 
 // `ICON_VIETNAMESE` and `ICON_ENGLISH`: the icon groups that `build.rs` embeds, with the ids
 // that `raumakey-resources` (a build-dependency only) assigns.
@@ -381,6 +398,9 @@ pub struct TrayStart {
     /// Shown once the icon is added: the first run, the problems found at the start, a
     /// Startup shortcut that could not be repaired.
     pub notices: Vec<Notice>,
+    /// `raumakey.exe` runs from the temporary folder: "Khởi động cùng Windows" makes no
+    /// shortcut to it.
+    pub temporary_exe: bool,
 }
 
 /// Something another thread left in the tray's inbox (then it posts [`WAKE`]).
@@ -391,6 +411,24 @@ pub enum Event {
     Hotkey(bool),
     /// An answer of the settings worker.
     Worker(Answer),
+    /// The user answered yes to the question of a notice (message boxes run on threads of
+    /// their own, `crate::desktop`).
+    Answered(Question),
+}
+
+/// The events drained from the inbox, with the hotkey changes coalesced: only the last one
+/// counts (the hook has that mode already), at its own place; the other events keep their
+/// order.
+pub fn coalesce(events: Vec<Event>) -> Vec<Event> {
+    let last_hotkey = events
+        .iter()
+        .rposition(|event| matches!(event, Event::Hotkey(_)));
+    events
+        .into_iter()
+        .enumerate()
+        .filter(|(index, event)| !matches!(event, Event::Hotkey(_)) || Some(*index) == last_hotkey)
+        .map(|(_, event)| event)
+        .collect()
 }
 
 /// What the glue does for a message, a menu choice, an event, or an answer to a question.
@@ -424,12 +462,21 @@ pub enum Effect {
         /// The command.
         command: WorkerCommand,
     },
+    /// Make sure the icon is shown with this state: add it again when it is not shown, or
+    /// when its last change failed (every tick of the poll timer).
+    EnsureIcon(IconState),
     /// Stop the typing hook (both hooks are removed; typing is plain at once).
     StopTyping,
+    /// Close every open notice without waiting for it.
+    DismissNotices,
+    /// Take the events left in the inbox and pass them to [`Tray::flush_hotkeys`], so that a
+    /// hotkey change made just before the exit is saved.
+    FlushHotkeys,
+    /// Let the worker finish the commands sent and save what is unsaved (bounded).
+    FinishWorker,
     /// Remove the icon.
     RemoveIcon,
-    /// Let the worker finish the commands sent (bounded) and end the message loop with
-    /// [`LOOP_EXIT_CODE`].
+    /// End the message loop with [`LOOP_EXIT_CODE`].
     EndLoop,
 }
 
@@ -492,6 +539,8 @@ pub struct Tray {
     polling: Option<u64>,
     /// The kind of the last save error told; cleared by a save that works.
     save_error: Option<ConfigError>,
+    /// `raumakey.exe` runs from the temporary folder: no shortcut is made to it.
+    temporary_exe: bool,
 }
 
 impl fmt::Debug for Tray {
@@ -529,6 +578,7 @@ impl Tray {
             sent: 0,
             polling: None,
             save_error: None,
+            temporary_exe: start.temporary_exe,
         }
     }
 
@@ -624,7 +674,7 @@ impl Tray {
             return Reply::handled(effects);
         }
         match message {
-            WM_TIMER if wparam == POLL_TIMER => Reply::handled(self.poll()),
+            WM_TIMER if wparam == POLL_TIMER => Reply::handled(self.tick()),
             WM_CLOSE => Reply::handled(self.exit()),
             WM_ENDSESSION if wparam != 0 => Reply::handled(self.exit()),
             _ => Reply::default_processing(),
@@ -667,7 +717,23 @@ impl Tray {
         match event {
             Event::Hotkey(vietnamese) => self.set_mode(InputMode::from_vietnamese(vietnamese)),
             Event::Worker(answer) => self.on_answer(answer),
+            Event::Answered(question) => self.answered_yes(question),
         }
+    }
+
+    /// At exit ([`Effect::FlushHotkeys`]): the events left in the inbox once the hook has
+    /// stopped. The last hotkey change among them is saved (the worker finishes after this);
+    /// everything else is dropped.
+    pub fn flush_hotkeys(&mut self, events: Vec<Event>) -> Vec<Effect> {
+        let last = events.into_iter().rev().find_map(|event| match event {
+            Event::Hotkey(vietnamese) => Some(vietnamese),
+            Event::Worker(_) | Event::Answered(_) => None,
+        });
+        let Some(vietnamese) = last else {
+            return Vec::new();
+        };
+        self.runtime = with_change(&self.runtime, Change::VietnameseMode(vietnamese));
+        vec![self.command(WorkerCommand::Apply(Change::VietnameseMode(vietnamese)))]
     }
 
     /// The user answered yes to `question` of a [`Notice`].
@@ -716,11 +782,17 @@ impl Tray {
         }
     }
 
-    fn poll(&mut self) -> Vec<Effect> {
-        if !self.is_running() || self.polling.is_some() {
+    /// A tick of the poll timer: the icon must be shown, and the worker polls unless a poll
+    /// is on its way.
+    fn tick(&mut self) -> Vec<Effect> {
+        if !self.is_running() {
             return Vec::new();
         }
-        vec![self.command(WorkerCommand::Poll)]
+        let mut effects = vec![Effect::EnsureIcon(self.icon())];
+        if self.polling.is_none() {
+            effects.push(self.command(WorkerCommand::Poll));
+        }
+        effects
     }
 
     /// The mode becomes `mode`: the icon, the hook (its mode only), and the file.
@@ -765,6 +837,9 @@ impl Tray {
                 self.startup = StartupMode::None;
                 vec![self.command(WorkerCommand::Startup(false))]
             }
+            StartupMode::None if self.temporary_exe => {
+                vec![Effect::Notify(temporary_exe_notice())]
+            }
             StartupMode::None => {
                 self.startup = StartupMode::Shortcut;
                 vec![self.command(WorkerCommand::Startup(true))]
@@ -777,7 +852,14 @@ impl Tray {
             return Vec::new();
         }
         self.phase = Phase::Exiting;
-        vec![Effect::StopTyping, Effect::RemoveIcon, Effect::EndLoop]
+        vec![
+            Effect::StopTyping,
+            Effect::DismissNotices,
+            Effect::FlushHotkeys,
+            Effect::FinishWorker,
+            Effect::RemoveIcon,
+            Effect::EndLoop,
+        ]
     }
 
     fn on_answer(&mut self, answer: Answer) -> Vec<Effect> {
@@ -793,39 +875,84 @@ impl Tray {
         let path = self.config_path.clone();
         let path = path.as_deref();
         match answer.outcome {
-            Outcome::Applied { result: Ok(()), .. } | Outcome::Startup { result: Ok(()), .. } => {
-                self.saved();
-            }
             Outcome::Applied {
-                result: Err(error), ..
+                result: Ok(Saved::Written),
+                ..
             }
             | Outcome::Startup {
-                result: Err(StartupError::Save(error)),
+                result: Ok(Saved::Written),
                 ..
-            } => effects.extend(self.save_failed(error)),
+            } => self.saved(),
+            Outcome::Applied {
+                result: Ok(Saved::Unchanged),
+                ..
+            }
+            | Outcome::Startup {
+                result: Ok(Saved::Unchanged),
+                ..
+            }
+            | Outcome::Opened(Ok(()))
+            | Outcome::Failed => {}
+            Outcome::Applied {
+                result: Err(error), ..
+            } => {
+                let notice = save_error_notice(path, error);
+                effects.extend(self.save_failed(error, notice));
+            }
             Outcome::Startup {
                 on,
-                result: Err(error @ StartupError::Shortcut(_)),
+                result: Err(StartupError::Save(error)),
+            } => {
+                let notice = startup_error_notice(path, on, StartupError::Save(error));
+                effects.extend(self.save_failed(error, notice));
+            }
+            Outcome::Startup {
+                on,
+                result: Err(error @ (StartupError::Shortcut(_) | StartupError::Temporary)),
             } => effects.push(Effect::Notify(startup_error_notice(path, on, error))),
-            Outcome::Polled(Some(status)) => {
-                if let Some(notice) = status_notice(path, &self.reported, &status) {
-                    effects.push(Effect::Notify(notice));
+            Outcome::Polled(report) => {
+                if let Some(status) = report.status {
+                    if let Some(notice) = status_notice(path, &self.reported, &status) {
+                        effects.push(Effect::Notify(notice));
+                    }
+                    self.reported = status;
                 }
-                self.reported = status;
+                match report.shortcut {
+                    Some(ShortcutSync::RefusedTemporary) => {
+                        effects.push(Effect::Notify(temporary_exe_notice()));
+                    }
+                    Some(ShortcutSync::Failed { on, error }) => {
+                        let error = StartupError::Shortcut(error);
+                        effects.push(Effect::Notify(startup_error_notice(path, on, error)));
+                    }
+                    Some(
+                        ShortcutSync::Created | ShortcutSync::Removed | ShortcutSync::Unchanged,
+                    )
+                    | None => {}
+                }
+                match report.retry {
+                    Some(Ok(())) => self.saved(),
+                    Some(Err(error)) => {
+                        let notice = save_error_notice(path, error);
+                        effects.extend(self.save_failed(error, notice));
+                    }
+                    None => {}
+                }
             }
             Outcome::Recovered(result) => {
-                if matches!(
-                    result,
-                    Ok(Recovery::Adopted | Recovery::Replaced { saved: Ok(()), .. })
-                ) {
-                    self.saved();
+                match result {
+                    Ok(Recovery::Replaced { saved: Ok(()), .. }) => self.saved(),
+                    // Nothing was written, but the file reads now.
+                    Ok(Recovery::Adopted) => {
+                        self.reported.config = DocumentStatus::Loaded { issues: Vec::new() };
+                    }
+                    Ok(Recovery::NotNeeded | Recovery::Replaced { .. }) | Err(_) => {}
                 }
                 effects.extend(recovery_notice(path, &result).map(Effect::Notify));
             }
             Outcome::Opened(Err(error)) => {
                 effects.push(Effect::Notify(open_error_notice(path, error)));
             }
-            Outcome::Polled(None) | Outcome::Opened(Ok(())) | Outcome::Failed => {}
         }
         effects
     }
@@ -854,7 +981,7 @@ impl Tray {
     }
 
     /// A change could not be saved: told once per kind of error until a save works.
-    fn save_failed(&mut self, error: ConfigError) -> Option<Effect> {
+    fn save_failed(&mut self, error: ConfigError, notice: Notice) -> Option<Effect> {
         let same = self
             .save_error
             .is_some_and(|told| core::mem::discriminant(&told) == core::mem::discriminant(&error));
@@ -862,9 +989,6 @@ impl Tray {
             return None;
         }
         self.save_error = Some(error);
-        Some(Effect::Notify(save_error_notice(
-            self.config_path.as_deref(),
-            error,
-        )))
+        Some(Effect::Notify(notice))
     }
 }

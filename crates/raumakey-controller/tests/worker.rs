@@ -1,7 +1,9 @@
 //! The settings worker (`worker`): the tray's commands run on the worker's `Settings` (D40),
 //! off the tray's window thread, and come back as numbered answers that carry the settings in
-//! effect; the macro snapshots of a reload go to the typing hook from the worker. Real files
-//! in temporary folders; the shortcut, Notepad, and the hook are fakes.
+//! effect; the macro snapshots of a reload go to the typing hook from the worker; changes that
+//! could not be saved are retried; a half-written hand edit is read once more; a hand edit of
+//! `[system] startup` creates or removes the Startup shortcut (D41). Real files in temporary
+//! folders; the shortcut, Notepad, and the hook are fakes.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,11 +11,12 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use raumakey_config::{ConfigDocument, ConfigError, StartupMode, StoreDocument};
+use raumakey_config::{ConfigDocument, ConfigError, IssueReason, StartupMode, StoreDocument};
+use raumakey_controller::run::ShortcutState;
 use raumakey_controller::settings::{Change, DocumentStatus, Recovery, Settings};
 use raumakey_controller::worker::{
-    Answer, OpenError, Outcome, SettingsState, SettingsWorker, StartupError, WorkerCommand,
-    WorkerPorts, WorkerThread,
+    Answer, OpenError, Outcome, PollReport, Saved, SettingsState, SettingsWorker, ShortcutSync,
+    StartupError, WorkerCommand, WorkerPorts, WorkerThread,
 };
 use raumakey_ipc::message::MacroSnapshot;
 use raumakey_model::options::InputMethod;
@@ -27,6 +30,7 @@ enum PortCall {
         revision: u64,
         entries: usize,
     },
+    ReadShortcut,
     CreateShortcut,
     RemoveShortcut,
     Notepad(PathBuf),
@@ -36,6 +40,7 @@ type Log = Arc<Mutex<Vec<PortCall>>>;
 
 struct FakePorts {
     log: Log,
+    shortcut: WinResult<ShortcutState>,
     create: WinResult<()>,
     remove: WinResult<bool>,
     notepad: WinResult<()>,
@@ -47,11 +52,17 @@ impl FakePorts {
     fn new(log: &Log) -> Self {
         Self {
             log: Arc::clone(log),
+            shortcut: Ok(ShortcutState::Missing),
             create: Ok(()),
             remove: Ok(true),
             notepad: Ok(()),
             notepad_panics: false,
         }
+    }
+
+    fn with_shortcut(mut self, shortcut: WinResult<ShortcutState>) -> Self {
+        self.shortcut = shortcut;
+        self
     }
 
     fn push(&self, call: PortCall) {
@@ -65,6 +76,11 @@ impl WorkerPorts for FakePorts {
             revision: macros.macro_revision,
             entries: macros.entries.len(),
         });
+    }
+
+    fn shortcut_state(&mut self) -> WinResult<ShortcutState> {
+        self.push(PortCall::ReadShortcut);
+        self.shortcut
     }
 
     fn create_shortcut(&mut self) -> WinResult<()> {
@@ -119,6 +135,18 @@ fn state(answer: &Answer) -> &SettingsState {
     answer.state.as_deref().expect("the settings in effect")
 }
 
+fn calls(log: &Log) -> Vec<PortCall> {
+    log.lock().unwrap().clone()
+}
+
+/// The report of a poll answer.
+fn polled(answer: &Answer) -> &PollReport {
+    match &answer.outcome {
+        Outcome::Polled(report) => report,
+        other => panic!("{other:?}"),
+    }
+}
+
 #[test]
 fn an_applied_change_is_committed_and_answered_with_the_settings_in_effect() {
     let folder = Folder::new();
@@ -131,7 +159,7 @@ fn an_applied_change_is_committed_and_answered_with_the_settings_in_effect() {
         answer.outcome,
         Outcome::Applied {
             change,
-            result: Ok(())
+            result: Ok(Saved::Written)
         }
     );
     let state = state(&answer);
@@ -139,7 +167,23 @@ fn an_applied_change_is_committed_and_answered_with_the_settings_in_effect() {
     assert_eq!(state.runtime.options.input_method, InputMethod::Vni);
     assert_eq!(state.startup, StartupMode::None);
     assert_eq!(folder.stored().input.method, InputMethod::Vni);
-    assert_eq!(*log.lock().unwrap(), []);
+    assert_eq!(calls(&log), []);
+}
+
+/// A change to the value in effect writes nothing, and says so: the tray does not take it for
+/// a save that worked.
+#[test]
+fn a_change_to_the_value_in_effect_is_answered_as_unchanged() {
+    let folder = Folder::new();
+    let mut worker = worker(&folder, FakePorts::new(&Log::default()));
+    let change = Change::InputMethod(InputMethod::Telex);
+    assert_eq!(
+        worker.handle(1, WorkerCommand::Apply(change)).outcome,
+        Outcome::Applied {
+            change,
+            result: Ok(Saved::Unchanged)
+        }
+    );
 }
 
 /// A damaged `raumakey.toml` is never overwritten: the change takes effect, and the answer
@@ -172,12 +216,12 @@ fn a_poll_that_finds_nothing_new_still_answers_with_the_settings_in_effect() {
     let mut worker = worker(&folder, FakePorts::new(&log));
     let answer = worker.handle(2, WorkerCommand::Poll);
     assert_eq!(answer.seq, 2);
-    assert_eq!(answer.outcome, Outcome::Polled(None));
+    assert_eq!(answer.outcome, Outcome::Polled(PollReport::default()));
     assert_eq!(
         state(&answer).runtime,
         *worker.settings().runtime_snapshot()
     );
-    assert_eq!(*log.lock().unwrap(), []);
+    assert_eq!(calls(&log), []);
 }
 
 /// A hand edit reloaded by a poll, then "Mở file cấu hình": the answer to the later command
@@ -217,45 +261,152 @@ fn a_hand_edit_is_reloaded_by_a_poll_and_its_macros_go_to_the_hook() {
     )
     .unwrap();
     let answer = worker.handle(5, WorkerCommand::Poll);
-    let Outcome::Polled(Some(status)) = &answer.outcome else {
-        panic!("{:?}", answer.outcome);
-    };
+    let report = polled(&answer);
+    let status = report.status.as_ref().expect("the files changed");
     assert_eq!(status, worker.settings().status());
     assert!(matches!(status.config, DocumentStatus::Loaded { .. }));
+    assert_eq!(report.shortcut, None);
+    assert_eq!(report.retry, None);
     let state = state(&answer);
     assert_eq!(state.runtime.options.input_method, InputMethod::Viqr);
     assert!(!state.runtime.vietnamese_mode);
     assert_eq!(
-        *log.lock().unwrap(),
+        calls(&log),
         [PortCall::Macros {
             revision: 3,
             entries: 1
         }]
     );
     // Nothing new since.
-    assert_eq!(
-        worker.handle(6, WorkerCommand::Poll).outcome,
-        Outcome::Polled(None)
-    );
+    let answer = worker.handle(6, WorkerCommand::Poll);
+    assert_eq!(*polled(&answer), PollReport::default());
 }
 
 /// A hand edit that breaks the file keeps the last good settings and is answered with the new
-/// state of the files, so the tray can tell the user.
+/// state of the files, so the tray can tell the user. It is read once more first, in case the
+/// editor was still writing it.
 #[test]
 fn a_hand_edit_that_breaks_the_file_is_answered_with_its_state() {
     let folder = Folder::new();
-    let mut worker = worker(&folder, FakePorts::new(&Log::default()));
+    let mut worker = worker(&folder, FakePorts::new(&Log::default()))
+        .with_reread_delay(Duration::from_millis(10));
     worker.handle(1, WorkerCommand::Apply(Change::ModernTone(true)));
     fs::write(folder.config(), "[input\nmethod = ").unwrap();
     let answer = worker.handle(2, WorkerCommand::Poll);
-    let Outcome::Polled(Some(status)) = &answer.outcome else {
-        panic!("{:?}", answer.outcome);
-    };
+    let status = polled(&answer).status.as_ref().unwrap();
     assert_eq!(
         status.config,
         DocumentStatus::Unreadable(ConfigError::Corrupt)
     );
     assert!(state(&answer).runtime.options.modern_tone);
+}
+
+/// An editor caught half-way through saving: the worker reads the file once more after a
+/// moment, and takes what the editor finished writing, without a warning.
+#[test]
+fn a_half_written_hand_edit_is_read_again_before_it_is_taken() {
+    let folder = Folder::new();
+    let mut worker = worker(&folder, FakePorts::new(&Log::default()))
+        .with_reread_delay(Duration::from_millis(400));
+    fs::write(folder.config(), "version = 1\nrevision = 1\n[inp").unwrap();
+    let config = folder.config();
+    let editor = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        fs::write(
+            config,
+            "version = 1\nrevision = 1\n[input]\nmethod = \"viqr\"\n",
+        )
+        .unwrap();
+    });
+    let answer = worker.handle(1, WorkerCommand::Poll);
+    editor.join().unwrap();
+    let status = polled(&answer).status.as_ref().unwrap();
+    assert_eq!(status.config, DocumentStatus::Loaded { issues: Vec::new() });
+    assert_eq!(
+        state(&answer).runtime.options.input_method,
+        InputMethod::Viqr
+    );
+}
+
+/// A file without `version` that stays so after the second read is what the user wrote: it
+/// is taken, with `version` reported.
+#[test]
+fn a_file_without_a_version_is_taken_after_the_second_read() {
+    let folder = Folder::new();
+    let mut worker = worker(&folder, FakePorts::new(&Log::default()))
+        .with_reread_delay(Duration::from_millis(10));
+    fs::write(folder.config(), "[input]\nmethod = \"vni\"\n").unwrap();
+    let answer = worker.handle(1, WorkerCommand::Poll);
+    let status = polled(&answer).status.as_ref().unwrap();
+    let DocumentStatus::Loaded { issues } = &status.config else {
+        panic!("{status:?}");
+    };
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.path == "version" && issue.reason == IssueReason::Missing),
+        "{issues:?}"
+    );
+    assert_eq!(
+        state(&answer).runtime.options.input_method,
+        InputMethod::Vni
+    );
+}
+
+/// A change that could not be saved is retried at the next poll: once the damaged file was
+/// fixed, the retry writes it, and the answer says so.
+#[test]
+fn a_poll_retries_a_change_that_could_not_be_saved() {
+    let folder = Folder::new();
+    fs::write(folder.config(), "[[[ damaged").unwrap();
+    let mut worker = worker(&folder, FakePorts::new(&Log::default()))
+        .with_reread_delay(Duration::from_millis(10));
+    worker.handle(1, WorkerCommand::Apply(Change::SpellCheck(false)));
+    let answer = worker.handle(2, WorkerCommand::Poll);
+    assert_eq!(polled(&answer).retry, Some(Err(ConfigError::Corrupt)));
+    fs::write(
+        folder.config(),
+        "version = 1\nrevision = 1\n[input]\nmodern_tone = true\n",
+    )
+    .unwrap();
+    let answer = worker.handle(3, WorkerCommand::Poll);
+    assert_eq!(polled(&answer).retry, Some(Ok(())));
+    let stored = folder.stored();
+    assert!(!stored.input.spell_check);
+    assert!(stored.input.modern_tone);
+    assert_eq!(
+        polled(&worker.handle(4, WorkerCommand::Poll)).retry,
+        None,
+        "nothing left to retry"
+    );
+}
+
+/// The worker saves what is still unsaved before it ends, so a change made just before Exit
+/// is not lost when the file was blocked for a moment.
+#[test]
+fn the_worker_thread_saves_unsaved_changes_before_it_ends() {
+    let folder = Folder::new();
+    fs::write(folder.config(), "[[[ damaged").unwrap();
+    let (deliver, answers) = mpsc::channel();
+    let thread = WorkerThread::spawn(
+        worker(&folder, FakePorts::new(&Log::default())),
+        move |answer| {
+            deliver.send(answer).unwrap();
+        },
+    )
+    .unwrap();
+    thread.send(1, WorkerCommand::Apply(Change::Macros(false)));
+    let answer = answers.recv_timeout(Duration::from_secs(20)).unwrap();
+    assert!(matches!(
+        answer.outcome,
+        Outcome::Applied {
+            result: Err(ConfigError::Corrupt),
+            ..
+        }
+    ));
+    fs::write(folder.config(), "version = 1\nrevision = 1\n").unwrap();
+    assert!(thread.finish(Duration::from_secs(20)));
+    assert!(!folder.stored().macros.enabled);
 }
 
 #[test]
@@ -268,12 +419,30 @@ fn turning_startup_on_creates_the_shortcut_then_saves_shortcut() {
         answer.outcome,
         Outcome::Startup {
             on: true,
-            result: Ok(())
+            result: Ok(Saved::Written)
         }
     );
     assert_eq!(state(&answer).startup, StartupMode::Shortcut);
     assert_eq!(folder.stored().system.startup, StartupMode::Shortcut);
-    assert_eq!(*log.lock().unwrap(), [PortCall::CreateShortcut]);
+    assert_eq!(calls(&log), [PortCall::CreateShortcut]);
+}
+
+/// Explorer deletes the temporary folder of a ZIP later: no shortcut is made to an exe there.
+#[test]
+fn turning_startup_on_from_the_temporary_folder_is_refused() {
+    let folder = Folder::new();
+    let log = Log::default();
+    let mut worker = worker(&folder, FakePorts::new(&log)).with_temporary_exe(true);
+    let answer = worker.handle(1, WorkerCommand::Startup(true));
+    assert_eq!(
+        answer.outcome,
+        Outcome::Startup {
+            on: true,
+            result: Err(StartupError::Temporary)
+        }
+    );
+    assert_eq!(state(&answer).startup, StartupMode::None);
+    assert_eq!(calls(&log), []);
 }
 
 /// Without the shortcut, nothing starts Raumakey at logon, so `shortcut` is not saved.
@@ -308,13 +477,13 @@ fn turning_startup_off_removes_the_shortcut_then_saves_none() {
         answer.outcome,
         Outcome::Startup {
             on: false,
-            result: Ok(())
+            result: Ok(Saved::Written)
         }
     );
     assert_eq!(state(&answer).startup, StartupMode::None);
     assert_eq!(folder.stored().system.startup, StartupMode::None);
     assert_eq!(
-        *log.lock().unwrap(),
+        calls(&log),
         [PortCall::CreateShortcut, PortCall::RemoveShortcut]
     );
     // A shortcut that was gone already is no failure.
@@ -326,7 +495,7 @@ fn turning_startup_off_removes_the_shortcut_then_saves_none() {
         answer.outcome,
         Outcome::Startup {
             on: false,
-            result: Ok(())
+            result: Ok(Saved::Unchanged)
         }
     );
 }
@@ -371,7 +540,124 @@ fn a_startup_choice_that_cannot_be_saved_is_answered_with_the_save_error() {
         }
     );
     assert_eq!(state(&answer).startup, StartupMode::Shortcut);
-    assert_eq!(*log.lock().unwrap(), [PortCall::CreateShortcut]);
+    assert_eq!(calls(&log), [PortCall::CreateShortcut]);
+}
+
+/// Writes `startup = "<mode>"` into `raumakey.toml` by hand.
+fn edit_startup(folder: &Folder, mode: &str) {
+    fs::write(
+        folder.config(),
+        format!("version = 1\nrevision = 1\n[system]\nstartup = \"{mode}\"\n"),
+    )
+    .unwrap();
+}
+
+/// A hand edit that turns the start with Windows on creates the shortcut when there is none,
+/// or when the one there starts an exe that no longer exists (it was moved).
+#[test]
+fn a_hand_edit_that_turns_startup_on_creates_a_missing_or_dead_shortcut() {
+    for shortcut in [ShortcutState::Missing, ShortcutState::PointsToMissing] {
+        let folder = Folder::new();
+        let log = Log::default();
+        let mut worker = worker(&folder, FakePorts::new(&log).with_shortcut(Ok(shortcut)));
+        edit_startup(&folder, "shortcut");
+        let answer = worker.handle(1, WorkerCommand::Poll);
+        assert_eq!(
+            polled(&answer).shortcut,
+            Some(ShortcutSync::Created),
+            "{shortcut:?}"
+        );
+        assert_eq!(
+            calls(&log),
+            [PortCall::ReadShortcut, PortCall::CreateShortcut],
+            "{shortcut:?}"
+        );
+        assert_eq!(state(&answer).startup, StartupMode::Shortcut);
+    }
+}
+
+/// A shortcut that starts this exe, or another copy that still exists, is left as it is.
+#[test]
+fn a_hand_edit_that_turns_startup_on_never_repoints_another_copy() {
+    for shortcut in [ShortcutState::PointsHere, ShortcutState::PointsToOther] {
+        let folder = Folder::new();
+        let log = Log::default();
+        let mut worker = worker(&folder, FakePorts::new(&log).with_shortcut(Ok(shortcut)));
+        edit_startup(&folder, "shortcut");
+        let answer = worker.handle(1, WorkerCommand::Poll);
+        assert_eq!(polled(&answer).shortcut, Some(ShortcutSync::Unchanged));
+        assert_eq!(calls(&log), [PortCall::ReadShortcut], "{shortcut:?}");
+    }
+}
+
+#[test]
+fn a_hand_edit_that_turns_startup_on_in_the_temporary_folder_is_refused() {
+    let folder = Folder::new();
+    let log = Log::default();
+    let mut worker = worker(&folder, FakePorts::new(&log)).with_temporary_exe(true);
+    edit_startup(&folder, "shortcut");
+    let answer = worker.handle(1, WorkerCommand::Poll);
+    assert_eq!(
+        polled(&answer).shortcut,
+        Some(ShortcutSync::RefusedTemporary)
+    );
+    assert_eq!(calls(&log), []);
+}
+
+/// A hand edit that turns it off removes only the shortcut of this exe.
+#[test]
+fn a_hand_edit_that_turns_startup_off_removes_only_this_exes_shortcut() {
+    let cases = [
+        (ShortcutState::PointsHere, Some(ShortcutSync::Removed), true),
+        (
+            ShortcutState::PointsToOther,
+            Some(ShortcutSync::Unchanged),
+            false,
+        ),
+        (
+            ShortcutState::PointsToMissing,
+            Some(ShortcutSync::Unchanged),
+            false,
+        ),
+        (ShortcutState::Missing, Some(ShortcutSync::Unchanged), false),
+    ];
+    for (shortcut, sync, removed) in cases {
+        let folder = Folder::new();
+        edit_startup(&folder, "shortcut");
+        let log = Log::default();
+        let mut worker = worker(&folder, FakePorts::new(&log).with_shortcut(Ok(shortcut)));
+        edit_startup(&folder, "none");
+        let answer = worker.handle(1, WorkerCommand::Poll);
+        assert_eq!(polled(&answer).shortcut, sync, "{shortcut:?}");
+        assert_eq!(
+            calls(&log).contains(&PortCall::RemoveShortcut),
+            removed,
+            "{shortcut:?}"
+        );
+    }
+}
+
+/// A shortcut that cannot be read or made is reported; the elevated logon task is never
+/// followed by a shortcut.
+#[test]
+fn shortcut_failures_are_reported_and_the_elevated_task_is_left_alone() {
+    let folder = Folder::new();
+    let log = Log::default();
+    let error = WinError::new(E_FAIL, "IPersistFile::Load");
+    let mut unreadable = worker(&folder, FakePorts::new(&log).with_shortcut(Err(error)));
+    edit_startup(&folder, "shortcut");
+    let answer = unreadable.handle(1, WorkerCommand::Poll);
+    assert_eq!(
+        polled(&answer).shortcut,
+        Some(ShortcutSync::Failed { on: true, error })
+    );
+    let folder = Folder::new();
+    let log = Log::default();
+    let mut elevated = worker(&folder, FakePorts::new(&log));
+    edit_startup(&folder, "elevated-task");
+    let answer = elevated.handle(1, WorkerCommand::Poll);
+    assert_eq!(polled(&answer).shortcut, None);
+    assert_eq!(calls(&log), []);
 }
 
 #[test]
@@ -382,7 +668,7 @@ fn open_config_starts_notepad_with_the_configuration_file() {
     let answer = worker.handle(1, WorkerCommand::OpenConfig);
     assert_eq!(answer.outcome, Outcome::Opened(Ok(())));
     assert!(answer.state.is_some());
-    assert_eq!(*log.lock().unwrap(), [PortCall::Notepad(folder.config())]);
+    assert_eq!(calls(&log), [PortCall::Notepad(folder.config())]);
 }
 
 #[test]
@@ -402,7 +688,7 @@ fn open_config_without_a_file_says_so_and_starts_nothing() {
         worker.handle(2, WorkerCommand::OpenConfig).outcome,
         Outcome::Opened(Err(OpenError::NoFile))
     );
-    assert_eq!(*log.lock().unwrap(), []);
+    assert_eq!(calls(&log), []);
 }
 
 #[test]

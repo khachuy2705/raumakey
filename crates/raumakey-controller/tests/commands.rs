@@ -6,6 +6,7 @@ mod support;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use raumakey_config::{ConfigError, StartupMode};
 use raumakey_controller::cli::{EXIT_FAILED, EXIT_OK, EXIT_USAGE, USAGE, UsageError, parse_args};
 use raumakey_controller::commands::{Context, execute, print_usage_error};
 use raumakey_controller::install::default_tip_path;
@@ -241,6 +242,67 @@ fn startup_and_clipboard_conversion_are_dispatched() {
     );
     assert_eq!(result.code, EXIT_OK, "{result:?}");
     assert_eq!(system.clipboard.text().as_deref(), Some("Tiếng Việt"));
+}
+
+/// After `raumakey startup <mode>` succeeds, the mode is saved in `raumakey.toml` (`[system]
+/// startup`), so the tray's "Khởi động cùng Windows" shows it and the start repairs the
+/// shortcut only for `shortcut` (D41).
+#[test]
+fn a_startup_mode_that_was_set_is_saved() {
+    for (mode, saved) in [
+        ("shortcut", StartupMode::Shortcut),
+        ("none", StartupMode::None),
+        ("elevated-task", StartupMode::ElevatedTask),
+    ] {
+        let mut system = FakeSystem::default();
+        let result = exec(&["startup", mode], &mut system);
+        assert_eq!(result.code, EXIT_OK, "{mode}: {result:?}");
+        assert_eq!(system.saved_startup, [saved], "{mode}");
+        assert!(result.err.is_empty(), "{mode}: {}", result.err);
+    }
+}
+
+/// A mode that could not be set is not saved; neither is the elevated restart's (the process
+/// that asked saves it, as the user it runs for).
+#[test]
+fn a_startup_mode_that_was_not_set_or_was_set_by_the_restart_is_not_saved() {
+    let mut system = FakeSystem {
+        shortcut_create_fails: true,
+        ..FakeSystem::default()
+    };
+    let result = exec(&["startup", "shortcut"], &mut system);
+    assert_eq!(result.code, EXIT_FAILED, "{result:?}");
+    assert_eq!(system.saved_startup, []);
+
+    let mut system = FakeSystem::default();
+    let account = me();
+    let result = exec(
+        &[
+            "startup",
+            "elevated-task",
+            "--for-user",
+            account.as_str(),
+            "--elevated",
+        ],
+        &mut system,
+    );
+    assert_eq!(result.code, EXIT_OK, "{result:?}");
+    assert_eq!(system.saved_startup, []);
+}
+
+/// The start-up entry was set but the choice could not be saved: the command says so on
+/// standard error and still succeeds (Windows starts Raumakey as chosen).
+#[test]
+fn a_startup_mode_that_cannot_be_saved_is_reported_on_standard_error() {
+    let mut system = FakeSystem {
+        save_startup_error: Some(ConfigError::PermissionDenied),
+        ..FakeSystem::default()
+    };
+    let result = exec(&["startup", "shortcut"], &mut system);
+    assert_eq!(result.code, EXIT_OK, "{result:?}");
+    assert!(result.err.contains("raumakey.toml"), "{}", result.err);
+    assert!(result.err.contains("could not be saved"), "{}", result.err);
+    assert!(result.out.contains("shortcut"), "{}", result.out);
 }
 
 #[test]
