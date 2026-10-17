@@ -1,71 +1,71 @@
-# Review follow-up — 2026-10-17
+# Xử lý tiếp sau review — 2026-10-17
 
-## Scope and findings
+## Phạm vi và phát hiện
 
-Inputs: approved design and plan, compatibility matrix, repository source and tests.
-No restricted evidence or upstream implementation was used. Initial Git tree: clean,
-commit `24ba7a6` (`update p1`). This is a targeted implementation review, not the independent
-whole-branch review required for release.
+Đầu vào: thiết kế và kế hoạch đã được duyệt, ma trận tương thích, mã nguồn và test của kho mã.
+Không sử dụng bằng chứng bị hạn chế hay bản triển khai upstream nào. Cây Git ban đầu: sạch,
+commit `24ba7a6` (`update p1`). Đây là một review có trọng tâm vào phần triển khai, không phải
+review độc lập toàn branch vốn bắt buộc phải có trước khi release.
 
-- The layered library architecture is present, but `raumakey-controller/src/main.rs`,
-  `raumakey-tsf/src/lib.rs`, and the shared acceptance runner are still stubs. Library test
-  success does not establish a working input method.
-- `xtask/src/cargo.rs` omitted Windows, controller, and TIP legacy feature selections. CI
-  therefore did not cover the entire declared compatibility path. Dependency-resolving
-  commands also omitted `--locked`.
-- `xtask/src/tasks.rs` silently converted a missing required fuzz suite into a skip note.
-- `xtask/src/evidence.rs` accepted any nonempty collection of passing steps as verified,
-  including incomplete gate lists. `gate.rs` had no whole-branch review step.
-- Secure-field behavior remains inconsistent: policy `compat.rs` permits Vietnamese in
-  `Restricted`, while engine `process.rs` bypasses all secure fields. Resolve the contract
-  before wiring the adapters; no behavior was changed in this increment.
-- The store flushes the temporary file before replacement. Its existing durability concern
-  remains open; this review does not establish power-loss durability.
+- Kiến trúc thư viện phân lớp đã có, nhưng `raumakey-controller/src/main.rs`,
+  `raumakey-tsf/src/lib.rs` và trình chạy nghiệm thu dùng chung vẫn chỉ là stub. Việc test thư
+  viện đạt không chứng minh rằng đã có một kiểu gõ hoạt động được.
+- `xtask/src/cargo.rs` đã bỏ sót các lựa chọn feature cũ (legacy) của Windows, controller và
+  TIP. Vì vậy CI không bao phủ toàn bộ đường tương thích đã khai báo. Các lệnh phân giải phụ
+  thuộc cũng bỏ sót `--locked`.
+- `xtask/src/tasks.rs` đã âm thầm biến việc thiếu một bộ fuzz bắt buộc thành một ghi chú bỏ qua.
+- `xtask/src/evidence.rs` chấp nhận bất kỳ tập bước đạt không rỗng nào là đã kiểm chứng, kể cả
+  danh sách gate chưa đầy đủ. `gate.rs` không có bước review toàn branch.
+- Hành vi với ô bảo mật vẫn chưa nhất quán: chính sách `compat.rs` cho phép gõ tiếng Việt trong
+  `Restricted`, trong khi engine `process.rs` bỏ qua mọi ô bảo mật. Cần thống nhất hợp đồng
+  trước khi nối các adapter; đợt bổ sung này không thay đổi hành vi nào.
+- Bộ lưu trữ (store) flush tệp tạm trước khi thay thế. Mối lo ngại hiện có về độ bền dữ liệu của
+  nó vẫn còn bỏ ngỏ; review này không chứng minh được độ bền khi mất điện.
 
-## Implemented increment
+## Phần bổ sung đã triển khai
 
-CI covers all five workspace `evkey-compat` features, uses the lockfile, and fails early if
-the fuzz suite is absent. Release evidence requires the exact ordered gate list. A new
-whole-branch review gate checks a reviewer-supplied record against the current clean Git
-revision before packaging and records its SHA-256. Plan §12 documents the record schema
-and its limits. Git status failure no longer silently counts as a clean source tree.
+CI bao phủ cả năm feature `evkey-compat` của workspace, dùng lockfile và báo lỗi sớm nếu thiếu
+bộ fuzz. Bằng chứng release yêu cầu đúng danh sách gate theo đúng thứ tự. Một gate review toàn
+branch mới đối chiếu bản ghi do reviewer cung cấp với revision Git sạch hiện tại trước khi đóng
+gói và ghi lại SHA-256 của bản ghi đó. Kế hoạch §12 mô tả schema của bản ghi và các giới hạn
+của nó. Lỗi khi lấy trạng thái Git không còn bị âm thầm tính là cây mã nguồn sạch.
 
-No product functionality, migration semantics, secure-field decisions, or runtime claims
-were added. No independent reviewer approval was created.
+Không bổ sung chức năng sản phẩm, ngữ nghĩa migration (chuyển dữ liệu), quyết định về ô bảo mật
+hay khẳng định nào về runtime. Không tạo ra phê duyệt nào của reviewer độc lập.
 
-## TDD evidence
+## Bằng chứng TDD
 
-Tests ran with the existing portable Rust 1.99.1 Windows toolchain through PowerShell from
-WSL, using the machine's existing MSVC linker configuration.
+Các test được chạy bằng toolchain Rust 1.99.1 portable sẵn có cho Windows, thông qua PowerShell
+từ WSL, dùng cấu hình linker MSVC sẵn có của máy.
 
-1. Baseline: `cargo test --locked -p xtask` — 96 passed.
-2. Red: same command — 95 passed, 4 failed:
+1. Mốc ban đầu (baseline): `cargo test --locked -p xtask` — 96 test đạt.
+2. Đỏ (red): cùng lệnh trên — 95 test đạt, 4 test fail:
    - `cargo::tests::compat_ci_covers_every_workspace_legacy_adapter`
    - `cargo::tests::dependency_resolving_commands_preserve_the_lockfile`
    - `evidence::tests::incomplete_duplicate_or_reordered_gates_cannot_claim_verification`
    - `gate::tests::steps_follow_the_documented_order`
-3. Red: `cargo test --locked -p xtask missing_fuzz_suite` —
-   `tasks::tests::missing_fuzz_suite_fails_before_starting_ci_commands` failed because CI
-   attempted to start Cargo instead of returning the missing-suite error.
-4. Red API contract: `cargo test --locked -p xtask review` failed to compile because
-   `validate_review` did not yet exist. Tests were written before adding that API.
-5. Green: `cargo fmt --all` and `cargo test --locked -p xtask` — 102 passed.
-6. `cargo run --locked -p xtask -- ci --no-fuzz` — passed formatting, Clippy with
-   `-D warnings` for both feature sets, and workspace tests: 1,241 passed with defaults;
-   1,315 passed with all five compatibility features. Both runs retained the 8 existing
-   ignored manual tests. Log: `target/ci-review-followup.log`.
-7. `cargo run --locked -p xtask -- ci` — expected exit 1 for missing `fuzz_smoke`.
-8. `cargo run --locked -p xtask -- release-gate` — expected exit 1 at CI. The generated
-   `target/release-evidence/release-gate-1792205238.json` was checked: `passed=false`,
-   `verification_level="not verified"`, `runtime_verified=false`, the following six steps
-   `not-run`, and no release artifacts. These generated logs are local evidence, not
-   committed release certification.
+3. Đỏ (red): `cargo test --locked -p xtask missing_fuzz_suite` —
+   `tasks::tests::missing_fuzz_suite_fails_before_starting_ci_commands` fail vì CI đã cố khởi
+   chạy Cargo thay vì trả về lỗi thiếu bộ fuzz.
+4. Đỏ (red) ở hợp đồng API: `cargo test --locked -p xtask review` không biên dịch được vì
+   `validate_review` khi đó chưa tồn tại. Các test được viết trước khi thêm API đó.
+5. Xanh (green): `cargo fmt --all` và `cargo test --locked -p xtask` — 102 test đạt.
+6. `cargo run --locked -p xtask -- ci --no-fuzz` — đạt bước kiểm tra định dạng, Clippy với
+   `-D warnings` cho cả hai tập feature, và test workspace: 1,241 test đạt với cấu hình mặc
+   định; 1,315 test đạt với cả năm feature tương thích. Cả hai lần chạy vẫn giữ nguyên 8 test
+   thủ công bị ignore sẵn có. Nhật ký: `target/ci-review-followup.log`.
+7. `cargo run --locked -p xtask -- ci` — thoát với mã 1 như dự kiến do thiếu `fuzz_smoke`.
+8. `cargo run --locked -p xtask -- release-gate` — thoát với mã 1 tại bước CI, như dự kiến. Tệp
+   `target/release-evidence/release-gate-1792205238.json` được sinh ra đã được kiểm tra:
+   `passed=false`, `verification_level="not verified"`, `runtime_verified=false`, sáu bước
+   tiếp theo ở trạng thái `not-run`, và không có sản phẩm release (artifact) nào. Các nhật ký
+   được sinh ra này là bằng chứng cục bộ, không phải chứng nhận release đã được commit.
 
-Independent review of this increment remains pending. No cross-build or Windows host-app
-acceptance test was rerun for this tooling-only change.
+Review độc lập cho đợt bổ sung này vẫn đang chờ. Không chạy lại cross-build hay test nghiệm thu
+trên ứng dụng chủ Windows nào cho thay đổi chỉ liên quan đến công cụ (tooling) này.
 
-## Remaining work
+## Việc còn lại
 
-Implement deterministic fuzz targets and macro/engine integration tests; then proceed with
-the resource build scripts and TSF edit-session port described in design §20.10. Controller
-and TIP implementation, Windows acceptance, and independent review remain required.
+Triển khai các fuzz target tất định và các test tích hợp macro/engine; sau đó tiếp tục với các
+script build tài nguyên và việc port edit session TSF được mô tả trong thiết kế §20.10. Việc
+triển khai controller và TIP, nghiệm thu trên Windows và review độc lập vẫn là bắt buộc.

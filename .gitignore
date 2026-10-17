@@ -10,3 +10,6 @@ target/
 *.user
 *.suo
 .vs/
+
+# Bản build dùng thử trên máy (xem GUIDE.md mục 4)
+/release/

@@ -82,6 +82,40 @@ pub fn dry_run_commands(package_dir: &Path) -> [CommandSpec; 2] {
     ]
 }
 
+/// Every run of the installer dry-run step, in order: the controller's own dry runs, then the
+/// packaged `install.ps1 -DryRun` and `uninstall.ps1 -DryRun`, run with Windows PowerShell 5.1
+/// the way the package README tells users to run them. The scripts' output must meet the same
+/// contract as the controller's, so a script that loses the controller's output or exit code
+/// fails the gate. Windows PowerShell is taken from `system_root` (`%SystemRoot%`), never from
+/// the search path, which starts with the directory of `xtask.exe`.
+pub fn installer_dry_run_commands(package_dir: &Path, system_root: &Path) -> [CommandSpec; 4] {
+    let powershell = system_root
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe");
+    let script = |name: &str| {
+        CommandSpec::new(
+            &powershell,
+            [
+                "-NoProfile".to_owned(),
+                "-ExecutionPolicy".to_owned(),
+                "Bypass".to_owned(),
+                "-File".to_owned(),
+                package_dir.join(name).display().to_string(),
+                "-DryRun".to_owned(),
+            ],
+        )
+    };
+    let [install, uninstall] = dry_run_commands(package_dir);
+    [
+        install,
+        uninstall,
+        script("install.ps1"),
+        script("uninstall.ps1"),
+    ]
+}
+
 /// Contract violations of one dry run: it must exit with 0, mention the Raumakey CLSID and
 /// profile GUID, and never mention a legacy EVKey GUID.
 pub fn dry_run_problems(exit_code: Option<i32>, output: &str) -> Vec<String> {
@@ -205,6 +239,40 @@ mod tests {
         assert_eq!(
             uninstall,
             CommandSpec::new(dir.join("raumakey.exe"), ["uninstall", "--dry-run"])
+        );
+    }
+
+    #[test]
+    fn the_installer_dry_run_runs_the_controller_then_both_scripts_with_windows_powershell() {
+        let dir = Path::new("pkg");
+        let system_root = Path::new("C:\\Windows");
+        let powershell = system_root
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe");
+        let script = |name: &str| {
+            CommandSpec::new(
+                &powershell,
+                [
+                    "-NoProfile".to_owned(),
+                    "-ExecutionPolicy".to_owned(),
+                    "Bypass".to_owned(),
+                    "-File".to_owned(),
+                    dir.join(name).display().to_string(),
+                    "-DryRun".to_owned(),
+                ],
+            )
+        };
+        let [install, uninstall] = dry_run_commands(dir);
+        assert_eq!(
+            installer_dry_run_commands(dir, system_root),
+            [
+                install,
+                uninstall,
+                script("install.ps1"),
+                script("uninstall.ps1")
+            ]
         );
     }
 

@@ -50,6 +50,7 @@ impl Tip {
     /// A new text service, activated after `before` ran on the real thread manager, with
     /// what `before` returned.
     pub fn activate_after<T>(before: impl FnOnce(&ITfThreadMgr, u32) -> T) -> (Self, T) {
+        release_every_key();
         let (real, client_id) = activated_thread_manager();
         let prepared = before(&real, client_id);
         let shim = ThreadMgrShim::new(&real, client_id);
@@ -371,6 +372,17 @@ pub fn key_message(virtual_key: u32, up: bool) -> (WPARAM, LPARAM) {
         WPARAM(virtual_key as usize),
         lparam(scan_code(virtual_key), up),
     )
+}
+
+/// Puts every key of this thread's key state up and every toggle key (Caps Lock, Num Lock,
+/// Scroll Lock) off. A new thread starts with the toggles of the desktop: with Caps Lock on,
+/// the text service translates letters to capitals, while [`Document::app_types`] inserts the
+/// letters as the tests spell them, and the two texts no longer match.
+/// `SetKeyboardState` changes the key state of the calling thread only; it sends no input.
+pub fn release_every_key() {
+    let state = [0_u8; 256];
+    // SAFETY: 256 key states for this thread.
+    unsafe { SetKeyboardState(&state) }.expect("SetKeyboardState");
 }
 
 /// Puts the Ctrl keys (`VK_CONTROL`, `VK_LCONTROL`) of this thread's key state down or up,

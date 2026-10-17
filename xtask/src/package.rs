@@ -148,6 +148,13 @@ function Test-Administrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+# Checked before asking for administrator rights, so that a missing controller is reported here
+# instead of in an elevated window that closes at once.
+if (-not (Test-Path -LiteralPath $controller -PathType Leaf)) {
+    Write-Host "raumakey.exe was not found next to this script: $controller" -ForegroundColor Red
+    exit 1
+}
+
 if ($DryRun) {
     # A dry run only prints the plan, so it needs no elevation.
     $arguments += '--dry-run'
@@ -167,17 +174,54 @@ if ($DryRun) {
     exit $process.ExitCode
 }
 
-# Capturing the output makes PowerShell wait for the GUI-subsystem controller.
-$output = & $controller @arguments
-$code = $LASTEXITCODE
-if ($null -ne $output) {
-    $output | ForEach-Object { Write-Host $_ }
+function Join-Arguments([string[]]$values) {
+    # Quotes each argument for CommandLineToArgvW: backslashes before a quote or at the end of
+    # a quoted argument are doubled, and quotes are escaped.
+    $quoted = foreach ($value in $values) {
+        if ($value.Length -gt 0 -and $value -notmatch '[\s"]') {
+            $value
+        } else {
+            '"' + (($value -replace '(\\*)"', '$1$1\"') -replace '(\\+)\z', '$1$1') + '"'
+        }
+    }
+    return $quoted -join ' '
 }
-if ($code -ne 0) {
-    Write-Host "raumakey.exe exited with code $code." -ForegroundColor Red
-}
-if ($Elevated) {
-    Read-Host 'Press Enter to close this window' | Out-Null
+
+# raumakey.exe is a GUI-subsystem program: the call operator of Windows PowerShell 5.1 neither
+# waits for it nor sets the exit code, so it is started with redirected output and waited for.
+# Standard error is read asynchronously while standard output is read, so neither pipe can fill
+# up; it is printed after standard output, so the order between the two is lost.
+$code = 1
+try {
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $controller
+    $startInfo.Arguments = Join-Arguments $arguments
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $startInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    $errors = $process.StandardError.ReadToEndAsync()
+    $output = $process.StandardOutput.ReadToEnd()
+    $process.WaitForExit()
+    $code = $process.ExitCode
+    foreach ($text in @($output, $errors.Result)) {
+        if ($text) {
+            $text.TrimEnd() -split "`r?`n" | ForEach-Object { Write-Host $_ }
+        }
+    }
+    if ($code -ne 0) {
+        Write-Host "raumakey.exe exited with code $code." -ForegroundColor Red
+    }
+} catch {
+    Write-Host "raumakey.exe could not be run: $($_.Exception.Message)" -ForegroundColor Red
+    $code = 1
+} finally {
+    if ($Elevated) {
+        Read-Host 'Press Enter to close this window' | Out-Null
+    }
 }
 exit $code
 "#;
@@ -212,64 +256,86 @@ pub fn uninstall_script() -> String {
     ))
 }
 
-/// `README.txt` of a package.
+/// `README.txt` of a package: Vietnamese, in UTF-8 with a byte order mark so that every Windows
+/// editor detects the encoding.
 pub fn readme(kind: PackageKind, version: &str, profile: Profile) -> String {
     let build = if profile.is_release() {
         ""
     } else {
-        " (debug build, for development only)"
+        " (bản build debug, chỉ dùng để phát triển)"
     };
     let text = match kind {
         PackageKind::X64 => format!(
-            "Raumakey {version} for Windows - x64 package{build}
+            "Raumakey {version} cho Windows - gói x64{build}
 
-Contents
-  raumakey.exe                    Raumakey controller (x64)
-  x64\\raumakey_tip.dll            text input processor for 64-bit applications
-  x86\\raumakey_tip.dll            text input processor for 32-bit applications
-  tools\\raumakey-test-runner.exe  acceptance test runner
-  install.ps1, uninstall.ps1      registration scripts
-  SHA256SUMS, manifest.json       checksums and package manifest
+Nội dung
+  raumakey.exe                    controller của Raumakey (x64)
+  x64\\raumakey_tip.dll            bộ gõ TSF (TIP) cho ứng dụng 64-bit
+  x86\\raumakey_tip.dll            bộ gõ TSF (TIP) cho ứng dụng 32-bit
+  tools\\raumakey-test-runner.exe  công cụ chạy test nghiệm thu
+  install.ps1, uninstall.ps1      script cài đặt và gỡ cài đặt
+  SHA256SUMS, manifest.json       checksum và manifest của gói
 
-Install (the script asks for administrator rights):
+Nên chép cả thư mục này vào một thư mục chỉ quản trị viên sửa được (ví dụ
+C:\\Program Files\\Raumakey) rồi mới cài: mọi ứng dụng đều nạp TIP từ chỗ đã cài.
+
+Cài đặt (script sẽ hỏi quyền quản trị viên):
   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
-Preview the registration plan without changing anything:
+Xem trước kế hoạch đăng ký mà không thay đổi gì:
   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -DryRun
-Uninstall:
+Gỡ cài đặt:
   powershell -NoProfile -ExecutionPolicy Bypass -File uninstall.ps1
 
-This package is not code-signed. Compare every file with SHA256SUMS
-(Get-FileHash -Algorithm SHA256 <file>) before installing.
+Dùng thử
+  1. Thêm bàn phím. Windows 11: Settings > Time & language > Language & region >
+     Vietnamese > Language options > Keyboards > Add a keyboard > Raumakey.
+     Windows 10: Settings > Time & Language > Language > Vietnamese > Options >
+     Add a keyboard > Raumakey. Nếu danh sách chưa có tiếng Việt (Vietnamese),
+     hãy thêm ngôn ngữ này trước.
+  2. Chọn Raumakey bằng Windows+Space, mở Notepad và gõ: tieengs vieetj
+     Notepad hiện: tiếng việt
+  3. Ctrl+Shift bật hoặc tắt tiếng Việt.
+  4. Tắt tiếng Việt rồi gõ hàng phím số và ngoặc: 1234567890-=[]
+     Phải hiện đúng các ký tự đó. Nếu ra chữ tiếng Việt thì đây là lỗi đã biết
+     đang chờ kiểm chứng (quyết định D36), hãy báo lại.
+Bản này chỉ gõ Telex với tuỳ chọn mặc định: TIP chưa kết nối với controller nên
+cấu hình và macro chưa có tác dụng.
 
-Verification level: not runtime verified. Runtime behaviour on Windows 10+
-must be confirmed with the Raumakey acceptance harness.
+Gói này chưa được ký số. Hãy so từng file với SHA256SUMS
+(Get-FileHash -Algorithm SHA256 <file>) trước khi cài.
 
-Raumakey is free software licensed under GPL-3.0-or-later; see LICENSE and
+Mức kiểm chứng: chưa kiểm chứng khi chạy thật. Hành vi trên Windows 10 trở lên
+phải được xác nhận bằng bộ nghiệm thu của Raumakey.
+
+Hướng dẫn build và cài đặt đầy đủ: GUIDE.md trong kho mã
+https://github.com/khachuy2705/raumakey
+
+Raumakey là phần mềm tự do theo giấy phép GPL-3.0-or-later; xem LICENSE và
 THIRD_PARTY.md.
 "
         ),
         PackageKind::Arm64 => format!(
-            "Raumakey {version} for Windows - ARM64 package (compile-gated){build}
+            "Raumakey {version} cho Windows - gói ARM64 (compile-gated){build}
 
-The ARM64 binaries are compile-gated only: they have never been executed on
-ARM64 Windows, are not supported, and ship without installer scripts.
+Các file ARM64 chỉ được kiểm tra biên dịch (compile-gated): chúng chưa từng chạy
+trên Windows ARM64, chưa được hỗ trợ và không kèm script cài đặt.
 
-Contents
-  raumakey.exe                    Raumakey controller (ARM64)
-  arm64\\raumakey_tip.dll          text input processor for ARM64 applications
-  SHA256SUMS, manifest.json       checksums and package manifest
+Nội dung
+  raumakey.exe                    controller của Raumakey (ARM64)
+  arm64\\raumakey_tip.dll          bộ gõ TSF (TIP) cho ứng dụng ARM64
+  SHA256SUMS, manifest.json       checksum và manifest của gói
 
-This package is not code-signed. Compare every file with SHA256SUMS
+Gói này chưa được ký số. Hãy so từng file với SHA256SUMS
 (Get-FileHash -Algorithm SHA256 <file>).
 
-Verification level: compile-gated, not runtime verified.
+Mức kiểm chứng: chỉ kiểm tra biên dịch (compile-gated), chưa kiểm chứng khi chạy thật.
 
-Raumakey is free software licensed under GPL-3.0-or-later; see LICENSE and
+Raumakey là phần mềm tự do theo giấy phép GPL-3.0-or-later; xem LICENSE và
 THIRD_PARTY.md.
 "
         ),
     };
-    crlf(&text)
+    format!("\u{feff}{}", crlf(&text))
 }
 
 #[derive(Serialize)]
@@ -562,6 +628,31 @@ mod tests {
         ] {
             assert!(script.contains(needle), "install.ps1 lacks {needle}");
         }
+        assert_waits_for_the_controller(&script);
+    }
+
+    /// `raumakey.exe` is a GUI-subsystem program: Windows PowerShell 5.1's call operator neither
+    /// waits for it nor sets `$LASTEXITCODE`, so the scripts start it with redirected output.
+    fn assert_waits_for_the_controller(script: &str) {
+        for needle in [
+            "Test-Path -LiteralPath $controller -PathType Leaf",
+            "System.Diagnostics.ProcessStartInfo",
+            "UseShellExecute = $false",
+            "RedirectStandardOutput = $true",
+            "RedirectStandardError = $true",
+            // Reading both streams synchronously could deadlock on a full pipe.
+            "$process.StandardError.ReadToEndAsync()",
+            "WaitForExit()",
+            "$code = $process.ExitCode",
+            // `$` also matches before a final newline in .NET.
+            r"-replace '(\\+)\z', '$1$1'",
+            // An error in the elevated window must stay readable.
+            "} finally {",
+        ] {
+            assert!(script.contains(needle), "script lacks {needle}");
+        }
+        assert!(!script.contains("& $controller"));
+        assert!(!script.contains("$LASTEXITCODE"));
     }
 
     #[test]
@@ -580,31 +671,47 @@ mod tests {
         }
         assert!(!script.contains("--tip-x64"));
         assert!(!script.contains("'install'"));
+        assert_waits_for_the_controller(&script);
+    }
+
+    /// The README is read in an editor, not by PowerShell: it is Vietnamese, in UTF-8 with a
+    /// byte order mark so that every Windows editor detects the encoding, with CRLF endings.
+    fn assert_windows_readme(text: &str) {
+        assert!(text.starts_with('\u{feff}'), "UTF-8 byte order mark");
+        assert!(
+            !text.replace("\r\n", "").contains('\n'),
+            "CRLF line endings"
+        );
+        assert!(text.ends_with("\r\n"));
     }
 
     #[test]
     fn readmes_state_unsigned_and_verification_level() {
         let x64 = readme(PackageKind::X64, "0.1.0", Profile::Release);
-        assert_windows_text(&x64);
+        assert_windows_readme(&x64);
         for needle in [
             "Raumakey 0.1.0",
             "install.ps1",
             "uninstall.ps1",
             "-DryRun",
-            "not code-signed",
+            "chưa được ký số",
             "SHA256SUMS",
-            "not runtime verified",
+            "chưa kiểm chứng khi chạy thật",
             "GPL-3.0-or-later",
+            "Ctrl+Shift",
+            "GUIDE.md",
+            "Windows 10",
+            "hàng phím số",
         ] {
             assert!(x64.contains(needle), "x64 README lacks {needle}");
         }
         let arm64 = readme(PackageKind::Arm64, "0.1.0", Profile::Release);
-        assert_windows_text(&arm64);
+        assert_windows_readme(&arm64);
         assert!(arm64.contains("compile-gated"));
-        assert!(arm64.contains("not code-signed"));
+        assert!(arm64.contains("chưa được ký số"));
         assert!(!arm64.contains("install.ps1"));
         let debug = readme(PackageKind::X64, "0.1.0", Profile::Debug);
-        assert!(debug.contains("debug build"));
+        assert!(debug.contains("bản build debug"));
     }
 
     #[test]

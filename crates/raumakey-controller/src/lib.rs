@@ -40,10 +40,12 @@
 //! panic ends it with exit code 1 (its location then goes to a standard error that a started
 //! GUI program usually does not have).
 //!
-//! An interactive `cmd.exe` or PowerShell does not wait for a GUI-subsystem program. Callers
-//! that need the exit code wait for it: `start /wait raumakey.exe …`, `Start-Process -Wait
-//! -PassThru`, or capturing the output (`$out = & raumakey.exe …`, as the packaged
-//! `install.ps1` does). Redirected output is never replaced by the console.
+//! An interactive `cmd.exe` or PowerShell does not wait for a GUI-subsystem program, and the
+//! call operator of Windows PowerShell 5.1 sets no exit code for it, even when the output is
+//! captured. Callers that need the exit code wait for it: `start /wait raumakey.exe …`,
+//! `Start-Process -Wait -PassThru`, or `System.Diagnostics.Process` with redirected output and
+//! `WaitForExit`, as the packaged `install.ps1` does. Redirected output is never replaced by
+//! the console.
 //!
 //! Nothing here logs. Commands never print keystrokes, document or clipboard text, or macro
 //! text; they print paths the user passed and Raumakey's own registry keys and files.

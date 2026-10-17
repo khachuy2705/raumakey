@@ -1,453 +1,547 @@
-# Phase 1 task notes — 2026-10-17
+# Ghi chép task Giai đoạn 1 — 2026-10-17
 
-## Scope and process
+## Phạm vi và quy trình
 
-This file records the failing test runs (plan §0 rule 1) and the independent reviews (plan §13,
-design §16) of the work merged on 2026-10-17 after the review follow-up
-(`2026-10-17-review-followup.md`). No restricted evidence was used.
+Tệp này ghi lại các lần chạy test fail (kế hoạch §0 quy tắc 1) và các review độc lập (kế hoạch
+§13, thiết kế §16) của phần việc được merge ngày 2026-10-17 sau đợt khắc phục theo review
+(`2026-10-17-review-followup.md`). Không sử dụng bất kỳ bằng chứng hạn chế (restricted evidence)
+nào.
 
-Each part was built in its own Git worktree from `24ba7a6`. Two independent reviewers checked it,
-one for specification and test adequacy and one for correctness, safety, and code quality. The
-implementer then fixed or declined each finding, and a new reviewer re-reviewed the fixes until it
-approved them with no blocker or major finding left. Reviewers checked claimed test coverage with
-mutations on scratch copies. All tests are host-independent tests on the Windows 11 x86_64
-development host. They are not evidence of runtime behavior in Windows host applications (plan §0
-rule 6).
+Mỗi phần được phát triển trong Git worktree riêng, tách từ `24ba7a6`. Hai reviewer độc lập kiểm
+tra từng phần: một người về đặc tả và mức đầy đủ của test, một người về tính đúng đắn, độ an toàn
+và chất lượng mã. Sau đó người triển khai sửa hoặc từ chối từng phát hiện, và một reviewer mới
+review lại các bản sửa cho đến khi reviewer này duyệt mà không còn phát hiện nào ở mức blocker
+hoặc major. Các reviewer kiểm tra độ bao phủ test được khẳng định bằng các đột biến (mutation) trên
+bản sao nháp. Mọi test đều là test không phụ thuộc host, chạy trên host phát triển Windows 11
+x86_64. Chúng không phải là bằng chứng về hành vi runtime trong các ứng dụng chủ Windows (kế hoạch
+§0 quy tắc 6).
 
-| Part | Content | Plan status |
+| Phần | Nội dung | Trạng thái trong kế hoạch |
 |---|---|---|
-| `raumakey-ipc` | `RuntimeSnapshot::validate` rejects a user-defined input method whose key map the snapshot does not carry (commit `d069063`) | §14.4 item 3 |
-| `raumakey-windows` | Hidden and message-only windows with the message loop and `PostMessageW`, popup menus, icons, modules, COM server support (class factory, object and lock counts), message boxes, and `GetMessageExtraInfo` | §14.2 stage 5 |
-| `raumakey-tsf` | The platform-independent TIP session core `raumakey_tip::session`, tested with fakes | §14.2 stage 6 |
-| `raumakey-tests` | Eight fuzz targets run by `fuzz_smoke`, the macro/engine suite with the real `MacroTable`, 202 compatibility vectors, and `raumakey-test-runner vectors [--json]` | §14.2 stage 7 |
+| `raumakey-ipc` | `RuntimeSnapshot::validate` từ chối một kiểu gõ tự định nghĩa mà snapshot không mang theo bảng phím của nó (commit `d069063`) | §14.4 mục 3 |
+| `raumakey-windows` | Cửa sổ ẩn và cửa sổ message-only cùng vòng lặp thông điệp và `PostMessageW`, popup menu, icon, module, hỗ trợ COM server (class factory, bộ đếm object và bộ đếm khoá), hộp thông báo, và `GetMessageExtraInfo` | §14.2 giai đoạn 5 |
+| `raumakey-tsf` | Lõi session TIP không phụ thuộc nền tảng `raumakey_tip::session`, được test bằng các fake (đối tượng giả) | §14.2 giai đoạn 6 |
+| `raumakey-tests` | Tám fuzz target do `fuzz_smoke` chạy, bộ test macro/engine dùng `MacroTable` thật, 202 vector tương thích, và `raumakey-test-runner vectors [--json]` | §14.2 giai đoạn 7 |
 
 ## raumakey-ipc
 
-- Red: `cargo test --locked -p raumakey-ipc --test messages a_user_defined_method` failed
-  `a_user_defined_method_needs_its_key_map_in_the_snapshot`: `validate` returned `Ok(())` for a
-  user-defined method without key maps.
-- Green: the same test, then `cargo xtask ci --no-fuzz` (1,242 and 1,316 tests passed).
-- Review: no separate review; the whole-branch review (plan §14.5 step 9) covers it.
+- Đỏ: `cargo test --locked -p raumakey-ipc --test messages a_user_defined_method` fail ở
+  `a_user_defined_method_needs_its_key_map_in_the_snapshot`: `validate` trả về `Ok(())` cho một
+  kiểu gõ tự định nghĩa không có bảng phím.
+- Xanh: cùng test đó, sau đó `cargo xtask ci --no-fuzz` (1,242 và 1,316 test pass).
+- Review: không có review riêng; review toàn bộ branch (kế hoạch §14.5 bước 9) bao gồm phần này.
 
-## Evidence by part
+## Bằng chứng theo từng phần
 
-The lists below are condensed from the implementers' and reviewers' reports. Each red run names
-the command and the failing tests; green runs are counted only.
+Các danh sách dưới đây được rút gọn từ báo cáo của người triển khai và của reviewer. Mỗi lần chạy
+đỏ ghi rõ lệnh và các test fail; các lần chạy xanh chỉ được đếm số lượng.
 
 ### raumakey-windows
 
-Implementation: 17 red and 10 green runs.
+Triển khai: 17 lần chạy đỏ và 10 lần chạy xanh.
 
-- Red: module: integration tests written before the module `cargo test --locked -p raumakey-windows --test layer module::` failed `layer binary did not compile (module::*)`. E0432 unresolved import `raumakey_windows::module` (intended: module missing)
-- Red: module: growing-buffer unit tests against a GetModuleFileNameW-contract fake `cargo test --locked -p raumakey-windows --lib module::` failed `lib test target did not compile`. unresolved imports `super::MAX_PATH_UNITS`, `super::read_growing` (helper missing)
-- Red: module: read_growing factored out with a single 260-unit attempt `cargo test --locked -p raumakey-windows --lib module::` failed `module::tests::a_path_longer_than_max_path_is_read_completely`, `module::tests::paths_that_just_fit_or_just_do_not_fit_are_complete`, `module::tests::a_path_that_never_fits_is_an_insufficient_buffer_error`. assertion: paths longer than the buffer came back truncated to 259 units plus NUL;
-- Red: window: tests written before the module `cargo test --locked -p raumakey-windows --test layer window::` failed `layer binary did not compile (window::*)`. E0432 unresolved import `raumakey_windows::window`
-- Red: window: first increment (no unregister on drop, handler call not separately guarded) `cargo test --locked -p raumakey-windows --test layer window::` failed `window::win::the_class_is_unregistered_after_its_last_window_and_handle_are_dropped`, `window::win::a_panicking_handler_is_contained_and_the_default_procedure_answers`. assertions: class still registered after the last drop;
-- Red: menu: tests written before the module `cargo test --locked -p raumakey-windows --test layer menu::` failed `layer binary did not compile (menu::*)`. E0432 unresolved import `raumakey_windows::menu`
-- Red: menu: first increment without validation rules `cargo test --locked -p raumakey-windows --test layer menu::` failed `menu::command_ids_must_be_non_zero_and_texts_free_of_nul`, `menu::win::invalid_items_are_rejected_without_changing_the_menu`. assertion (unwrap_err on Ok): command id 0 was accepted
-- Red: icon: tests written before the module (first RT_GROUP_ICON of shell32.dll found with EnumResourceNamesW) `cargo test --locked -p raumakey-windows --test layer icon::` failed `layer binary did not compile (icon::*)`. E0432 unresolved import `raumakey_windows::icon`
-- Red: icon: first increment, per-DPI variant not yet implemented `cargo test --locked -p raumakey-windows --test layer icon::` failed `icon::win::per_dpi_icon_sizes_scale_with_the_dpi`. assertion (expect): icon_size_for_dpi returned None
-- Red: input: GetMessageExtraInfo tests written first `cargo test --locked -p raumakey-windows --test layer input::` failed `layer binary did not compile (input::extra_info::*)`. unresolved imports `current_message_is_raumakey_injected`, `message_extra_info`
-- Red: input: message_extra_info implemented, classification placeholder `cargo test --locked -p raumakey-windows --test layer input::` failed `input::extra_info::the_extra_information_of_the_thread_is_read_back_and_classified`. assertion: helper returned false for RAUMAKEY_INJECTED_TAG set with SetMessageExtraInfo
-- Red: com_server: tests written before the module (in-process #[implement(IPersist)] test class) `cargo test --locked -p raumakey-windows --test layer com_server::` failed `layer binary did not compile (com_server::*)`. E0432 unresolved import `raumakey_windows::com_server`
-- Red: com_server: first increment without aggregation check and LockServer counting `cargo test --locked -p raumakey-windows --test layer com_server::` failed `com_server::win::aggregation_is_rejected`, `com_server::win::lock_server_updates_the_lock_count`. assertions: aggregated CreateInstance succeeded;
-- Red: dialog: tests written before the module `cargo test --locked -p raumakey-windows --test layer dialog::` failed `layer binary did not compile (dialog::*)`. E0432 unresolved import `raumakey_windows::dialog`
-- Red: dialog: first increment with buttons and icons only `cargo test --locked -p raumakey-windows --test layer dialog::` failed `dialog::message_kinds_map_to_buttons_icons_and_foreground`. assertion: style 64 != 65600 (MB_SETFOREGROUND missing)
-- Red: com_server review finding: regression test with the previous fallback `HRESULT(E_UNEXPECTED).into()` temporarily restored `cargo test --locked -p raumakey-windows --test layer com_server::` failed `com_server::win::factory_methods_leave_the_callers_error_object_alone`. assertion (expect at GetErrorInfo): From<HRESULT> for Error calls GetErrorInfo, so every LockServer/CreateInstance consumed the caller's thread error object
-- Red: menu review finding: Debug must not show item text `cargo test --locked -p raumakey-windows --test layer menu::` failed `menu::debug_output_never_shows_item_text`. assertion: derived Debug printed `text: "gõ tắt: xin chào"`
+- Đỏ: module: test tích hợp được viết trước module `cargo test --locked -p raumakey-windows --test layer module::` fail ở `layer binary did not compile (module::*)`. E0432 unresolved import `raumakey_windows::module` (cố ý: module chưa có)
+- Đỏ: module: test đơn vị cho buffer tăng dần, chạy với một fake theo hợp đồng của GetModuleFileNameW `cargo test --locked -p raumakey-windows --lib module::` fail ở `lib test target did not compile`. unresolved imports `super::MAX_PATH_UNITS`, `super::read_growing` (chưa có hàm trợ giúp)
+- Đỏ: module: tách read_growing thành hàm riêng với một lần thử duy nhất 260 đơn vị `cargo test --locked -p raumakey-windows --lib module::` fail ở `module::tests::a_path_longer_than_max_path_is_read_completely`, `module::tests::paths_that_just_fit_or_just_do_not_fit_are_complete`, `module::tests::a_path_that_never_fits_is_an_insufficient_buffer_error`. assertion: các đường dẫn dài hơn buffer bị trả về ở dạng cắt ngắn còn 259 đơn vị cộng NUL;
+- Đỏ: window: test được viết trước module `cargo test --locked -p raumakey-windows --test layer window::` fail ở `layer binary did not compile (window::*)`. E0432 unresolved import `raumakey_windows::window`
+- Đỏ: window: bước tăng dần đầu tiên (chưa hủy đăng ký khi drop, lời gọi handler chưa được bảo vệ riêng) `cargo test --locked -p raumakey-windows --test layer window::` fail ở `window::win::the_class_is_unregistered_after_its_last_window_and_handle_are_dropped`, `window::win::a_panicking_handler_is_contained_and_the_default_procedure_answers`. assertion: class vẫn còn được đăng ký sau lần drop cuối cùng;
+- Đỏ: menu: test được viết trước module `cargo test --locked -p raumakey-windows --test layer menu::` fail ở `layer binary did not compile (menu::*)`. E0432 unresolved import `raumakey_windows::menu`
+- Đỏ: menu: bước tăng dần đầu tiên chưa có quy tắc kiểm tra hợp lệ `cargo test --locked -p raumakey-windows --test layer menu::` fail ở `menu::command_ids_must_be_non_zero_and_texts_free_of_nul`, `menu::win::invalid_items_are_rejected_without_changing_the_menu`. assertion (unwrap_err on Ok): command id 0 đã được chấp nhận
+- Đỏ: icon: test được viết trước module (RT_GROUP_ICON đầu tiên của shell32.dll, tìm bằng EnumResourceNamesW) `cargo test --locked -p raumakey-windows --test layer icon::` fail ở `layer binary did not compile (icon::*)`. E0432 unresolved import `raumakey_windows::icon`
+- Đỏ: icon: bước tăng dần đầu tiên, chưa triển khai biến thể theo DPI `cargo test --locked -p raumakey-windows --test layer icon::` fail ở `icon::win::per_dpi_icon_sizes_scale_with_the_dpi`. assertion (expect): icon_size_for_dpi trả về None
+- Đỏ: input: test GetMessageExtraInfo được viết trước `cargo test --locked -p raumakey-windows --test layer input::` fail ở `layer binary did not compile (input::extra_info::*)`. unresolved imports `current_message_is_raumakey_injected`, `message_extra_info`
+- Đỏ: input: đã triển khai message_extra_info, phần phân loại vẫn là mã giữ chỗ `cargo test --locked -p raumakey-windows --test layer input::` fail ở `input::extra_info::the_extra_information_of_the_thread_is_read_back_and_classified`. assertion: hàm trợ giúp trả về false với RAUMAKEY_INJECTED_TAG được đặt bằng SetMessageExtraInfo
+- Đỏ: com_server: test được viết trước module (class test in-process #[implement(IPersist)]) `cargo test --locked -p raumakey-windows --test layer com_server::` fail ở `layer binary did not compile (com_server::*)`. E0432 unresolved import `raumakey_windows::com_server`
+- Đỏ: com_server: bước tăng dần đầu tiên chưa kiểm tra aggregation và chưa đếm LockServer `cargo test --locked -p raumakey-windows --test layer com_server::` fail ở `com_server::win::aggregation_is_rejected`, `com_server::win::lock_server_updates_the_lock_count`. assertion: CreateInstance có aggregation vẫn thành công;
+- Đỏ: dialog: test được viết trước module `cargo test --locked -p raumakey-windows --test layer dialog::` fail ở `layer binary did not compile (dialog::*)`. E0432 unresolved import `raumakey_windows::dialog`
+- Đỏ: dialog: bước tăng dần đầu tiên chỉ có nút và icon `cargo test --locked -p raumakey-windows --test layer dialog::` fail ở `dialog::message_kinds_map_to_buttons_icons_and_foreground`. assertion: style 64 != 65600 (thiếu MB_SETFOREGROUND)
+- Đỏ: com_server, phát hiện review: test hồi quy với đường dự phòng (fallback) cũ `HRESULT(E_UNEXPECTED).into()` được khôi phục tạm thời `cargo test --locked -p raumakey-windows --test layer com_server::` fail ở `com_server::win::factory_methods_leave_the_callers_error_object_alone`. assertion (expect tại GetErrorInfo): From<HRESULT> for Error gọi GetErrorInfo, nên mọi lời gọi LockServer/CreateInstance đều tiêu thụ error object của luồng thuộc bên gọi
+- Đỏ: menu, phát hiện review: Debug không được hiển thị văn bản của mục `cargo test --locked -p raumakey-windows --test layer menu::` fail ở `menu::debug_output_never_shows_item_text`. assertion: Debug được derive đã in ra `text: "gõ tắt: xin chào"`
 
-First fix round: 17 red and 13 green runs.
+Vòng sửa thứ nhất: 17 lần chạy đỏ và 13 lần chạy xanh.
 
-- Red: A icon: red, DestroyIcon removed from Drop (temporary mutation) `cargo test --locked -p raumakey-windows --test layer icon::win::each_load` failed `icon::win::each_load_creates_an_icon_of_its_own_that_drop_destroys`. The dropped icon was not destroyed: GetIconInfo succeeded (left None, right Some(0x8007057A)).
-- Red: A icon: red, LR_SHARED added to LoadImageW (temporary mutation) `cargo test --locked -p raumakey-windows --test layer icon::win::each_load` failed `icon::win::each_load_creates_an_icon_of_its_own_that_drop_destroys`. Both loads returned the same cached handle HICON(0x694f0be1).
-- Red: B module: red, UNCHANGED_REFCOUNT removed (temporary mutation) `cargo test --locked -p raumakey-windows --test layer module::finding` failed `module::finding_the_module_of_an_address_does_not_keep_it_loaded`. "a lookup kept the module loaded": the copied DLL stayed loaded after one FreeLibrary.
-- Red: C posting: red, missing items `cargo test --locked -p raumakey-windows --test layer window::` failed `(compile) tests/layer/window.rs`. Unresolved imports REGISTERED_MESSAGE_FIRST, REGISTERED_MESSAGE_LAST, is_postable.
-- Red: C posting: red at assertion level after adding only the pure items `cargo test --locked -p raumakey-windows --test layer window::` failed `window::win::window_handles_post_only_private_and_registered_messages`, `window::win::the_message_loop_drops_posted_destroy_messages`, `window::win::a_window_cut_off_from_its_handler_by_a_posted_destroy_is_still_destroyed_on_drop`. post(WM_NULL) was accepted (unwrap_err on Ok);
-- Red: D creation: red `cargo test --locked -p raumakey-windows --test layer -- window::win::the_handler_is_installed window::win::a_handler_that_rejects` failed `window::win::a_handler_that_rejects_creation_fails_it_and_is_dropped_once`. A refused creation surfaced as kind Other (0x80004005), not Cancelled.
-- Red: D creation: red, handler installed at WM_CREATE (temporary mutation) `cargo test --locked -p raumakey-windows --test layer -- window::win::the_handler_is_installed` failed `window::win::the_handler_is_installed_at_wm_nccreate_and_sees_wm_create_with_the_title`. The first message seen was 1 (WM_CREATE) instead of 0x81 (WM_NCCREATE).
-- Red: F foreign parameters: red, window created by name `cargo test --locked -p raumakey-windows --test layer -- window::win::windows_of_the_class_created_by_name_get_no_handler` failed `window::win::windows_of_the_class_created_by_name_get_no_handler`. Test process crashed with exit code 0xc000041d (STATUS_FATAL_USER_CALLBACK_EXCEPTION): install used the foreign create parameters as a PendingState.
-- Red: F foreign parameters: red, WM_NCCREATE sent to a live window `cargo test --locked -p raumakey-windows --test layer -- window::win::a_wm_nccreate_sent` failed `window::win::a_wm_nccreate_sent_to_a_live_window_keeps_its_handler`. Same crash (0xc000041d): the live window's state was replaced with the foreign pointer.
-- Red: E server lock: red, missing item `cargo test --locked -p raumakey-windows --test layer -- com_server::` failed `(compile) tests/layer/com_server.rs`. No associated function `for_module` on ServerLock.
-- Red: E server lock: red with the minimal always-lock implementation `cargo test --locked -p raumakey-windows --test layer -- com_server::` failed `com_server::win::only_code_of_a_dll_takes_a_server_lock`. assertion failed: ServerLock::for_module(executable).unwrap().is_none().
-- Red: E server lock: red, WindowClass always takes a lock (temporary mutation) `cargo test --locked -p raumakey-windows --test layer -- window::win::classes_and_windows` failed `window::win::classes_and_windows_of_an_executable_hold_no_server_lock`. lock_count was 1, expected 0.
-- Red: G NotifyIcon: red, type-level `cargo test --locked -p raumakey-windows --test layer -- shell::` failed `(compile) shell::win::notify_icons_share_ownership_of_their_icon`. Mismatched types: add and set_icon take HICON, not Rc<Icon>.
-- Red: Nit must_use: red `cargo test --locked -p raumakey-windows --doc` failed `com_server::ObjectGuard (compile_fail doctest)`, `com_server::ServerLock (compile_fail doctest)`. "Test compiled successfully, but it's marked compile_fail": a bare new() compiled without #[must_use].
-- Red: Nit thread affinity: red, temporary unsafe impl Send/Sync for Window and Send for PopupMenu `cargo test --locked -p raumakey-windows --doc` failed `window::win::Window (compile_fail, line 307)`, `window::win::Window (compile_fail, line 314)`, `menu::win::PopupMenu (compile_fail, line 167)`. The snippets compiled once the types were Send or Sync.
-- Red: Nit dialog: red, missing item `cargo test --locked -p raumakey-windows --test layer -- dialog::` failed `(compile) tests/layer/dialog.rs`. Unresolved import raumakey_windows::dialog::message_box_texts.
-- Red: Nit read_growing: red, missing public item `cargo test --locked -p raumakey-windows --test layer -- strings::` failed `(compile) tests/layer/strings.rs`. Unresolved import raumakey_windows::strings::read_growing (it was private in module.rs).
+- Đỏ: A icon: đỏ, bỏ DestroyIcon khỏi Drop (đột biến tạm thời) `cargo test --locked -p raumakey-windows --test layer icon::win::each_load` fail ở `icon::win::each_load_creates_an_icon_of_its_own_that_drop_destroys`. Icon đã drop không bị hủy: GetIconInfo thành công (left None, right Some(0x8007057A)).
+- Đỏ: A icon: đỏ, thêm LR_SHARED vào LoadImageW (đột biến tạm thời) `cargo test --locked -p raumakey-windows --test layer icon::win::each_load` fail ở `icon::win::each_load_creates_an_icon_of_its_own_that_drop_destroys`. Cả hai lần nạp đều trả về cùng một handle đã được cache HICON(0x694f0be1).
+- Đỏ: B module: đỏ, bỏ UNCHANGED_REFCOUNT (đột biến tạm thời) `cargo test --locked -p raumakey-windows --test layer module::finding` fail ở `module::finding_the_module_of_an_address_does_not_keep_it_loaded`. "a lookup kept the module loaded": DLL được sao chép vẫn còn được nạp sau một lần FreeLibrary.
+- Đỏ: C gửi thông điệp (posting): đỏ, thiếu item `cargo test --locked -p raumakey-windows --test layer window::` fail ở `(compile) tests/layer/window.rs`. Unresolved imports REGISTERED_MESSAGE_FIRST, REGISTERED_MESSAGE_LAST, is_postable.
+- Đỏ: C gửi thông điệp: đỏ ở mức assertion sau khi chỉ thêm các item thuần (pure) `cargo test --locked -p raumakey-windows --test layer window::` fail ở `window::win::window_handles_post_only_private_and_registered_messages`, `window::win::the_message_loop_drops_posted_destroy_messages`, `window::win::a_window_cut_off_from_its_handler_by_a_posted_destroy_is_still_destroyed_on_drop`. post(WM_NULL) đã được chấp nhận (unwrap_err on Ok);
+- Đỏ: D tạo cửa sổ: đỏ `cargo test --locked -p raumakey-windows --test layer -- window::win::the_handler_is_installed window::win::a_handler_that_rejects` fail ở `window::win::a_handler_that_rejects_creation_fails_it_and_is_dropped_once`. Một lần tạo cửa sổ bị từ chối lộ ra dưới dạng kind Other (0x80004005), không phải Cancelled.
+- Đỏ: D tạo cửa sổ: đỏ, handler được cài tại WM_CREATE (đột biến tạm thời) `cargo test --locked -p raumakey-windows --test layer -- window::win::the_handler_is_installed` fail ở `window::win::the_handler_is_installed_at_wm_nccreate_and_sees_wm_create_with_the_title`. Thông điệp đầu tiên nhận được là 1 (WM_CREATE) thay vì 0x81 (WM_NCCREATE).
+- Đỏ: F tham số ngoại lai: đỏ, cửa sổ được tạo theo tên `cargo test --locked -p raumakey-windows --test layer -- window::win::windows_of_the_class_created_by_name_get_no_handler` fail ở `window::win::windows_of_the_class_created_by_name_get_no_handler`. Tiến trình test bị sập với mã thoát 0xc000041d (STATUS_FATAL_USER_CALLBACK_EXCEPTION): install đã dùng tham số tạo cửa sổ ngoại lai như một PendingState.
+- Đỏ: F tham số ngoại lai: đỏ, WM_NCCREATE được gửi tới một cửa sổ đang tồn tại `cargo test --locked -p raumakey-windows --test layer -- window::win::a_wm_nccreate_sent` fail ở `window::win::a_wm_nccreate_sent_to_a_live_window_keeps_its_handler`. Cùng kiểu sập đó (0xc000041d): trạng thái của cửa sổ đang tồn tại bị thay bằng con trỏ ngoại lai.
+- Đỏ: E khoá server: đỏ, thiếu item `cargo test --locked -p raumakey-windows --test layer -- com_server::` fail ở `(compile) tests/layer/com_server.rs`. Không có associated function `for_module` trên ServerLock.
+- Đỏ: E khoá server: đỏ với bản triển khai tối thiểu luôn lấy khoá `cargo test --locked -p raumakey-windows --test layer -- com_server::` fail ở `com_server::win::only_code_of_a_dll_takes_a_server_lock`. assertion failed: ServerLock::for_module(executable).unwrap().is_none().
+- Đỏ: E khoá server: đỏ, WindowClass luôn lấy một khoá (đột biến tạm thời) `cargo test --locked -p raumakey-windows --test layer -- window::win::classes_and_windows` fail ở `window::win::classes_and_windows_of_an_executable_hold_no_server_lock`. lock_count là 1, kỳ vọng là 0.
+- Đỏ: G NotifyIcon: đỏ, ở mức kiểu `cargo test --locked -p raumakey-windows --test layer -- shell::` fail ở `(compile) shell::win::notify_icons_share_ownership_of_their_icon`. Mismatched types: add và set_icon nhận HICON, không phải Rc<Icon>.
+- Đỏ: Nit must_use: đỏ `cargo test --locked -p raumakey-windows --doc` fail ở `com_server::ObjectGuard (compile_fail doctest)`, `com_server::ServerLock (compile_fail doctest)`. "Test compiled successfully, but it's marked compile_fail": một lời gọi new() trần vẫn biên dịch được khi không có #[must_use].
+- Đỏ: Nit gắn với luồng (thread affinity): đỏ, tạm thời thêm unsafe impl Send/Sync cho Window và Send cho PopupMenu `cargo test --locked -p raumakey-windows --doc` fail ở `window::win::Window (compile_fail, line 307)`, `window::win::Window (compile_fail, line 314)`, `menu::win::PopupMenu (compile_fail, line 167)`. Các đoạn mã biên dịch được ngay khi các kiểu này là Send hoặc Sync.
+- Đỏ: Nit dialog: đỏ, thiếu item `cargo test --locked -p raumakey-windows --test layer -- dialog::` fail ở `(compile) tests/layer/dialog.rs`. Unresolved import raumakey_windows::dialog::message_box_texts.
+- Đỏ: Nit read_growing: đỏ, thiếu item public `cargo test --locked -p raumakey-windows --test layer -- strings::` fail ở `(compile) tests/layer/strings.rs`. Unresolved import raumakey_windows::strings::read_growing (trước đó nó là private trong module.rs).
 
-Second fix round: 6 red and 4 green runs.
+Vòng sửa thứ hai: 6 lần chạy đỏ và 4 lần chạy xanh.
 
-- Red: Finding 1: unit tests written first, calling the not-yet-existing WindowClass::register_with to hand a DLL's ServerLock to a class of the test executable `cargo test --locked -p raumakey-windows --lib` failed `window::win::tests::a_dll_class_keeps_its_lock_until_its_last_window_is_gone_and_it_is_unregistered`, `window::win::tests::a_dll_class_that_cannot_be_unregistered_keeps_its_lock`. Intended missing item: error[E0599] no associated function `register_with` for `WindowClass` (window.rs:752).
-- Red: Finding 1: reviewer mutation 'always forget' (`if !unregistered {` -> `if true {`) applied by a script that restores the file and checks its sha256 `cargo test --locked -p raumakey-windows --lib -- window::` failed `window::win::tests::a_dll_class_keeps_its_lock_until_its_last_window_is_gone_and_it_is_unregistered`. Assertion 'and its lock released' at window.rs:797: left 1, right 0.
-- Red: Finding 1: reviewer mutation 'always release' (`core::mem::forget(lock);` -> `drop(lock);`) `cargo test --locked -p raumakey-windows --lib -- window::` failed `window::win::tests::a_dll_class_that_cannot_be_unregistered_keeps_its_lock`. Assertion 'and the class keeps its lock' at window.rs:835: left 0, right 1.
-- Red: Finding 2: mutation removes `|| read_slot(hwnd) != 0` from install (empty-slot check) `cargo test --locked -p raumakey-windows --test layer -- window::` failed `window::win::a_wm_nccreate_forwarded_to_a_live_window_during_a_creation_leaves_both_handlers`. Assertion 'the live window kept its handler' at tests/layer/window.rs:407: left 8, right 7.
-- Red: Finding 2: mutation `creating.set(self.previous)` -> `creating.set(core::ptr::null())` in Creating::drop `cargo test --locked -p raumakey-windows --test layer -- window::` failed `window::win::a_window_created_while_another_is_being_created_leaves_both_handlers`. Assertion 'the window being created still got its handler' at tests/layer/window.rs:444: left 0, right 10.
-- Red: Final re-run of all four mutations on the finished code (after the doc-only edits), unit and layer tests together `bash scratchpad/phase1-followup/mutate-window.sh <mutation> crates/raumakey-windows/src/window.rs ... -p raumakey-windows --lib --test layer -- window::` failed `window::win::tests::a_dll_class_keeps_its_lock_until_its_last_window_is_gone_and_it_is_unregistered`, `window::win::tests::a_dll_class_that_cannot_be_unregistered_keeps_its_lock`, `window::win::a_wm_nccreate_forwarded_to_a_live_window_during_a_creation_leaves_both_handlers`, `window::win::a_window_created_while_another_is_being_created_leaves_both_handlers`. Each mutation fails exactly its intended test, one each in the order always-forget, always-release, no-empty-slot-check, mark-not-restored.
+- Đỏ: Phát hiện 1: test đơn vị được viết trước, gọi WindowClass::register_with khi hàm này chưa tồn tại để trao ServerLock của một DLL cho một class của tệp thực thi test `cargo test --locked -p raumakey-windows --lib` fail ở `window::win::tests::a_dll_class_keeps_its_lock_until_its_last_window_is_gone_and_it_is_unregistered`, `window::win::tests::a_dll_class_that_cannot_be_unregistered_keeps_its_lock`. Item thiếu đúng như dự định: error[E0599] no associated function `register_with` for `WindowClass` (window.rs:752).
+- Đỏ: Phát hiện 1: đột biến 'always forget' của reviewer (`if !unregistered {` -> `if true {`), được áp dụng bằng một script có khôi phục tệp và kiểm tra sha256 của tệp `cargo test --locked -p raumakey-windows --lib -- window::` fail ở `window::win::tests::a_dll_class_keeps_its_lock_until_its_last_window_is_gone_and_it_is_unregistered`. Assertion 'and its lock released' tại window.rs:797: left 1, right 0.
+- Đỏ: Phát hiện 1: đột biến 'always release' của reviewer (`core::mem::forget(lock);` -> `drop(lock);`) `cargo test --locked -p raumakey-windows --lib -- window::` fail ở `window::win::tests::a_dll_class_that_cannot_be_unregistered_keeps_its_lock`. Assertion 'and the class keeps its lock' tại window.rs:835: left 0, right 1.
+- Đỏ: Phát hiện 2: đột biến bỏ `|| read_slot(hwnd) != 0` khỏi install (phép kiểm tra slot trống) `cargo test --locked -p raumakey-windows --test layer -- window::` fail ở `window::win::a_wm_nccreate_forwarded_to_a_live_window_during_a_creation_leaves_both_handlers`. Assertion 'the live window kept its handler' tại tests/layer/window.rs:407: left 8, right 7.
+- Đỏ: Phát hiện 2: đột biến `creating.set(self.previous)` -> `creating.set(core::ptr::null())` trong Creating::drop `cargo test --locked -p raumakey-windows --test layer -- window::` fail ở `window::win::a_window_created_while_another_is_being_created_leaves_both_handlers`. Assertion 'the window being created still got its handler' tại tests/layer/window.rs:444: left 0, right 10.
+- Đỏ: Lần chạy lại cuối cùng của cả bốn đột biến trên mã đã hoàn thiện (sau các chỉnh sửa chỉ ở tài liệu), chạy chung test đơn vị và test layer `bash scratchpad/phase1-followup/mutate-window.sh <mutation> crates/raumakey-windows/src/window.rs ... -p raumakey-windows --lib --test layer -- window::` fail ở `window::win::tests::a_dll_class_keeps_its_lock_until_its_last_window_is_gone_and_it_is_unregistered`, `window::win::tests::a_dll_class_that_cannot_be_unregistered_keeps_its_lock`, `window::win::a_wm_nccreate_forwarded_to_a_live_window_during_a_creation_leaves_both_handlers`, `window::win::a_window_created_while_another_is_being_created_leaves_both_handlers`. Mỗi đột biến làm fail đúng test dự định của nó, mỗi đột biến một test, theo thứ tự always-forget, always-release, no-empty-slot-check, mark-not-restored.
 
-Reviews:
+Các review:
 
-- Specification and test adequacy: not approved (2 major, 3 minor, 5 nit).
-- Correctness, safety, and code quality: not approved (1 major, 3 minor, 3 nit).
-- Re-review after the first fix round: approved (1 minor, 1 nit).
-- Re-review after the second fix round: approved (1 minor).
+- Đặc tả và mức đầy đủ của test: không được duyệt (2 major, 3 minor, 5 nit).
+- Tính đúng đắn, độ an toàn và chất lượng mã: không được duyệt (1 major, 3 minor, 3 nit).
+- Review lại sau vòng sửa thứ nhất: được duyệt (1 minor, 1 nit).
+- Review lại sau vòng sửa thứ hai: được duyệt (1 minor).
 
-Open minor findings from the last re-review:
+Các phát hiện mức minor còn mở từ lần review lại cuối cùng:
 
-- minor, `crates/raumakey-windows/src/window.rs:262`: Finding 1 is fixed for the release and forget half of a DLL class's server lock, but the acquisition half is still untested.
+- minor, `crates/raumakey-windows/src/window.rs:262`: Phát hiện 1 đã được sửa cho nửa giải phóng và forget của khoá server thuộc một class DLL, nhưng nửa lấy khoá vẫn chưa được test.
 
 ### raumakey-tsf
 
-Implementation: 16 red and 11 green runs.
+Triển khai: 16 lần chạy đỏ và 11 lần chạy xanh.
 
-- Red: Batch 1 (typing #1 #3 #15 #17 #40, apply failures #41, defaults v1): tests written before any session code `cargo test --locked -p raumakey-tsf` failed `session test target (compile error)`. E0432 unresolved import raumakey_tip::session: the API did not exist yet
-- Red: Batch 1: API skeleton with stubbed behaviour (test_key_down=false, key_down=pass-through) `cargo test --locked -p raumakey-tsf` failed `typing::matrix_1_telex_a_a_gives_a_circumflex_in_one_edit`, `typing::matrix_3_telex_a_s_gives_a_acute`, `typing::a_whole_word_is_typed_with_one_edit_per_transformation`, `typing::matrix_15_an_invalid_converted_word_is_restored_at_the_boundary`, `typing::a_space_after_a_valid_word_reaches_the_application`, `typing::matrix_17_semantic_backspace_restores_the_previous_state`, `typing::matrix_40_two_units_are_replaced_by_one_in_a_single_edit`, `typing::navigation_ends_the_word_and_reaches_the_application`, and 6 more. 14 failed on their claim/edit assertions;
-- Red: Batch 2 (context: #19 selection change, #20 document switches, close, bound, engine error) `cargo test --locked -p raumakey-tsf` failed `session test target (compile error)`. MAX_DOCUMENTS, set_focus, document_closed, document_count missing
-- Red: Batch 2: no-op stubs for the new API `cargo test --locked -p raumakey-tsf` failed `context::matrix_19_a_selection_change_by_the_user_resets_the_word`, `context::matrix_19_a_reported_change_resets_even_when_the_caret_ends_where_it_was`, `context::only_the_first_change_after_a_passed_key_is_its_echo`, `context::matrix_20_a_focus_change_mid_word_never_deletes_across_documents`, `context::matrix_20_a_key_from_another_document_is_a_document_change`, `context::a_focus_change_away_from_every_document_ends_the_word`, `context::closing_a_document_drops_its_state`, `context::document_states_are_bounded`, and 1 more. 9 failed as intended;
-- Red: Batch 3 (gates: #39 injected, non-TSF transport, #29 secure field) `cargo test --locked -p raumakey-tsf` failed `gates::hosts_without_tsf_range_edits_are_left_to_the_controller`, `gates::matrix_39_an_injected_key_from_another_document_changes_nothing`. no transport gate;
-- Red: Batch 4 (snapshots, #16, macro + Enter replay, invalid snapshots, mode, reset-all, host rules) `cargo test --locked -p raumakey-tsf` failed `session test target (compile error)`. SnapshotError, apply_runtime_snapshot, apply_macro_snapshot, set_vietnamese_mode, reset_all missing
-- Red: Batch 4: stubs returning Ok/no-op `cargo test --locked -p raumakey-tsf` failed `config::a_runtime_snapshot_replaces_the_configuration`, `config::matrix_16_without_auto_restore_the_rendered_word_is_committed`, `config::an_invalid_runtime_snapshot_keeps_the_last_good_configuration`, `config::a_new_configuration_ends_the_word_in_progress`, `config::macros_expand_at_a_boundary`, `config::enter_after_a_macro_is_replayed_with_the_injected_tag`, `config::an_invalid_macro_snapshot_keeps_the_last_good_table`, `config::a_macro_snapshot_over_the_entry_limit_is_rejected`, and 4 more. 12 failed as intended;
-- Red: Batch 4: config installation, validation, mode, reset-all `cargo test --locked -p raumakey-tsf` failed `config::a_runtime_snapshot_replaces_the_configuration`. test bug: VNI 'a6' + space is restored because 'â' alone is not a complete syllable;
-- Red: Batch 5 (D24 hotkeys) `cargo test --locked -p raumakey-tsf` failed `session test target (compile error)`. set_connected, set_altgr_layout missing
-- Red: Batch 5: stubs `cargo test --locked -p raumakey-tsf` failed `hotkeys::d24_disconnected_ctrl_shift_toggles_the_local_mode`, `hotkeys::d24_the_toggle_ends_the_word_in_progress`, `hotkeys::d24_disconnected_ctrl_shift_alt_f12_hard_resets_and_is_eaten`, `hotkeys::d24_ctrl_shift_alt_space_is_the_other_hard_reset`, `hotkeys::d24_the_auto_repeat_of_a_hard_reset_key_is_swallowed`, `hotkeys::d24_losing_the_connection_hands_classification_back`, `hotkeys::d24_hotkeys_of_the_snapshot_replace_the_defaults`, `hotkeys::d24_altgr_types_characters_on_altgr_layouts`, and 2 more. 10 failed as intended;
-- Red: Mutations after the new test (generation / revision / full-key / verdict-memory ignored) `cargo test --locked -q -p raumakey-tsf --test session (each mutation restored)` failed `cache::a_reset_between_the_test_of_a_passed_letter_and_key_down_starts_a_new_word`, `cache::a_macro_snapshot_between_test_and_key_down_is_honoured`, `cache::the_test_of_the_same_key_in_another_host_state_is_not_used`, `hotkeys::d24_disconnected_ctrl_shift_alt_f12_hard_resets_and_is_eaten (and 9 other hotkey tests)`. each mutated rule is caught;
-- Red: Batch 7 privacy tests `cargo test --locked -p raumakey-tsf` failed `session test target (compile error)`. E0277 ServiceCore does not implement Debug
-- Red: Batch 7 with temporary derived (leaky) Debug `cargo test --locked -p raumakey-tsf` failed `privacy::key_strokes_hide_their_key_and_text`, `privacy::edit_requests_hide_document_text`, `privacy::key_down_outcomes_hide_the_replayed_key`, `privacy::the_core_hides_words_documents_and_macros`. derived Debug printed key codes, UTF-16 text and owned words
-- Red: Batch 7 with redacted Debug implementations `cargo test --locked -p raumakey-tsf` failed `privacy::edit_requests_hide_document_text`, `privacy::the_core_hides_words_documents_and_macros`. test bugs: typed precomposed 'ư' instead of Telex 'uw';
-- Red: Batch 7 green, then mutation (leaky EditRequest and core Debug) against the corrected tests `cargo test --locked -q -p raumakey-tsf --test session privacy` failed `privacy::edit_requests_hide_document_text`, `privacy::the_core_hides_words_documents_and_macros`. the corrected tests still catch leaks;
-- Red: Overflow found in review: the app's echo of keys typed past the context limit reset the engine's overflow state `cargo test --locked -p raumakey-tsf` failed `typing::a_word_over_the_context_limit_passes_through_until_the_next_boundary`. left '…xâ', right '…xaa': the word restarted mid-token
+- Đỏ: Đợt 1 (gõ phím #1 #3 #15 #17 #40, áp dụng thất bại #41, giá trị mặc định v1): test được viết trước mọi mã session `cargo test --locked -p raumakey-tsf` fail ở `session test target (compile error)`. E0432 unresolved import raumakey_tip::session: API chưa tồn tại
+- Đỏ: Đợt 1: khung API với hành vi stub (test_key_down=false, key_down=pass-through) `cargo test --locked -p raumakey-tsf` fail ở `typing::matrix_1_telex_a_a_gives_a_circumflex_in_one_edit`, `typing::matrix_3_telex_a_s_gives_a_acute`, `typing::a_whole_word_is_typed_with_one_edit_per_transformation`, `typing::matrix_15_an_invalid_converted_word_is_restored_at_the_boundary`, `typing::a_space_after_a_valid_word_reaches_the_application`, `typing::matrix_17_semantic_backspace_restores_the_previous_state`, `typing::matrix_40_two_units_are_replaced_by_one_in_a_single_edit`, `typing::navigation_ends_the_word_and_reaches_the_application`, và 6 test khác. 14 test fail ở các assertion về claim/edit của chúng;
+- Đỏ: Đợt 2 (context: #19 thay đổi vùng chọn, #20 chuyển tài liệu, đóng, giới hạn, lỗi engine) `cargo test --locked -p raumakey-tsf` fail ở `session test target (compile error)`. Thiếu MAX_DOCUMENTS, set_focus, document_closed, document_count
+- Đỏ: Đợt 2: stub no-op cho API mới `cargo test --locked -p raumakey-tsf` fail ở `context::matrix_19_a_selection_change_by_the_user_resets_the_word`, `context::matrix_19_a_reported_change_resets_even_when_the_caret_ends_where_it_was`, `context::only_the_first_change_after_a_passed_key_is_its_echo`, `context::matrix_20_a_focus_change_mid_word_never_deletes_across_documents`, `context::matrix_20_a_key_from_another_document_is_a_document_change`, `context::a_focus_change_away_from_every_document_ends_the_word`, `context::closing_a_document_drops_its_state`, `context::document_states_are_bounded`, và 1 test khác. 9 test fail đúng như dự định;
+- Đỏ: Đợt 3 (gate: #39 phím được chèn (injected), đường truyền không phải TSF, #29 ô bảo mật) `cargo test --locked -p raumakey-tsf` fail ở `gates::hosts_without_tsf_range_edits_are_left_to_the_controller`, `gates::matrix_39_an_injected_key_from_another_document_changes_nothing`. chưa có gate theo đường truyền;
+- Đỏ: Đợt 4 (snapshot, #16, macro + phát lại Enter, snapshot không hợp lệ, chế độ, reset-all, quy tắc theo host) `cargo test --locked -p raumakey-tsf` fail ở `session test target (compile error)`. Thiếu SnapshotError, apply_runtime_snapshot, apply_macro_snapshot, set_vietnamese_mode, reset_all
+- Đỏ: Đợt 4: stub trả về Ok/no-op `cargo test --locked -p raumakey-tsf` fail ở `config::a_runtime_snapshot_replaces_the_configuration`, `config::matrix_16_without_auto_restore_the_rendered_word_is_committed`, `config::an_invalid_runtime_snapshot_keeps_the_last_good_configuration`, `config::a_new_configuration_ends_the_word_in_progress`, `config::macros_expand_at_a_boundary`, `config::enter_after_a_macro_is_replayed_with_the_injected_tag`, `config::an_invalid_macro_snapshot_keeps_the_last_good_table`, `config::a_macro_snapshot_over_the_entry_limit_is_rejected`, và 4 test khác. 12 test fail đúng như dự định;
+- Đỏ: Đợt 4: cài đặt cấu hình, kiểm tra hợp lệ, chế độ, reset-all `cargo test --locked -p raumakey-tsf` fail ở `config::a_runtime_snapshot_replaces_the_configuration`. lỗi của test: VNI 'a6' + dấu cách bị khôi phục vì riêng 'â' không phải là một âm tiết hoàn chỉnh;
+- Đỏ: Đợt 5 (phím tắt D24) `cargo test --locked -p raumakey-tsf` fail ở `session test target (compile error)`. Thiếu set_connected, set_altgr_layout
+- Đỏ: Đợt 5: stub `cargo test --locked -p raumakey-tsf` fail ở `hotkeys::d24_disconnected_ctrl_shift_toggles_the_local_mode`, `hotkeys::d24_the_toggle_ends_the_word_in_progress`, `hotkeys::d24_disconnected_ctrl_shift_alt_f12_hard_resets_and_is_eaten`, `hotkeys::d24_ctrl_shift_alt_space_is_the_other_hard_reset`, `hotkeys::d24_the_auto_repeat_of_a_hard_reset_key_is_swallowed`, `hotkeys::d24_losing_the_connection_hands_classification_back`, `hotkeys::d24_hotkeys_of_the_snapshot_replace_the_defaults`, `hotkeys::d24_altgr_types_characters_on_altgr_layouts`, và 2 test khác. 10 test fail đúng như dự định;
+- Đỏ: Các đột biến sau test mới (bỏ qua generation / revision / full-key / verdict-memory) `cargo test --locked -q -p raumakey-tsf --test session (each mutation restored)` fail ở `cache::a_reset_between_the_test_of_a_passed_letter_and_key_down_starts_a_new_word`, `cache::a_macro_snapshot_between_test_and_key_down_is_honoured`, `cache::the_test_of_the_same_key_in_another_host_state_is_not_used`, `hotkeys::d24_disconnected_ctrl_shift_alt_f12_hard_resets_and_is_eaten (and 9 other hotkey tests)`. mỗi quy tắc bị đột biến đều bị phát hiện;
+- Đỏ: Đợt 7, test quyền riêng tư `cargo test --locked -p raumakey-tsf` fail ở `session test target (compile error)`. E0277 ServiceCore không triển khai Debug
+- Đỏ: Đợt 7 với Debug được derive tạm thời (làm lộ dữ liệu) `cargo test --locked -p raumakey-tsf` fail ở `privacy::key_strokes_hide_their_key_and_text`, `privacy::edit_requests_hide_document_text`, `privacy::key_down_outcomes_hide_the_replayed_key`, `privacy::the_core_hides_words_documents_and_macros`. Debug được derive đã in ra mã phím, văn bản UTF-16 và các từ mà core sở hữu
+- Đỏ: Đợt 7 với các bản triển khai Debug đã che dữ liệu `cargo test --locked -p raumakey-tsf` fail ở `privacy::edit_requests_hide_document_text`, `privacy::the_core_hides_words_documents_and_macros`. lỗi của test: gõ 'ư' dựng sẵn thay vì Telex 'uw';
+- Đỏ: Đợt 7 xanh, sau đó chạy đột biến (Debug làm lộ dữ liệu cho EditRequest và core) với các test đã sửa `cargo test --locked -q -p raumakey-tsf --test session privacy` fail ở `privacy::edit_requests_hide_document_text`, `privacy::the_core_hides_words_documents_and_macros`. các test đã sửa vẫn bắt được rò rỉ;
+- Đỏ: Lỗi tràn được phát hiện khi review: echo của ứng dụng đối với các phím được gõ vượt quá giới hạn context đã đặt lại trạng thái tràn của engine `cargo test --locked -p raumakey-tsf` fail ở `typing::a_word_over_the_context_limit_passes_through_until_the_next_boundary`. left '…xâ', right '…xaa': từ bị bắt đầu lại giữa chừng token
 
-First fix round: 14 red and 11 green runs.
+Vòng sửa thứ nhất: 14 lần chạy đỏ và 11 lần chạy xanh.
 
-- Red: Mutant (a): reset after a failed apply removed (service.rs backed up and restored) `cargo test --locked -p raumakey-tsf --test session` failed `failures::matrix_41_the_key_after_a_failed_edit_starts_a_new_word`. The stale word "a" survives, so the next 'a' edits (attempts 2).
-- Red: Mutant (b): commit next instead of reset after a failed apply `cargo test --locked -p raumakey-tsf --test session` failed `failures::matrix_41_the_key_after_a_failed_edit_starts_a_new_word`. The rejected "â" is committed, and the next 'a' attempts a second edit.
-- Red: Mutant (c): no reset in the Decision::Reset arm `cargo test --locked -p raumakey-tsf --test session` failed `context::an_engine_error_ends_the_word_before_any_report_arrives`. After the engine error, the word "a" survives and 's' edits it.
-- Red: Findings 1/7: reviewer's #19 scenario written against the old API `cargo test --locked -p raumakey-tsf --test session -- matrix_19_a_click_before_the_passed_key_is_reported_ends_the_word` failed `context::matrix_19_a_click_before_the_passed_key_is_reported_ends_the_word`. left "bá ba", right "bas ba": the click was taken as the echo, and the tone edited the word before the click.
-- Red: Findings 1/7: tests and fake moved to selection_changed(document, SelectionChange) `cargo test --locked -p raumakey-tsf --test session --no-run` failed `(compile) 13 errors: E0432 unresolved import SelectionChange; E0061 selection_changed takes 1 argument`. The evidence-based API does not exist yet.
-- Red: Mutant: Arrival::is always true (the old behaviour: any first change is the echo) `cargo test --locked -p raumakey-tsf --test session` failed `context::matrix_19_a_click_before_the_passed_key_is_reported_ends_the_word`, `context::matrix_19_a_report_of_other_text_than_the_passed_key_ends_the_word`. Shows that the new tests depend on comparing the evidence.
-- Red: Findings 3/8: Ctrl+Shift with a reported foreign change `cargo test --locked -p raumakey-tsf --test session -- d24_a_click_reported_while_ctrl_shift_is_held_cancels_the_toggle` failed `hotkeys::d24_a_click_reported_while_ctrl_shift_is_held_cancels_the_toggle`. assertion failed: !claimed.
-- Red: Findings 3/8: mouse tests written `cargo test --locked -p raumakey-tsf --test session --no-run` failed `(compile) E0599 no method named mouse_down (4 errors)`. The mouse entry point does not exist yet.
-- Red: Finding 8 (probes): tests written `cargo test --locked -p raumakey-tsf --test session --no-run` failed `(compile) E0599 no method named needs_probe / record_probe (8 errors)`. The probe pass-throughs do not exist yet.
-- Red: Finding 4 mutants: set_focus keeps the classifier / enter_document keeps it / key-downs keep the expected arrival `cargo test --locked -p raumakey-tsf --test session (once per mutant, service.rs restored after each)` failed `hotkeys::d24_a_focus_change_mid_chord_never_fires`, `hotkeys::d24_a_document_change_mid_chord_never_fires`, `context::an_arrival_reported_after_the_next_key_down_ends_the_word`. Each mutant fails exactly its own test (110 passed, 1 failed in each run).
-- Red: Finding 9: user method without its key map `cargo test --locked -p raumakey-tsf --test session user_` failed `config::a_user_method_without_its_key_map_keeps_the_last_good_configuration`. left Ok(()), right Err(Runtime(Malformed(InvalidKeymap))): the snapshot was accepted.
-- Red: Finding 10: build_macro_table/install_macro_table tests `cargo test --locked -p raumakey-tsf --test session --no-run` failed `(compile) E0432 unresolved import build_macro_table; E0599 no method named install_macro_table`. The API does not exist yet.
-- Red: Finding 14 (nit): lock-key test, then the mutant with the lock-key branch removed `cargo test --locked -p raumakey-tsf --test session` failed `typing::lock_keys_do_not_end_the_word`. With the mutant, Caps Lock becomes a navigation key that is claimed and ends the word.
-- Red: Privacy of the new SelectionChange: test, then the derived-Debug mutant `cargo test --locked -p raumakey-tsf --test session privacy` failed `privacy::reported_changes_hide_the_inserted_text`. A derived Debug prints the inserted UTF-16 units.
+- Đỏ: Đột biến (a): bỏ việc đặt lại sau một lần áp dụng thất bại (service.rs được sao lưu và khôi phục) `cargo test --locked -p raumakey-tsf --test session` fail ở `failures::matrix_41_the_key_after_a_failed_edit_starts_a_new_word`. Từ cũ "a" vẫn còn, nên phím 'a' tiếp theo tạo edit (attempts 2).
+- Đỏ: Đột biến (b): commit next thay vì đặt lại sau một lần áp dụng thất bại `cargo test --locked -p raumakey-tsf --test session` fail ở `failures::matrix_41_the_key_after_a_failed_edit_starts_a_new_word`. "â" đã bị từ chối lại được commit, và phím 'a' tiếp theo thử thực hiện edit thứ hai.
+- Đỏ: Đột biến (c): không đặt lại trong nhánh Decision::Reset `cargo test --locked -p raumakey-tsf --test session` fail ở `context::an_engine_error_ends_the_word_before_any_report_arrives`. Sau lỗi engine, từ "a" vẫn còn và 's' sửa nó.
+- Đỏ: Phát hiện 1/7: kịch bản #19 của reviewer được viết theo API cũ `cargo test --locked -p raumakey-tsf --test session -- matrix_19_a_click_before_the_passed_key_is_reported_ends_the_word` fail ở `context::matrix_19_a_click_before_the_passed_key_is_reported_ends_the_word`. left "bá ba", right "bas ba": cú click bị coi là echo, và dấu thanh đã sửa từ nằm trước cú click.
+- Đỏ: Phát hiện 1/7: chuyển test và fake sang selection_changed(document, SelectionChange) `cargo test --locked -p raumakey-tsf --test session --no-run` fail ở `(compile) 13 errors: E0432 unresolved import SelectionChange; E0061 selection_changed takes 1 argument`. API dựa trên bằng chứng chưa tồn tại.
+- Đỏ: Đột biến: Arrival::is luôn là true (hành vi cũ: mọi thay đổi đầu tiên đều là echo) `cargo test --locked -p raumakey-tsf --test session` fail ở `context::matrix_19_a_click_before_the_passed_key_is_reported_ends_the_word`, `context::matrix_19_a_report_of_other_text_than_the_passed_key_ends_the_word`. Cho thấy các test mới phụ thuộc vào việc so sánh bằng chứng.
+- Đỏ: Phát hiện 3/8: Ctrl+Shift kèm một thay đổi ngoại lai đã được báo cáo `cargo test --locked -p raumakey-tsf --test session -- d24_a_click_reported_while_ctrl_shift_is_held_cancels_the_toggle` fail ở `hotkeys::d24_a_click_reported_while_ctrl_shift_is_held_cancels_the_toggle`. assertion failed: !claimed.
+- Đỏ: Phát hiện 3/8: đã viết test chuột `cargo test --locked -p raumakey-tsf --test session --no-run` fail ở `(compile) E0599 no method named mouse_down (4 errors)`. Điểm vào cho chuột chưa tồn tại.
+- Đỏ: Phát hiện 8 (probe): đã viết test `cargo test --locked -p raumakey-tsf --test session --no-run` fail ở `(compile) E0599 no method named needs_probe / record_probe (8 errors)`. Các hàm chuyển tiếp (pass-through) cho probe chưa tồn tại.
+- Đỏ: Các đột biến của phát hiện 4: set_focus giữ lại bộ phân loại (classifier) / enter_document giữ lại nó / các key-down giữ lại arrival đang chờ `cargo test --locked -p raumakey-tsf --test session (once per mutant, service.rs restored after each)` fail ở `hotkeys::d24_a_focus_change_mid_chord_never_fires`, `hotkeys::d24_a_document_change_mid_chord_never_fires`, `context::an_arrival_reported_after_the_next_key_down_ends_the_word`. Mỗi đột biến làm fail đúng test của riêng nó (mỗi lần chạy có 110 test pass, 1 test fail).
+- Đỏ: Phát hiện 9: kiểu gõ tự định nghĩa không có bảng phím của nó `cargo test --locked -p raumakey-tsf --test session user_` fail ở `config::a_user_method_without_its_key_map_keeps_the_last_good_configuration`. left Ok(()), right Err(Runtime(Malformed(InvalidKeymap))): snapshot đã được chấp nhận.
+- Đỏ: Phát hiện 10: test build_macro_table/install_macro_table `cargo test --locked -p raumakey-tsf --test session --no-run` fail ở `(compile) E0432 unresolved import build_macro_table; E0599 no method named install_macro_table`. API chưa tồn tại.
+- Đỏ: Phát hiện 14 (nit): test phím khoá, sau đó đột biến bỏ nhánh xử lý phím khoá `cargo test --locked -p raumakey-tsf --test session` fail ở `typing::lock_keys_do_not_end_the_word`. Với đột biến này, Caps Lock trở thành một phím điều hướng bị claim và kết thúc từ.
+- Đỏ: Quyền riêng tư của SelectionChange mới: test, sau đó đột biến dùng Debug được derive `cargo test --locked -p raumakey-tsf --test session privacy` fail ở `privacy::reported_changes_hide_the_inserted_text`. Một Debug được derive sẽ in ra các đơn vị UTF-16 được chèn.
 
-Second fix round: 7 red and 1 green runs.
+Vòng sửa thứ hai: 7 lần chạy đỏ và 1 lần chạy xanh.
 
-- Red: Red: new probe, secure-field and mouse tests (first version) run against the unchanged code `cargo test --locked -p raumakey-tsf --test session -- matrix_27 matrix_29_a_secure_field_is_never_probed matrix_19_a_mouse_press_after` failed `gates::matrix_27_a_snapshot_that_carries_a_working_probe_overrides_a_failed_local_one`, `gates::matrix_27_a_snapshot_that_carries_a_failed_probe_overrides_a_working_local_one`, `gates::matrix_27_a_host_is_probed_again_once_a_snapshot_drops_the_record_it_carried`, `gates::matrix_29_a_secure_field_is_never_probed`, `gates::matrix_27_a_context_without_a_document_is_never_probed`. These failed for the intended reasons.
-- Red: Red: the newer-version iteration of the probed-again test on its own (loop order swapped temporarily, then restored) `cargo test --locked -p raumakey-tsf --test session -- matrix_27_a_host_is_probed_again` failed `gates::matrix_27_a_host_is_probed_again_once_a_snapshot_drops_the_record_it_carried`. The old code kept the local result after a snapshot carried a newer-version record and re-applied it later, so needs_probe stayed false.
-- Red: Red: the reviewer's mutant m03 (the Mouse word reset in mouse_down replaced by `let _ = document;`), applied to a backup and restored afterwards (checked with… `cargo test --locked -p raumakey-tsf --test session -- matrix_19 mouse` failed `context::matrix_19_a_mouse_press_after_the_last_report_ends_the_word`. The result was "bá ba" instead of "bas ba": the tone key edited the text in front of an unreported click, which is the matrix #19 violation.
-- Red: First run after implementing the fix `cargo test --locked -p raumakey-tsf` failed `gates::matrix_27_a_snapshot_that_carries_a_working_probe_overrides_a_failed_local_one`, `gates::matrix_27_a_host_is_probed_again_once_a_snapshot_drops_the_record_it_carried`. The tests expected the wrong text;
-- Red: Red again: the final test versions run against the original service.rs (swapped in from a backup, then the fix restored) `cargo test --locked -p raumakey-tsf --test session -- matrix_27 matrix_29_a_secure_field_is_never_probed` failed `gates::matrix_27_a_snapshot_that_carries_a_working_probe_overrides_a_failed_local_one`, `gates::matrix_27_a_snapshot_that_carries_a_failed_probe_overrides_a_working_local_one`, `gates::matrix_27_a_host_is_probed_again_once_a_snapshot_drops_the_record_it_carried`, `gates::matrix_29_a_secure_field_is_never_probed`, `gates::matrix_27_a_context_without_a_document_is_never_probed`. Same reasons as the first red run.
-- Red: Mutation check M1: drop a local result when the snapshot carries any record for the executable, even an older-version one (applied, then restored) `cargo test --locked -p raumakey-tsf --test session -- matrix_27` failed `gates::matrix_27_a_record_of_an_older_probe_version_leaves_the_local_result_in_effect`. The guard test pins this boundary of the retention rule.
-- Red: Mutation check M2: keep local results forever and apply them only while no snapshot record covers the executable (applied, then restored) `cargo test --locked -p raumakey-tsf --test session -- matrix_27` failed `gates::matrix_27_a_host_is_probed_again_once_a_snapshot_drops_the_record_it_carried`. The probed-again test pins dropping the local result for good.
+- Đỏ: Đỏ: các test mới về probe, ô bảo mật và chuột (phiên bản đầu tiên) chạy với mã chưa thay đổi `cargo test --locked -p raumakey-tsf --test session -- matrix_27 matrix_29_a_secure_field_is_never_probed matrix_19_a_mouse_press_after` fail ở `gates::matrix_27_a_snapshot_that_carries_a_working_probe_overrides_a_failed_local_one`, `gates::matrix_27_a_snapshot_that_carries_a_failed_probe_overrides_a_working_local_one`, `gates::matrix_27_a_host_is_probed_again_once_a_snapshot_drops_the_record_it_carried`, `gates::matrix_29_a_secure_field_is_never_probed`, `gates::matrix_27_a_context_without_a_document_is_never_probed`. Các test này fail đúng vì những lý do dự định.
+- Đỏ: Đỏ: riêng lượt lặp với phiên bản mới hơn của test probe lại (thứ tự vòng lặp được đổi tạm thời, sau đó khôi phục) `cargo test --locked -p raumakey-tsf --test session -- matrix_27_a_host_is_probed_again` fail ở `gates::matrix_27_a_host_is_probed_again_once_a_snapshot_drops_the_record_it_carried`. Mã cũ giữ lại kết quả cục bộ sau khi một snapshot mang theo bản ghi có phiên bản mới hơn và áp dụng lại kết quả đó về sau, nên needs_probe vẫn là false.
+- Đỏ: Đỏ: đột biến m03 của reviewer (việc đặt lại từ theo lý do Mouse trong mouse_down được thay bằng `let _ = document;`), áp dụng trên một bản sao lưu và khôi phục sau đó (kiểm tra bằng… `cargo test --locked -p raumakey-tsf --test session -- matrix_19 mouse` fail ở `context::matrix_19_a_mouse_press_after_the_last_report_ends_the_word`. Kết quả là "bá ba" thay vì "bas ba": phím dấu thanh đã sửa văn bản nằm trước một cú click chưa được báo cáo, đây chính là vi phạm ma trận #19.
+- Đỏ: Lần chạy đầu tiên sau khi triển khai bản sửa `cargo test --locked -p raumakey-tsf` fail ở `gates::matrix_27_a_snapshot_that_carries_a_working_probe_overrides_a_failed_local_one`, `gates::matrix_27_a_host_is_probed_again_once_a_snapshot_drops_the_record_it_carried`. Các test kỳ vọng sai văn bản;
+- Đỏ: Lại đỏ: các phiên bản test cuối cùng chạy với service.rs gốc (thay vào từ bản sao lưu, sau đó khôi phục bản sửa) `cargo test --locked -p raumakey-tsf --test session -- matrix_27 matrix_29_a_secure_field_is_never_probed` fail ở `gates::matrix_27_a_snapshot_that_carries_a_working_probe_overrides_a_failed_local_one`, `gates::matrix_27_a_snapshot_that_carries_a_failed_probe_overrides_a_working_local_one`, `gates::matrix_27_a_host_is_probed_again_once_a_snapshot_drops_the_record_it_carried`, `gates::matrix_29_a_secure_field_is_never_probed`, `gates::matrix_27_a_context_without_a_document_is_never_probed`. Cùng lý do như lần chạy đỏ đầu tiên.
+- Đỏ: Kiểm tra đột biến M1: bỏ kết quả cục bộ khi snapshot mang bất kỳ bản ghi nào cho tệp thực thi, kể cả bản ghi có phiên bản cũ hơn (áp dụng, sau đó khôi phục) `cargo test --locked -p raumakey-tsf --test session -- matrix_27` fail ở `gates::matrix_27_a_record_of_an_older_probe_version_leaves_the_local_result_in_effect`. Test bảo vệ (guard) này cố định ranh giới này của quy tắc giữ lại.
+- Đỏ: Kiểm tra đột biến M2: giữ kết quả cục bộ mãi mãi và chỉ áp dụng chúng khi không có bản ghi snapshot nào bao phủ tệp thực thi (áp dụng, sau đó khôi phục) `cargo test --locked -p raumakey-tsf --test session -- matrix_27` fail ở `gates::matrix_27_a_host_is_probed_again_once_a_snapshot_drops_the_record_it_carried`. Test probe lại cố định việc bỏ hẳn kết quả cục bộ.
 
-Reviews:
+Các review:
 
-- Specification and test adequacy: not approved (3 major, 2 minor, 1 nit).
-- Correctness, safety, and code quality: not approved (1 major, 4 minor, 3 nit).
-- Re-review after the first fix round: not approved (2 major, 1 minor).
-- Re-review after the second fix round: approved (2 minor).
+- Đặc tả và mức đầy đủ của test: không được duyệt (3 major, 2 minor, 1 nit).
+- Tính đúng đắn, độ an toàn và chất lượng mã: không được duyệt (1 major, 4 minor, 3 nit).
+- Review lại sau vòng sửa thứ nhất: không được duyệt (2 major, 1 minor).
+- Review lại sau vòng sửa thứ hai: được duyệt (2 minor).
 
-Open minor findings from the last re-review:
+Các phát hiện mức minor còn mở từ lần review lại cuối cùng:
 
-- minor, `crates/raumakey-tsf/tests/session/gates.rs:125`: No test covers the documented rule that a local probe result is applied again to every later snapshot that lacks a record (service.rs:530-531, mod.rs:112-117).
-- minor, `crates/raumakey-tsf/src/session/mod.rs:167`: The COM-layer contract (mod.rs:167-170, record_probe docs at service.rs:524-540) only says to report each recorded result with Command::ReportProbe.
+- minor, `crates/raumakey-tsf/tests/session/gates.rs:125`: Không có test nào bao phủ quy tắc đã được ghi trong tài liệu rằng kết quả probe cục bộ được áp dụng lại cho mọi snapshot về sau không có bản ghi (service.rs:530-531, mod.rs:112-117).
+- minor, `crates/raumakey-tsf/src/session/mod.rs:167`: Hợp đồng của lớp COM (mod.rs:167-170, tài liệu của record_probe tại service.rs:524-540) chỉ nói rằng phải báo cáo từng kết quả đã ghi bằng Command::ReportProbe.
 ### raumakey-tests
 
-Implementation, step 1: 5 red and 10 green runs.
+Triển khai, bước 1: 5 lần chạy đỏ và 10 lần chạy xanh.
 
-- Red: fuzz_smoke.rs (with corpus, generators and a splitmix64 PRNG) written before raumakey_tests::fuzz_targets existed `cargo test --locked -p raumakey-tests --test fuzz_smoke` failed `fuzz_smoke (compile error E0432: unresolved import `raumakey_tests::fuzz_targets`)`. The fuzz_targets module did not exist yet;
-- Red: fuzz_targets module added with the byte reader and one panicking stub per target `cargo test --locked -p raumakey-tests --features evkey-compat --test fuzz_smoke` failed `engine_sequences`, `malformed_utf16`, `config_documents`, `macro_files`, `ipc_frames`, `legacy_sequence_wrap`, `transaction_application`, `every_target_accepts_the_empty_input_and_one_byte`. Each stub panics 'not implemented', so every target test fails at corpus entry 0.
-- Red: Reader::chance must be false for zero bytes; `cargo test --locked -p raumakey-tests --lib` failed `fuzz_targets::reader::tests::take_and_rest_stop_at_the_end`, `fuzz_targets::reader::tests::rare_choices_are_off_for_zero_bytes`. chance() treated an exhausted reader's zero bytes as yes, so short inputs almost always took the rare 8K-unit insert path.
-- Red: Ignored BUG tests for triggers the table accepts but the engine cannot reach `cargo test --locked -p raumakey-tests --test macro_engine -- --ignored` failed `d47_an_accepted_trigger_with_boundary_punctuation_expands`, `d47_an_accepted_trigger_longer_than_the_default_context_expands`. 'v.v' + space stays 'v.v ' and a 40-character trigger + space stays unexpanded in Telex, VNI and VIQR;
-- Red: Oracle mutation check: one deliberately broken expectation per target (sed/perl on copies, then restored) `cargo test --locked -p raumakey-tests --features evkey-compat --test fuzz_smoke -- <target>` failed `transaction_application`, `macro_files`, `malformed_utf16`, `legacy_sequence_wrap`, `ipc_frames`, `config_documents`, `engine_sequences`. Each mutated reference (wrong replay text, highest id wins, wrong scalar boundary, sequence+1, frames reached, TOML text comparison, suffix length) was caught;
+- Đỏ: viết fuzz_smoke.rs (cùng corpus, các generator và một PRNG splitmix64) trước khi raumakey_tests::fuzz_targets tồn tại `cargo test --locked -p raumakey-tests --test fuzz_smoke` fail ở `fuzz_smoke (compile error E0432: unresolved import `raumakey_tests::fuzz_targets`)`. Khi đó module fuzz_targets chưa tồn tại;
+- Đỏ: thêm module fuzz_targets cùng byte reader và mỗi target một stub gây panic `cargo test --locked -p raumakey-tests --features evkey-compat --test fuzz_smoke` fail ở `engine_sequences`, `malformed_utf16`, `config_documents`, `macro_files`, `ipc_frames`, `legacy_sequence_wrap`, `transaction_application`, `every_target_accepts_the_empty_input_and_one_byte`. Mỗi stub panic với 'not implemented', nên test của mọi target đều fail ở mục corpus 0.
+- Đỏ: Reader::chance phải là false khi gặp các byte 0; `cargo test --locked -p raumakey-tests --lib` fail ở `fuzz_targets::reader::tests::take_and_rest_stop_at_the_end`, `fuzz_targets::reader::tests::rare_choices_are_off_for_zero_bytes`. chance() coi các byte 0 của một reader đã cạn là "có", nên các input ngắn gần như luôn đi vào nhánh insert 8K unit vốn hiếm gặp.
+- Đỏ: các test BUG bị ignore cho những trigger mà bảng chấp nhận nhưng engine không thể chạm tới `cargo test --locked -p raumakey-tests --test macro_engine -- --ignored` fail ở `d47_an_accepted_trigger_with_boundary_punctuation_expands`, `d47_an_accepted_trigger_longer_than_the_default_context_expands`. 'v.v' + dấu cách vẫn là 'v.v ' và một trigger 40 ký tự + dấu cách vẫn không được mở rộng trong Telex, VNI và VIQR;
+- Đỏ: kiểm tra đột biến cho oracle: mỗi target một kỳ vọng bị cố ý làm sai (dùng sed/perl trên các bản sao, rồi khôi phục) `cargo test --locked -p raumakey-tests --features evkey-compat --test fuzz_smoke -- <target>` fail ở `transaction_application`, `macro_files`, `malformed_utf16`, `legacy_sequence_wrap`, `ipc_frames`, `config_documents`, `engine_sequences`. Mỗi bản tham chiếu bị đột biến (sai văn bản replay, id lớn nhất thắng, sai ranh giới scalar, sequence+1, số frame đã tới, so sánh văn bản TOML, độ dài hậu tố) đều bị bắt;
 
-Implementation, step 2: 8 red and 4 green runs.
+Triển khai, bước 2: 8 lần chạy đỏ và 4 lần chạy xanh.
 
-- Red: Wrote tests/compat_vectors.rs and tests/test_runner.rs before any production code `cargo test --locked -p raumakey-tests --test compat_vectors --test test_runner` failed `compat_vectors (compile error E0432: unresolved import raumakey_tests::vectors)`, `test_runner (compile error E0432: unresolved imports raumakey_tests::runner and raumakey_tests::vectors)`. Neither module existed.
-- Red: Added vectors and runner skeletons (types, docs, stub function bodies) and the loader and executor unit tests (src/vectors/tests.rs) `cargo test --locked -p raumakey-tests --lib --test compat_vectors --test test_runner --no-fail-fast` failed `17 vectors::tests (all loader and executor tests)`, `compat_vectors::every_embedded_vector_passes`, `compat_vectors::every_engine_level_matrix_row_has_a_vector`, `compat_vectors::every_plan_golden_vector_has_a_vector`, `compat_vectors::the_embedded_list_matches_the_fixture_directory`, `14 test_runner tests (parsing, report, environment, binary)`. Stubs: parse_fixture returned Empty, run_vector returned Fail, EMBEDDED was empty and the fixture directory did not exist, parse_args returned NoCommand, the report was empty, and the binary was still fn main() {}.
-- Red: Implemented validation and the TOML loader `cargo test --locked -p raumakey-tests --lib vectors` failed `vectors::tests::ids_are_lowercase_groups_and_unique`, `vectors::tests::a_passing_vector_records_the_run`, `vectors::tests::every_mismatch_is_a_failure`, `vectors::tests::invalid_vectors_fail_setup_without_running`, `vectors::tests::vectors_run_with_the_real_macro_table_and_the_initial_text`. The four executor tests failed against the stub run_vector, as intended.
-- Red: Transcribed the 5 fixture files and filled EMBEDDED `cargo test --locked -p raumakey-tests --test compat_vectors` failed `no_two_vectors_share_a_setup`. All 203 vectors passed on their first run.
-- Red: Runner unit test for the registry-value filters, written against stub helpers `cargo test --locked -p raumakey-tests --lib runner` failed `runner::tests::registry_values_are_kept_only_in_their_documented_form`. The stub is_build_number and is_display_version returned false.
-- Red: Test that only the runner binary carries the version strings and the manifest identity, written before build.rs `cargo test --locked -p raumakey-tests --test test_runner only_the_runner` failed `only_the_runner_binary_carries_the_windows_resources`. Failed with 'no FileDescription': the runner had no version resource yet.
-- Red: Characterisation test for the executor's not-applied and owned-suffix checks, using a doctored ScriptOutcome `cargo test --locked -p raumakey-tests --lib unapplied` failed `unapplied_transactions_and_a_stray_word_are_failures (compile error E0603: function check is private)`. A mutation check had shown that no test reached these defensive checks, because the real engine never produces an unapplied transaction.
-- Red: Mutation checks: apply one fault, run the matching test, restore the file and verify its SHA-256 `python -I <scratchpad>/mutate.py <worktree> (cargo test --locked -p raumakey-tests ... per mutation)` failed `debug_output_hides_keys_texts_and_macros`, `every_embedded_vector_passes (wrong text; wrong transaction)`, `every_vector_names_an_existing_source_test`, `every_engine_level_matrix_row_has_a_vector`, `every_plan_golden_vector_has_a_vector`, `unapplied_transactions_and_a_stray_word_are_failures (2 mutations)`, `the_report_holds_every_vector_with_the_design_fields`, `the_probed_environment_names_this_process (wrong UBR value)`. 11 of 12 mutations were caught and every file was restored.
+- Đỏ: viết tests/compat_vectors.rs và tests/test_runner.rs trước mọi mã production `cargo test --locked -p raumakey-tests --test compat_vectors --test test_runner` fail ở `compat_vectors (compile error E0432: unresolved import raumakey_tests::vectors)`, `test_runner (compile error E0432: unresolved imports raumakey_tests::runner and raumakey_tests::vectors)`. Cả hai module đều chưa tồn tại.
+- Đỏ: thêm khung của vectors và runner (kiểu, tài liệu, thân hàm stub) cùng các test đơn vị của loader và executor (src/vectors/tests.rs) `cargo test --locked -p raumakey-tests --lib --test compat_vectors --test test_runner --no-fail-fast` fail ở `17 vectors::tests (all loader and executor tests)`, `compat_vectors::every_embedded_vector_passes`, `compat_vectors::every_engine_level_matrix_row_has_a_vector`, `compat_vectors::every_plan_golden_vector_has_a_vector`, `compat_vectors::the_embedded_list_matches_the_fixture_directory`, `14 test_runner tests (parsing, report, environment, binary)`. Các stub: parse_fixture trả về Empty, run_vector trả về Fail, EMBEDDED rỗng và thư mục fixture chưa tồn tại, parse_args trả về NoCommand, report rỗng, và binary vẫn là fn main() {}.
+- Đỏ: hiện thực phần kiểm tra hợp lệ và loader TOML `cargo test --locked -p raumakey-tests --lib vectors` fail ở `vectors::tests::ids_are_lowercase_groups_and_unique`, `vectors::tests::a_passing_vector_records_the_run`, `vectors::tests::every_mismatch_is_a_failure`, `vectors::tests::invalid_vectors_fail_setup_without_running`, `vectors::tests::vectors_run_with_the_real_macro_table_and_the_initial_text`. Bốn test của executor fail với run_vector dạng stub, đúng như dự định.
+- Đỏ: chép lại 5 file fixture và điền EMBEDDED `cargo test --locked -p raumakey-tests --test compat_vectors` fail ở `no_two_vectors_share_a_setup`. Cả 203 vector đều đạt ngay lần chạy đầu tiên.
+- Đỏ: test đơn vị của runner cho các bộ lọc giá trị registry, viết với các helper dạng stub `cargo test --locked -p raumakey-tests --lib runner` fail ở `runner::tests::registry_values_are_kept_only_in_their_documented_form`. Các stub is_build_number và is_display_version trả về false.
+- Đỏ: test rằng chỉ binary của runner mang các chuỗi phiên bản và danh tính manifest, viết trước build.rs `cargo test --locked -p raumakey-tests --test test_runner only_the_runner` fail ở `only_the_runner_binary_carries_the_windows_resources`. Fail với 'no FileDescription': runner chưa có resource phiên bản.
+- Đỏ: test đặc tả hành vi (characterisation test) cho các kiểm tra chưa áp dụng (not-applied) và hậu tố sở hữu (owned-suffix) của executor, dùng một ScriptOutcome được chỉnh tay `cargo test --locked -p raumakey-tests --lib unapplied` fail ở `unapplied_transactions_and_a_stray_word_are_failures (compile error E0603: function check is private)`. Một lần kiểm tra đột biến trước đó đã cho thấy không test nào chạm tới các kiểm tra phòng vệ này, vì engine thật không bao giờ tạo ra một transaction chưa được áp dụng.
+- Đỏ: kiểm tra đột biến: áp một lỗi, chạy test tương ứng, khôi phục file và xác minh SHA-256 của nó `python -I <scratchpad>/mutate.py <worktree> (cargo test --locked -p raumakey-tests ... per mutation)` fail ở `debug_output_hides_keys_texts_and_macros`, `every_embedded_vector_passes (wrong text; wrong transaction)`, `every_vector_names_an_existing_source_test`, `every_engine_level_matrix_row_has_a_vector`, `every_plan_golden_vector_has_a_vector`, `unapplied_transactions_and_a_stray_word_are_failures (2 mutations)`, `the_report_holds_every_vector_with_the_design_fields`, `the_probed_environment_names_this_process (wrong UBR value)`. 11 trên 12 đột biến bị bắt và mọi file đều được khôi phục.
 
-First fix round: 10 red and 9 green runs.
+Vòng sửa thứ nhất: 10 lần chạy đỏ và 9 lần chạy xanh.
 
-- Red: Characterise the over-limit macro defect with the new BUG-ignored test `cargo test --locked -p raumakey-tests --test macro_engine -- --ignored d47_d53_accepted_replacements_beyond_the_insert_limit_expand` failed `d47_d53_accepted_replacements_beyond_the_insert_limit_expand`. 'big{SPACE}: an accepted macro never expands' (production defect, plan §14.4 item 4).
-- Red: Loader must reject ids that are not VectorIds `cargo test --locked -p raumakey-tests --lib ids_are_diagnostic_vector_ids` failed `vectors::tests::ids_are_diagnostic_vector_ids`. 'accepted 1 vectors': a 33-byte id passed because MAX_ID_LEN was 64.
-- Red: Every embedded id must be a VectorId `cargo test --locked -p raumakey-tests --test compat_vectors every_vector_id_is_a_diagnostic_vector_id` failed `every_vector_id_is_a_diagnostic_vector_id`. 40 ids are not valid VectorIds (longer than 32 characters).
-- Red: Guard: vectors resting on the VIQR escape decision must name it `cargo test --locked -p raumakey-tests --test compat_vectors` failed `vectors_resting_on_the_viqr_escape_decision_name_it`, `the_escape_scan_follows_plan_3_6`. The guard listed exactly a08-viqr-escape-then-a-word.
-- Red: Guards: no raw combining marks in fixtures; `cargo test --locked -p raumakey-tests --test compat_vectors` failed `fixture_sources_write_combining_marks_as_escapes`, `rowless_baseline_vectors_are_plan_golden_vectors`. 20 raw-mark lines in matrix-d-macros.toml.
-- Red: Engine target must report invalid transactions after a host edit `cargo test --locked -p raumakey-tests --lib fuzz_targets::engine` failed `fuzz_targets::engine::tests::a_malformed_insert_is_a_finding_after_a_host_edit`, `fuzz_targets::engine::tests::an_insert_over_the_limit_is_a_finding_after_a_host_edit`, `fuzz_targets::engine::tests::a_replay_without_consume_is_a_finding_after_a_host_edit`. 'test did not panic as expected': the stale branch reset silently on any apply error.
-- Red: Oracle split into plan-derived and labelled model rules `cargo test --locked -p raumakey-tests --lib fuzz_targets::transaction` failed `fuzz_targets::transaction::tests::plan_2_7_gives_enter_tab_and_space_their_text`, `fuzz_targets::transaction::tests::the_model_rules_apply_only_where_plan_2_7_does_not_decide`, `fuzz_targets::transaction::tests::the_simulator_replays_the_events_own_key_with_its_text`. Compile error E0425: plan_replay_text and model_replay_rule did not exist.
-- Red: A panicking vector must be a failure, not an abort `cargo test --locked -p raumakey-tests --lib a_panicking_run` failed `vectors::tests::a_panicking_run_is_a_failure_of_its_vector`. Compile error: run::run_vector_with was unresolved and Failure::Panic did not exist.
-- Red: Location-only panic line for the runner binary `cargo test --locked -p raumakey-tests --lib runner::` failed `runner::tests::a_panic_is_reported_by_its_location_only`. Compile error: runner::panic_line was unresolved.
-- Red: fuzz_smoke test for config_concurrency written first `cargo test --locked -p raumakey-tests --test fuzz_smoke` failed `config_concurrency`, `every_target_accepts_the_empty_input_and_one_byte`. Compile error E0425: fuzz_targets::config_concurrency did not exist.
+- Đỏ: đặc tả lỗi macro vượt giới hạn bằng test mới bị ignore dạng BUG `cargo test --locked -p raumakey-tests --test macro_engine -- --ignored d47_d53_accepted_replacements_beyond_the_insert_limit_expand` fail ở `d47_d53_accepted_replacements_beyond_the_insert_limit_expand`. 'big{SPACE}: an accepted macro never expands' (lỗi production, kế hoạch §14.4 mục 4).
+- Đỏ: loader phải từ chối các id không phải VectorId `cargo test --locked -p raumakey-tests --lib ids_are_diagnostic_vector_ids` fail ở `vectors::tests::ids_are_diagnostic_vector_ids`. 'accepted 1 vectors': một id 33 byte lọt qua vì MAX_ID_LEN là 64.
+- Đỏ: mọi id được nhúng phải là một VectorId `cargo test --locked -p raumakey-tests --test compat_vectors every_vector_id_is_a_diagnostic_vector_id` fail ở `every_vector_id_is_a_diagnostic_vector_id`. 40 id không phải VectorId hợp lệ (dài hơn 32 ký tự).
+- Đỏ: test guard: các vector dựa trên quyết định về escape của VIQR phải nêu tên quyết định đó `cargo test --locked -p raumakey-tests --test compat_vectors` fail ở `vectors_resting_on_the_viqr_escape_decision_name_it`, `the_escape_scan_follows_plan_3_6`. Guard liệt kê đúng a08-viqr-escape-then-a-word.
+- Đỏ: các test guard: không có dấu kết hợp (combining mark) thô trong fixture; `cargo test --locked -p raumakey-tests --test compat_vectors` fail ở `fixture_sources_write_combining_marks_as_escapes`, `rowless_baseline_vectors_are_plan_golden_vectors`. Có 20 dòng chứa dấu thô trong matrix-d-macros.toml.
+- Đỏ: target engine phải báo các transaction không hợp lệ sau một lần host chỉnh sửa `cargo test --locked -p raumakey-tests --lib fuzz_targets::engine` fail ở `fuzz_targets::engine::tests::a_malformed_insert_is_a_finding_after_a_host_edit`, `fuzz_targets::engine::tests::an_insert_over_the_limit_is_a_finding_after_a_host_edit`, `fuzz_targets::engine::tests::a_replay_without_consume_is_a_finding_after_a_host_edit`. 'test did not panic as expected': nhánh stale lặng lẽ reset khi gặp bất kỳ lỗi apply nào.
+- Đỏ: tách oracle thành các quy tắc suy ra từ kế hoạch và các quy tắc mô hình có gắn nhãn `cargo test --locked -p raumakey-tests --lib fuzz_targets::transaction` fail ở `fuzz_targets::transaction::tests::plan_2_7_gives_enter_tab_and_space_their_text`, `fuzz_targets::transaction::tests::the_model_rules_apply_only_where_plan_2_7_does_not_decide`, `fuzz_targets::transaction::tests::the_simulator_replays_the_events_own_key_with_its_text`. Lỗi biên dịch E0425: plan_replay_text và model_replay_rule chưa tồn tại.
+- Đỏ: một vector gây panic phải được tính là thất bại của vector đó, không phải một lần abort `cargo test --locked -p raumakey-tests --lib a_panicking_run` fail ở `vectors::tests::a_panicking_run_is_a_failure_of_its_vector`. Lỗi biên dịch: run::run_vector_with chưa được resolve và Failure::Panic chưa tồn tại.
+- Đỏ: dòng panic chỉ nêu vị trí cho binary của runner `cargo test --locked -p raumakey-tests --lib runner::` fail ở `runner::tests::a_panic_is_reported_by_its_location_only`. Lỗi biên dịch: runner::panic_line chưa được resolve.
+- Đỏ: test fuzz_smoke cho config_concurrency được viết trước `cargo test --locked -p raumakey-tests --test fuzz_smoke` fail ở `config_concurrency`, `every_target_accepts_the_empty_input_and_one_byte`. Lỗi biên dịch E0425: fuzz_targets::config_concurrency chưa tồn tại.
 
-Reviews:
+Các review:
 
-- Specification and test adequacy: not approved (1 major, 5 minor, 3 nit).
-- Correctness, safety, and code quality: not approved (2 major, 3 minor, 4 nit).
-- Re-review after the first fix round: approved (1 minor).
+- Đặc tả và mức đầy đủ của test: không được duyệt (1 major, 5 minor, 3 nit).
+- Tính đúng đắn, độ an toàn và chất lượng mã: không được duyệt (2 major, 3 minor, 4 nit).
+- Review lại sau vòng sửa thứ nhất: được duyệt (1 minor).
 
-Open minor findings from the last re-review:
+Các phát hiện mức minor còn mở từ lần review lại cuối cùng:
 
-- minor, `tests/tests/fuzz_smoke/corpus.rs:285`: The new config_concurrency corpus entry `stale_and_future_revisions` does not decode the way its comments say.
+- minor, `tests/tests/fuzz_smoke/corpus.rs:285`: Mục corpus mới `stale_and_future_revisions` của config_concurrency không giải mã theo đúng cách mà các chú thích của nó mô tả.
 
-## Verification
+## Kiểm chứng
 
-After merging `raumakey-windows` and `raumakey-tsf` on top of `d069063` (commit `834dbf5`):
+Sau khi merge `raumakey-windows` và `raumakey-tsf` lên trên `d069063` (commit `834dbf5`):
 
-- `cargo fmt --all --check`: pass.
-- `cargo xtask ci --no-fuzz`: Clippy with `-D warnings` passed with default features and with all
-  five `evkey-compat` features; 1,442 tests passed with default features and 1,515 with the
-  compatibility features, 0 failed, 10 manual tests ignored.
+- `cargo fmt --all --check`: đạt.
+- `cargo xtask ci --no-fuzz`: Clippy với `-D warnings` đạt với các feature mặc định và với cả
+  năm feature `evkey-compat`; 1,442 test đạt với các feature mặc định và 1,515 với các feature
+  tương thích, 0 không đạt, 10 test thủ công bị bỏ qua (ignored).
 - `cargo test --locked -p raumakey-windows -p raumakey-tsf --target i686-pc-windows-msvc`: 346
-  passed under WOW64, 0 failed, 10 manual tests ignored.
-- `cargo xtask cross`: debug builds for x86_64, i686, and aarch64 passed.
+  test đạt dưới WOW64, 0 không đạt, 10 test thủ công bị bỏ qua.
+- `cargo xtask cross`: các build debug cho x86_64, i686 và aarch64 đều đạt.
 
-After merging `raumakey-tests` (this revision; plan §14.6):
+Sau khi merge `raumakey-tests` (bản sửa đổi này; kế hoạch §14.6):
 
-- `cargo fmt --all --check`: pass.
-- `cargo xtask ci`, now with its fuzz smoke step: Clippy with `-D warnings` passed with both
-  feature sets; 1,535 tests passed with default features and 1,609 with the compatibility
-  features, 0 failed, 13 ignored (10 manual tests and the 3 `BUG` tests of plan §14.4);
-  `fuzz_smoke` passed 10 tests.
-- `cargo test --locked -p raumakey-tests --target i686-pc-windows-msvc`: 93 passed under WOW64,
-  3 `BUG` tests ignored.
-- `cargo xtask cross`: debug builds for x86_64, i686, and aarch64 passed.
-- `raumakey-test-runner vectors --json <file>`: 202 of 202 vectors passed.
+- `cargo fmt --all --check`: đạt.
+- `cargo xtask ci`, nay có thêm bước fuzz smoke: Clippy với `-D warnings` đạt với cả hai bộ
+  feature; 1,535 test đạt với các feature mặc định và 1,609 với các feature tương thích,
+  0 không đạt, 13 bị bỏ qua (10 test thủ công và 3 test `BUG` của kế hoạch §14.4);
+  `fuzz_smoke` đạt 10 test.
+- `cargo test --locked -p raumakey-tests --target i686-pc-windows-msvc`: 93 test đạt dưới WOW64,
+  3 test `BUG` bị bỏ qua.
+- `cargo xtask cross`: các build debug cho x86_64, i686 và aarch64 đều đạt.
+- `raumakey-test-runner vectors --json <file>`: 202 trên 202 vector đạt.
 
-## Phase 2a: TIP COM layer and controller
+## Giai đoạn 2a: lớp COM của TIP và controller
 
-Built in two worktrees from `0bdfbcc` and reviewed the same way as Phase 1: two independent
-reviewers per part, fixes by the implementer, and a re-review that approved them with no blocker
-or major finding.
+Được xây dựng trong hai worktree từ `0bdfbcc` và được review theo cùng cách như Giai đoạn 1: hai
+reviewer độc lập cho mỗi phần, người triển khai tự sửa, và một lần review lại đã duyệt các bản
+sửa mà không còn phát hiện blocker hay major nào.
 
-| Part | Content | Plan status |
+| Phần | Nội dung | Trạng thái trong kế hoạch |
 |---|---|---|
-| `raumakey-tsf` | The COM layer of `raumakey_tip.dll`: build script with resources, the four exports, class factory, `DllRegisterServer`/`DllUnregisterServer`, `TextService` with its activation lifecycle and sinks, the key path through synchronous edit sessions (the pure `adapter` module tested with fakes), input scopes, the thread `WH_MOUSE` hook, and the open/close compartment | §14.2 stage 6 |
-| `raumakey-controller` | Build script with resources, GUI subsystem, the command line (`install`/`uninstall` with dry runs, rollback, and elevation; `startup`; `convert`; `update`; `--version`), and a minimal tray run mode; new `raumakey-windows` helpers (UIPI message filter, notify-icon callback decoder, per-account logon task names) | §14.2 stage 5 |
+| `raumakey-tsf` | Lớp COM của `raumakey_tip.dll`: build script kèm resource, bốn export, class factory, `DllRegisterServer`/`DllUnregisterServer`, `TextService` cùng vòng đời kích hoạt và các sink của nó, đường đi của phím qua các edit session đồng bộ (module `adapter` thuần được test bằng fake), các input scope, hook `WH_MOUSE` theo thread, và compartment open/close | §14.2 công đoạn 6 |
+| `raumakey-controller` | Build script kèm resource, GUI subsystem, dòng lệnh (`install`/`uninstall` với chạy thử (dry run), hoàn tác (rollback) và nâng quyền; `startup`; `convert`; `update`; `--version`), và một chế độ chạy tray tối giản; các helper mới trong `raumakey-windows` (bộ lọc message UIPI, bộ giải mã callback của notify icon, tên logon task theo từng tài khoản) | §14.2 công đoạn 5 |
 
-Notes the implementers left for the lead:
+Các ghi chú mà người triển khai để lại cho người phụ trách (lead):
 
-- Code-level decision (`raumakey-tsf`): an `OnEndEdit` record with neither a text change nor a
-  selection change is not reported to `ServiceCore::selection_changed`. Plan §10.3 does not
-  record this yet.
-- TDD deviation (`raumakey-tsf`, step 2): the first three secure-field COM tests in
-  `tests/com/secure.rs` were written after `text_service/scope.rs` and passed on their first
-  run. The uninit, push, and first-key scope paths were pinned only after mutants survived; in
-  the fix round every new test was observed failing first.
-- Declined suggestion (`raumakey-tsf`): re-reading the input scope after every `OnEndEdit` would
-  add a synchronous read-only session to nearly every key. A scope change while a field keeps
-  the focus is seen at the next focus change (documented in `server.rs`).
-- Open question (`raumakey-controller`): `install` registers the TIPs where the package was
-  extracted and warns when that folder is user-writable; plan §14.4 item 6.
-- Declined alternative (`raumakey-controller`): instead of checking the registered principal
-  of the elevated logon task, task names carry the account's SID hash and the restarted
-  process refuses to act for another account.
+- Quyết định ở mức mã (`raumakey-tsf`): một bản ghi `OnEndEdit` không có thay đổi văn bản lẫn
+  thay đổi vùng chọn thì không được báo cho `ServiceCore::selection_changed`. Kế hoạch §10.3
+  chưa ghi nhận điều này.
+- Sai lệch so với TDD (`raumakey-tsf`, bước 2): ba test COM đầu tiên về ô bảo mật trong
+  `tests/com/secure.rs` được viết sau `text_service/scope.rs` và đã đạt ngay lần chạy đầu. Các
+  đường đọc scope khi uninit, khi push và ở phím đầu tiên chỉ được ghim lại sau khi có đột biến
+  sống sót; trong vòng sửa, mọi test mới đều được quan sát thấy fail trước.
+- Đề xuất bị từ chối (`raumakey-tsf`): đọc lại input scope sau mỗi `OnEndEdit` sẽ thêm một
+  session chỉ đọc đồng bộ vào gần như mọi phím. Thay đổi scope trong khi một ô vẫn giữ focus
+  được nhận ra ở lần đổi focus kế tiếp (đã ghi trong `server.rs`).
+- Câu hỏi còn mở (`raumakey-controller`): `install` đăng ký các TIP tại nơi package được giải
+  nén và cảnh báo khi người dùng có quyền ghi vào thư mục đó; kế hoạch §14.4 mục 6.
+- Phương án thay thế bị từ chối (`raumakey-controller`): thay vì kiểm tra principal đã đăng ký
+  của logon task được nâng quyền, tên task mang hash SID của tài khoản và tiến trình được khởi
+  động lại từ chối hành động thay cho một tài khoản khác.
 
-### raumakey-tsf (COM layer)
+### raumakey-tsf (lớp COM)
 
-Implementation, step 1: 20 red and 9 green runs.
+Triển khai, bước 1: 20 lần chạy đỏ và 9 lần chạy xanh.
 
-- Red: 1 lifecycle: tests written before the module `cargo test --locked -p raumakey-tsf --test lifecycle` failed `lifecycle (compile error)`. E0432 unresolved import raumakey_tip::activation: the module did not exist (intended).
-- Red: 1 lifecycle: bug in a test helper `cargo test --locked -p raumakey-tsf --test lifecycle` failed `lifecycle (compile error)`. E0277/E0599: the helper reversed an unbounded RangeFrom.
-- Red: 1 lifecycle: API skeleton with stubbed advise_all/unadvise_all `cargo test --locked -p raumakey-tsf --test lifecycle` failed `activation_advises_every_sink_once_in_order`, `a_failed_advise_undoes_what_succeeded_last_first_and_returns_its_error`, `a_failed_undo_neither_stops_the_undo_nor_replaces_the_advise_error`, `deactivation_unadvises_every_sink_last_first`, `deactivation_unadvises_every_sink_even_after_failures_and_returns_the_first_error`, `debug_output_names_the_advised_sinks`. The stubs advised and unadvised nothing, so assertions on the recorded calls failed.
-- Red: 2 resources: tests written before the dev-dependency and build.rs `cargo test --locked -p raumakey-tsf --test resources` failed `resources (compile error)`. E0432 unresolved import raumakey_resources: it was only a build-dependency.
-- Red: 2 resources: dev-dependency added, no build.rs yet `cargo test --locked -p raumakey-tsf --test resources` failed `win::only_the_dll_carries_the_version_information_of_the_tip`, `win::the_profile_icon_of_the_registration_loads_from_the_dll`. 'no FileDescription', and ExtractIconExW counted Some(0) icons instead of Some(3).
-- Red: 3 COM shell: export/factory/service/artifact tests written before the exports `cargo test --locked -p raumakey-tsf --test com` failed `com (compile error)`. E0432 unresolved imports raumakey_tip::DllGetClassObject and raumakey_tip::DllCanUnloadNow.
-- Red: 3 COM shell: stub exports (CLASS_E_CLASSNOTAVAILABLE without clearing *ppv, S_OK, E_NOTIMPL) `cargo test --locked -p raumakey-tsf --test com` failed `exports::the_tip_clsid_is_served_by_a_class_factory`, `exports::other_classes_are_not_available_and_the_result_is_cleared`, `exports::null_pointers_are_rejected`, `exports::the_class_object_answers_only_as_a_class_factory`, `exports::dll_can_unload_now_waits_for_every_object_and_server_lock`, `service::aggregation_is_rejected`, `service::one_object_answers_for_the_processor_and_every_sink`, `service::the_text_service_stays_in_its_apartment`, and 2 more. There was no class factory (support.rs:53 expected S_OK), the result was not cleared, and E_POINTER/E_NOINTERFACE were never returned.
-- Red: 4 identities: binary-form GUID test written before the profile static `cargo test --locked -p raumakey-tsf --test resources` failed `win::the_dll_carries_its_class_and_profile_identities_in_binary_form`. 'TIP_PROFILE_GUID {DB875058-BBF9-407C-85A8-950BE7D14C22} is not in the image'.
-- Red: 5 activation: real-TSF and shim tests run against the stubbed activation (E_NOTIMPL) `cargo test --locked -p raumakey-tsf --test com` failed `activation::the_real_thread_manager_refuses_the_key_sink`, `activation::activation_advises_every_sink_and_deactivation_releases_every_one`, `activation::a_failed_step_leaves_nothing_advised_and_its_error_is_returned`, `activation::deactivation_is_idempotent_and_activation_can_follow_it`, `activation::a_second_activation_replaces_the_first_without_leaking_its_sinks`, `activation::a_null_thread_manager_is_an_invalid_argument`. ActivateEx returned E_NOTIMPL (0x80004001) where the tests expected E_INVALIDARG, S_OK, or the injected step error.
-- Red: 5 activation: unit tests for the core reset and re-entrancy written before the activation field `cargo test --locked -p raumakey-tsf --lib` failed `lib test (compile error)`. E0609 no field `activation` on ComObject<TextService>.
-- Red: 5 activation: field added, Deactivate still a stub `cargo test --locked -p raumakey-tsf --lib` failed `text_service::tests::deactivation_leaves_a_fresh_core_for_the_next_activation`, `text_service::tests::an_activation_change_inside_another_is_refused_instead_of_panicking`. The core was not replaced (assertion !core.is_connected()), and the result was None instead of HRESULT 0x800700AA (ERROR_BUSY).
-- Red: Mutation M1: reset_core uses borrow_mut (panics on a busy core) `bash <scratchpad>/mutate.sh crates/raumakey-tsf/src/text_service.rs <subst> --lib` failed `text_service::tests::a_core_in_use_is_left_alone_instead_of_panicking`. The caught panic became E_UNEXPECTED.
-- Red: Mutation M2: Deactivate drops the activation without unadvising `bash <scratchpad>/mutate.sh crates/raumakey-tsf/src/text_service.rs <subst> --test com` failed `activation::activation_advises_every_sink_and_deactivation_releases_every_one`, `activation::deactivation_is_idempotent_and_activation_can_follow_it`, `activation::a_second_activation_replaces_the_first_without_leaking_its_sinks`, `(cascade: later object_count checks, because the leaked service stays alive)`. TSF kept its sink references, so the reference count stayed above baseline.
-- Red: Mutation M4: a second activation drops the first without unadvising `bash <scratchpad>/mutate.sh crates/raumakey-tsf/src/text_service.rs <subst> --test com` failed `activation::a_second_activation_replaces_the_first_without_leaking_its_sinks`, `(cascade: object_count checks)`. The first activation's sinks leaked.
-- Red: Mutation M5: take_activation uses borrow_mut `bash <scratchpad>/mutate.sh crates/raumakey-tsf/src/text_service.rs <subst> --lib` failed `text_service::tests::an_activation_change_inside_another_is_refused_instead_of_panicking`. E_UNEXPECTED from a caught panic instead of ERROR_BUSY.
-- Red: Mutation M3: advise_all does not undo after a failed advise `bash <scratchpad>/mutate.sh crates/raumakey-tsf/src/activation.rs <subst> --test lifecycle (and --test com)` failed `a_failed_advise_undoes_what_succeeded_last_first_and_returns_its_error`, `a_failed_undo_neither_stops_the_undo_nor_replaces_the_advise_error`, `activation::a_failed_step_leaves_nothing_advised_and_its_error_is_returned`, `activation::the_real_thread_manager_refuses_the_key_sink`. With the real thread manager, the two sinks advised before the refused key sink stayed held by TSF.
-- Red: Mutation M6: unadvise_all stops at the first failure `bash <scratchpad>/mutate.sh crates/raumakey-tsf/src/activation.rs <subst> --test lifecycle` failed `a_failed_undo_neither_stops_the_undo_nor_replaces_the_advise_error`, `deactivation_unadvises_every_sink_even_after_failures_and_returns_the_first_error`. Later sinks were never unadvised.
-- Red: Stale build after the last mutation restore (not a code defect) `cargo test --locked -p raumakey-tsf --test com` failed `13 com tests, starting with activation::a_failed_step_leaves_nothing_advised_and_its_error_is_returned (ThreadFocus: a sink is still held, 2 vs 1)`. The mutation script restored activation.rs with mv from a cp backup, whose mtime was older than the mutated build, so Cargo reused the M3 library.
-- Red: Clippy on test code `cargo clippy --locked -p raumakey-tsf --all-targets -- -D warnings` failed `clippy::bool_assert_comparison at tests/com/activation.rs:208`. The awkward assert_eq!(.., true) was replaced by a pattern check of the Activate advises.
-- Red: Clippy for i686 `cargo clippy --locked -p raumakey-tsf --all-targets --target i686-pc-windows-msvc -- -D warnings` failed `clippy::boxed_local at src/session/service.rs:771 (pre-existing, 32-bit only)`. EngineResult is under the lint's size threshold on 32-bit targets.
+- Đỏ: 1 vòng đời: các test được viết trước module `cargo test --locked -p raumakey-tsf --test lifecycle` fail ở `lifecycle (compile error)`. E0432 unresolved import raumakey_tip::activation: module chưa tồn tại (có chủ đích).
+- Đỏ: 1 vòng đời: lỗi trong một helper của test `cargo test --locked -p raumakey-tsf --test lifecycle` fail ở `lifecycle (compile error)`. E0277/E0599: helper đã đảo ngược một RangeFrom không có cận trên.
+- Đỏ: 1 vòng đời: khung API với advise_all/unadvise_all dạng stub `cargo test --locked -p raumakey-tsf --test lifecycle` fail ở `activation_advises_every_sink_once_in_order`, `a_failed_advise_undoes_what_succeeded_last_first_and_returns_its_error`, `a_failed_undo_neither_stops_the_undo_nor_replaces_the_advise_error`, `deactivation_unadvises_every_sink_last_first`, `deactivation_unadvises_every_sink_even_after_failures_and_returns_the_first_error`, `debug_output_names_the_advised_sinks`. Các stub không advise và cũng không unadvise gì, nên các assertion trên những lời gọi được ghi lại đều fail.
+- Đỏ: 2 resource: các test được viết trước dev-dependency và build.rs `cargo test --locked -p raumakey-tsf --test resources` fail ở `resources (compile error)`. E0432 unresolved import raumakey_resources: khi đó nó mới chỉ là một build-dependency.
+- Đỏ: 2 resource: đã thêm dev-dependency, chưa có build.rs `cargo test --locked -p raumakey-tsf --test resources` fail ở `win::only_the_dll_carries_the_version_information_of_the_tip`, `win::the_profile_icon_of_the_registration_loads_from_the_dll`. 'no FileDescription', và ExtractIconExW đếm được Some(0) icon thay vì Some(3).
+- Đỏ: 3 vỏ COM: các test export/factory/service/artifact được viết trước các export `cargo test --locked -p raumakey-tsf --test com` fail ở `com (compile error)`. E0432 unresolved imports raumakey_tip::DllGetClassObject và raumakey_tip::DllCanUnloadNow.
+- Đỏ: 3 vỏ COM: các export dạng stub (CLASS_E_CLASSNOTAVAILABLE mà không xoá *ppv, S_OK, E_NOTIMPL) `cargo test --locked -p raumakey-tsf --test com` fail ở `exports::the_tip_clsid_is_served_by_a_class_factory`, `exports::other_classes_are_not_available_and_the_result_is_cleared`, `exports::null_pointers_are_rejected`, `exports::the_class_object_answers_only_as_a_class_factory`, `exports::dll_can_unload_now_waits_for_every_object_and_server_lock`, `service::aggregation_is_rejected`, `service::one_object_answers_for_the_processor_and_every_sink`, `service::the_text_service_stays_in_its_apartment`, và 2 test khác. Chưa có class factory (support.rs:53 kỳ vọng S_OK), kết quả không được xoá, và E_POINTER/E_NOINTERFACE không bao giờ được trả về.
+- Đỏ: 4 danh tính: test GUID ở dạng nhị phân được viết trước static của profile `cargo test --locked -p raumakey-tsf --test resources` fail ở `win::the_dll_carries_its_class_and_profile_identities_in_binary_form`. 'TIP_PROFILE_GUID {DB875058-BBF9-407C-85A8-950BE7D14C22} is not in the image'.
+- Đỏ: 5 kích hoạt: các test với TSF thật và với shim chạy trên phần kích hoạt dạng stub (E_NOTIMPL) `cargo test --locked -p raumakey-tsf --test com` fail ở `activation::the_real_thread_manager_refuses_the_key_sink`, `activation::activation_advises_every_sink_and_deactivation_releases_every_one`, `activation::a_failed_step_leaves_nothing_advised_and_its_error_is_returned`, `activation::deactivation_is_idempotent_and_activation_can_follow_it`, `activation::a_second_activation_replaces_the_first_without_leaking_its_sinks`, `activation::a_null_thread_manager_is_an_invalid_argument`. ActivateEx trả về E_NOTIMPL (0x80004001) ở chỗ các test kỳ vọng E_INVALIDARG, S_OK, hoặc lỗi của bước được tiêm vào.
+- Đỏ: 5 kích hoạt: các test đơn vị cho việc reset core và tính tái nhập (re-entrancy) được viết trước field activation `cargo test --locked -p raumakey-tsf --lib` fail ở `lib test (compile error)`. E0609 no field `activation` on ComObject<TextService>.
+- Đỏ: 5 kích hoạt: đã thêm field, Deactivate vẫn là stub `cargo test --locked -p raumakey-tsf --lib` fail ở `text_service::tests::deactivation_leaves_a_fresh_core_for_the_next_activation`, `text_service::tests::an_activation_change_inside_another_is_refused_instead_of_panicking`. Core không được thay thế (assertion !core.is_connected()), và kết quả là None thay vì HRESULT 0x800700AA (ERROR_BUSY).
+- Đỏ: đột biến M1: reset_core dùng borrow_mut (panic khi core đang bận) `bash <scratchpad>/mutate.sh crates/raumakey-tsf/src/text_service.rs <subst> --lib` fail ở `text_service::tests::a_core_in_use_is_left_alone_instead_of_panicking`. Panic bị bắt trở thành E_UNEXPECTED.
+- Đỏ: đột biến M2: Deactivate drop phần kích hoạt mà không unadvise `bash <scratchpad>/mutate.sh crates/raumakey-tsf/src/text_service.rs <subst> --test com` fail ở `activation::activation_advises_every_sink_and_deactivation_releases_every_one`, `activation::deactivation_is_idempotent_and_activation_can_follow_it`, `activation::a_second_activation_replaces_the_first_without_leaking_its_sinks`, `(cascade: later object_count checks, because the leaked service stays alive)`. TSF vẫn giữ các tham chiếu tới sink của nó, nên số tham chiếu vẫn cao hơn mức nền.
+- Đỏ: đột biến M4: lần kích hoạt thứ hai drop lần thứ nhất mà không unadvise `bash <scratchpad>/mutate.sh crates/raumakey-tsf/src/text_service.rs <subst> --test com` fail ở `activation::a_second_activation_replaces_the_first_without_leaking_its_sinks`, `(cascade: object_count checks)`. Các sink của lần kích hoạt thứ nhất bị rò rỉ.
+- Đỏ: đột biến M5: take_activation dùng borrow_mut `bash <scratchpad>/mutate.sh crates/raumakey-tsf/src/text_service.rs <subst> --lib` fail ở `text_service::tests::an_activation_change_inside_another_is_refused_instead_of_panicking`. Nhận E_UNEXPECTED từ một panic bị bắt thay vì ERROR_BUSY.
+- Đỏ: đột biến M3: advise_all không hoàn tác sau một lần advise thất bại `bash <scratchpad>/mutate.sh crates/raumakey-tsf/src/activation.rs <subst> --test lifecycle (and --test com)` fail ở `a_failed_advise_undoes_what_succeeded_last_first_and_returns_its_error`, `a_failed_undo_neither_stops_the_undo_nor_replaces_the_advise_error`, `activation::a_failed_step_leaves_nothing_advised_and_its_error_is_returned`, `activation::the_real_thread_manager_refuses_the_key_sink`. Với thread manager thật, hai sink đã được advise trước key sink bị từ chối vẫn bị TSF giữ.
+- Đỏ: đột biến M6: unadvise_all dừng lại ở lỗi đầu tiên `bash <scratchpad>/mutate.sh crates/raumakey-tsf/src/activation.rs <subst> --test lifecycle` fail ở `a_failed_undo_neither_stops_the_undo_nor_replaces_the_advise_error`, `deactivation_unadvises_every_sink_even_after_failures_and_returns_the_first_error`. Các sink phía sau không bao giờ được unadvise.
+- Đỏ: build cũ (stale) sau lần khôi phục đột biến cuối cùng (không phải lỗi mã) `cargo test --locked -p raumakey-tsf --test com` fail ở `13 com tests, starting with activation::a_failed_step_leaves_nothing_advised_and_its_error_is_returned (ThreadFocus: a sink is still held, 2 vs 1)`. Script đột biến đã khôi phục activation.rs bằng mv từ một bản sao lưu tạo bằng cp, có mtime cũ hơn build đã bị đột biến, nên Cargo dùng lại thư viện của M3.
+- Đỏ: Clippy trên mã test `cargo clippy --locked -p raumakey-tsf --all-targets -- -D warnings` fail ở `clippy::bool_assert_comparison at tests/com/activation.rs:208`. Câu assert_eq!(.., true) vụng về được thay bằng một kiểm tra pattern đối với các advise của Activate.
+- Đỏ: Clippy cho i686 `cargo clippy --locked -p raumakey-tsf --all-targets --target i686-pc-windows-msvc -- -D warnings` fail ở `clippy::boxed_local at src/session/service.rs:771 (pre-existing, 32-bit only)`. EngineResult nằm dưới ngưỡng kích thước của lint trên các target 32-bit.
 
-Implementation, step 2: 14 red and 8 green runs.
+Triển khai, bước 2: 14 lần chạy đỏ và 8 lần chạy xanh.
 
-- Red: Adapter tests and the KeyStroke repeat unit test written before any code `cargo test --locked -p raumakey-tsf --lib --test adapter` failed `lib test (compile error)`, `adapter (compile error)`. E0560 struct KeyStroke has no field named repeat;
-- Red: Adapter API skeleton (types and docs, stub bodies); `cargo test --locked -p raumakey-tsf --lib --test adapter --no-fail-fast` failed `keys::a_first_key_down_is_decoded_from_wparam_and_lparam`, `keys::the_synthetic_left_ctrl_of_altgr_is_dropped_on_an_altgr_layout`, `keys::altgr_is_ctrl_and_alt_that_type_a_character_on_an_altgr_layout`, `edit::matrix_40_two_units_are_replaced_by_one`, `edit::matrix_41_a_shorter_text_before_the_caret_changes_nothing`, `edit::a_cut_through_a_surrogate_pair_never_matches`, `record::a_typed_key_is_its_text_inserted_before_the_caret`, `documents::the_least_recently_used_context_makes_room_and_is_reported`, and 5 more. The stubs decoded nothing and dropped nothing.
-- Red: Connections::connection accessor, test first `cargo test --locked -p raumakey-tsf --test lifecycle` failed `lifecycle (compile error)`. E0599: no method named connection on Connections<C>.
-- Red: In-process COM tests (tsf fixture, typing, focus) and the shim's GetFocus forwarding written before the glue `cargo test --locked -p raumakey-tsf --test com` failed `com (compile error)`. E0432 unresolved import raumakey_tip::mouse_hook (intended).
-- Red: mouse_hook unit tests against a stub install that always fails `cargo test --locked -p raumakey-tsf --lib mouse_hook` failed `mouse_hook::tests::every_button_press_reaches_the_handler_once`, `mouse_hook::tests::the_hook_belongs_to_the_thread_that_installed_it`, `mouse_hook::tests::one_hook_per_thread_and_only_its_owner_removes_it`, `mouse_hook::tests::a_panicking_handler_never_unwinds_into_windows`, `mouse_hook::tests::a_handler_may_remove_the_hook`. install returned Err, so expect("installed") failed.
-- Red: COM tests run against the step-1 glue (keys not wired) `cargo test --locked -p raumakey-tsf --test com --no-fail-fast` failed `activation::activation_advises_every_sink_and_deactivation_releases_every_one`, `activation::deactivation_is_idempotent_and_activation_can_follow_it`, `typing::telex_words_are_typed_through_real_tsf_ranges`, `typing::matrix_19_a_change_the_service_did_not_make_ends_the_word`, `typing::matrix_19_a_mouse_press_ends_the_word`, `typing::matrix_17_backspace_restores_the_previous_state`, `focus::activation_installs_the_mouse_hook_of_the_thread_and_deactivation_removes_it`, `focus::the_text_edit_sink_follows_the_focus`, and 2 more. No GetFocus call after the advises ('unexpected activation calls'), no edits (text stayed untransformed), no hook, no edit sink (reference counts), and the compartment was never written.
-- Red: input_scopes unit tests (fake ITfInputScope in a VT_UNKNOWN VARIANT) against a stub `cargo test --locked -p raumakey-tsf --lib text_service` failed `text_service::scope::tests::the_scopes_of_an_input_scope_object_are_read`, `text_service::scope::tests::a_long_list_is_read_up_to_the_limit`. The stub returned no scopes.
-- Red: Strengthened matrix_20 (focus away and back with no key in between): a test bug `cargo test --locked -p raumakey-tsf --test com focus::` failed `focus::matrix_20_a_focus_change_never_edits_across_documents (plus cascades)`. Got 'aa aa aa' instead of 'aa â aa'.
-- Red: Mutation run 1, apply-run-restore with SHA-256 check and mtime bump (M1 to M10) `python -I <scratchpad>/mutate.py <worktree> <mutation> test --locked -p raumakey-tsf --test com` failed `M1 end_edit never reports: typing::matrix_19_a_change_the_service_did_not_make_ends_the_word`, `M2 mouse press ignored: typing::matrix_19_a_mouse_press_ends_the_word`, `M5 mode never written: focus::activation_shows_the_vietnamese_mode_in_the_open_close_compartment`, `M6 signed shift count / M7 session never armed: typing::telex_words_are_typed_through_real_tsf_ranges`, `M8 extra info not read: typing::matrix_39_keys_injected_by_raumakey_reach_the_application_untouched`, `M9 every field secure: typing tests`, `M10 pop keeps no focus: focus::a_pushed_context_takes_the_focus_and_its_pop_gives_it_back`. Every mutation but M4 was caught.
-- Red: Line-ending incident (process, not code) `python check of b'\r' in crates/**/*.rs` failed `mutations M3 and M11 (pattern matched 0 times)`. Inline Python edits in text mode had written 12 files with CRLF, so multi-line mutation patterns did not match.
-- Red: Mutation run 2 (M3, M11 to M22) `python -I <scratchpad>/mutate.py <worktree> <mutation> test --locked -p raumakey-tsf --test com` failed `M3 focus not told to core: focus::matrix_20_a_focus_change_never_edits_across_documents`, `M12 hook never removed: focus::activation_installs_the_mouse_hook_of_the_thread_and_deactivation_removes_it`, `M13 edit sink never advised: focus::the_text_edit_sink_follows_the_focus`, `M14 caret never at end / M15 no text changes: typing::telex_words_are_typed_through_real_tsf_ranges`, `M19 key path never follows: typing::matrix_19_a_change_the_service_did_not_make_ends_the_word`, `M22 activation focus ignored: focus::activation_advises_the_edit_sink_of_the_document_that_has_the_focus`. Survivors: M11 (uninit keeps the focus), M16 (own-edit counter), M17 (TSF SetSelection skipped), M18 (push ignored), M20 (no scope read at the first key), M21 (no scope read at focus).
-- Red: Rerun of the survivors against the new tests `python -I <scratchpad>/mutate.py <worktree> M11|M18|M20 test ... --test com; A1 ... --test adapter` failed `M11: focus::an_uninitialized_document_manager_releases_the_edit_sink_of_its_context`, `M18: focus::a_pushed_context_takes_the_focus_and_ends_the_word_of_the_one_below`, `M20: typing::a_document_that_never_had_the_focus_reads_its_input_scope_at_its_first_key`, `A1: edit::the_caret_follows_the_insert_even_where_the_host_selects_it, edit::a_refused_selection_puts_the_old_text_back`. Each mutation fails its intended test.
-- Red: Clippy on the test code `cargo clippy --locked -p raumakey-tsf --all-targets -- -D warnings` failed `clippy::type_complexity at tests/com/tsf.rs:167`, `clippy::let_and_return at tests/com/tsf.rs:291`. Fixed with a SessionBody type alias and a tail expression.
-- Red: Final mutation pass, 25 mutations, one test thread `python -I <scratchpad>/mutate.py <worktree> <M1..M24|A1> test --locked -p raumakey-tsf --test com|adapter -- --test-threads=1` failed `23 of 25 caught, each by its intended test (checked by name in the log)`. Survivors as expected: M16 (own-edit counter is not observable while the core is borrowed during the service's own sessions) and M17 (TSF's own store keeps the caret after SetText at the caret;
+- Đỏ: các test adapter và test đơn vị về repeat của KeyStroke được viết trước mọi mã `cargo test --locked -p raumakey-tsf --lib --test adapter` fail ở `lib test (compile error)`, `adapter (compile error)`. E0560 struct KeyStroke has no field named repeat;
+- Đỏ: khung API của adapter (kiểu và tài liệu, thân hàm stub); `cargo test --locked -p raumakey-tsf --lib --test adapter --no-fail-fast` fail ở `keys::a_first_key_down_is_decoded_from_wparam_and_lparam`, `keys::the_synthetic_left_ctrl_of_altgr_is_dropped_on_an_altgr_layout`, `keys::altgr_is_ctrl_and_alt_that_type_a_character_on_an_altgr_layout`, `edit::matrix_40_two_units_are_replaced_by_one`, `edit::matrix_41_a_shorter_text_before_the_caret_changes_nothing`, `edit::a_cut_through_a_surrogate_pair_never_matches`, `record::a_typed_key_is_its_text_inserted_before_the_caret`, `documents::the_least_recently_used_context_makes_room_and_is_reported`, và 5 test khác. Các stub không giải mã gì và cũng không loại bỏ gì.
+- Đỏ: accessor Connections::connection, viết test trước `cargo test --locked -p raumakey-tsf --test lifecycle` fail ở `lifecycle (compile error)`. E0599: no method named connection on Connections<C>.
+- Đỏ: các test COM trong tiến trình (fixture tsf, typing, focus) và việc chuyển tiếp GetFocus của shim được viết trước phần glue `cargo test --locked -p raumakey-tsf --test com` fail ở `com (compile error)`. E0432 unresolved import raumakey_tip::mouse_hook (có chủ đích).
+- Đỏ: các test đơn vị của mouse_hook chạy với một install dạng stub luôn thất bại `cargo test --locked -p raumakey-tsf --lib mouse_hook` fail ở `mouse_hook::tests::every_button_press_reaches_the_handler_once`, `mouse_hook::tests::the_hook_belongs_to_the_thread_that_installed_it`, `mouse_hook::tests::one_hook_per_thread_and_only_its_owner_removes_it`, `mouse_hook::tests::a_panicking_handler_never_unwinds_into_windows`, `mouse_hook::tests::a_handler_may_remove_the_hook`. install trả về Err, nên expect("installed") fail.
+- Đỏ: các test COM chạy với phần glue của bước 1 (phím chưa được nối vào) `cargo test --locked -p raumakey-tsf --test com --no-fail-fast` fail ở `activation::activation_advises_every_sink_and_deactivation_releases_every_one`, `activation::deactivation_is_idempotent_and_activation_can_follow_it`, `typing::telex_words_are_typed_through_real_tsf_ranges`, `typing::matrix_19_a_change_the_service_did_not_make_ends_the_word`, `typing::matrix_19_a_mouse_press_ends_the_word`, `typing::matrix_17_backspace_restores_the_previous_state`, `focus::activation_installs_the_mouse_hook_of_the_thread_and_deactivation_removes_it`, `focus::the_text_edit_sink_follows_the_focus`, và 2 test khác. Không có lời gọi GetFocus sau các advise ('unexpected activation calls'), không có chỉnh sửa nào (văn bản vẫn chưa được biến đổi), không có hook, không có edit sink (theo số tham chiếu), và compartment không bao giờ được ghi.
+- Đỏ: các test đơn vị của input_scopes (ITfInputScope giả trong một VARIANT VT_UNKNOWN) chạy với một stub `cargo test --locked -p raumakey-tsf --lib text_service` fail ở `text_service::scope::tests::the_scopes_of_an_input_scope_object_are_read`, `text_service::scope::tests::a_long_list_is_read_up_to_the_limit`. Stub không trả về scope nào.
+- Đỏ: làm chặt matrix_20 (chuyển focus đi rồi quay lại mà không có phím nào ở giữa): một lỗi trong test `cargo test --locked -p raumakey-tsf --test com focus::` fail ở `focus::matrix_20_a_focus_change_never_edits_across_documents (plus cascades)`. Nhận được 'aa aa aa' thay vì 'aa â aa'.
+- Đỏ: lượt chạy đột biến 1, áp dụng - chạy - khôi phục kèm kiểm tra SHA-256 và tăng mtime (M1 đến M10) `python -I <scratchpad>/mutate.py <worktree> <mutation> test --locked -p raumakey-tsf --test com` fail ở `M1 end_edit never reports: typing::matrix_19_a_change_the_service_did_not_make_ends_the_word`, `M2 mouse press ignored: typing::matrix_19_a_mouse_press_ends_the_word`, `M5 mode never written: focus::activation_shows_the_vietnamese_mode_in_the_open_close_compartment`, `M6 signed shift count / M7 session never armed: typing::telex_words_are_typed_through_real_tsf_ranges`, `M8 extra info not read: typing::matrix_39_keys_injected_by_raumakey_reach_the_application_untouched`, `M9 every field secure: typing tests`, `M10 pop keeps no focus: focus::a_pushed_context_takes_the_focus_and_its_pop_gives_it_back`. Mọi đột biến trừ M4 đều bị bắt.
+- Đỏ: sự cố ký tự xuống dòng (lỗi quy trình, không phải lỗi mã) `python check of b'\r' in crates/**/*.rs` fail ở `mutations M3 and M11 (pattern matched 0 times)`. Các chỉnh sửa inline bằng Python ở text mode đã ghi 12 file với CRLF, nên các pattern đột biến nhiều dòng không khớp.
+- Đỏ: lượt chạy đột biến 2 (M3, M11 đến M22) `python -I <scratchpad>/mutate.py <worktree> <mutation> test --locked -p raumakey-tsf --test com` fail ở `M3 focus not told to core: focus::matrix_20_a_focus_change_never_edits_across_documents`, `M12 hook never removed: focus::activation_installs_the_mouse_hook_of_the_thread_and_deactivation_removes_it`, `M13 edit sink never advised: focus::the_text_edit_sink_follows_the_focus`, `M14 caret never at end / M15 no text changes: typing::telex_words_are_typed_through_real_tsf_ranges`, `M19 key path never follows: typing::matrix_19_a_change_the_service_did_not_make_ends_the_word`, `M22 activation focus ignored: focus::activation_advises_the_edit_sink_of_the_document_that_has_the_focus`. Các đột biến sống sót: M11 (uninit vẫn giữ focus), M16 (bộ đếm chỉnh sửa của chính service), M17 (bỏ qua SetSelection của TSF), M18 (push bị bỏ qua), M20 (không đọc scope ở phím đầu tiên), M21 (không đọc scope khi nhận focus).
+- Đỏ: chạy lại các đột biến sống sót với các test mới `python -I <scratchpad>/mutate.py <worktree> M11|M18|M20 test ... --test com; A1 ... --test adapter` fail ở `M11: focus::an_uninitialized_document_manager_releases_the_edit_sink_of_its_context`, `M18: focus::a_pushed_context_takes_the_focus_and_ends_the_word_of_the_one_below`, `M20: typing::a_document_that_never_had_the_focus_reads_its_input_scope_at_its_first_key`, `A1: edit::the_caret_follows_the_insert_even_where_the_host_selects_it, edit::a_refused_selection_puts_the_old_text_back`. Mỗi đột biến làm fail đúng test dự định của nó.
+- Đỏ: Clippy trên mã test `cargo clippy --locked -p raumakey-tsf --all-targets -- -D warnings` fail ở `clippy::type_complexity at tests/com/tsf.rs:167`, `clippy::let_and_return at tests/com/tsf.rs:291`. Đã sửa bằng một type alias SessionBody và một tail expression.
+- Đỏ: lượt đột biến cuối cùng, 25 đột biến, một thread test `python -I <scratchpad>/mutate.py <worktree> <M1..M24|A1> test --locked -p raumakey-tsf --test com|adapter -- --test-threads=1` fail ở `23 of 25 caught, each by its intended test (checked by name in the log)`. Các đột biến sống sót đúng như dự kiến: M16 (bộ đếm chỉnh sửa của chính service không quan sát được trong khi core đang bị mượn trong các session của chính service) và M17 (store riêng của TSF giữ caret sau SetText tại caret;
 
-First fix round: 10 red and 10 green runs.
+Vòng sửa thứ nhất: 10 lần chạy đỏ và 10 lần chạy xanh.
 
-- Red: Finding 2 red: new focus tests against refocus with its set_focus call stubbed (`let _ = document;`) `cargo test --locked -p raumakey-tsf --test com -- focus::losing` failed `focus::losing_the_thread_focus_ends_the_word`, `focus::losing_the_keyboard_focus_of_the_key_event_sink_ends_the_word`. left "cá", right "cas": without set_focus the tone reached back over the lost focus
-- Red: Finding 1 red: refused-lock test against mutant edit_session.rs:72 `unwrap_or(Ok(()))` `cargo test --locked -p raumakey-tsf --test com -- hosts::` failed `hosts::matrix_41_a_refused_edit_session_lets_the_key_through_and_ends_the_word`. 'the key reaches the application': the key was eaten and the state committed although TSF ran no edit session
-- Red: Finding 1 (no context) red: unit test against mutant `return Ok(())` in the no-context branch `cargo test --locked -p raumakey-tsf --lib -- edit_session` failed `text_service::edit_session::tests::a_key_without_a_context_is_denied_without_an_edit_session`. left Ok(()), right Err(Denied)
-- Red: Finding 8 red: Ctrl+S test against mutant `ModifierKeys::read(|_| false, |_| false)` `cargo test --locked -p raumakey-tsf --test com -- typing::matrix_21` failed `typing::matrix_21_a_letter_typed_with_ctrl_held_is_a_shortcut_that_ends_the_word`. 'Ctrl+S reaches the application': without the modifiers, S was a tone key and was eaten
-- Red: Finding 6 red: select-inserted host test against M17 (TsfRange::select_end skips set_selection) `cargo test --locked -p raumakey-tsf --test com -- hosts::` failed `hosts::matrix_40_the_edit_leaves_a_caret_after_the_new_text_where_the_host_selects_it`. left "tings", right "tiếng".
-- Red: Finding 4 red: password-field test against the unmodified production code `cargo test --locked -p raumakey-tsf --test com -- secure::` failed `secure::a_field_that_became_a_password_field_is_secure_until_its_scope_is_read_again`. left "â â", right "â aa": the stale cached 'not secure' value let keys in the password field be transformed while the focus-time read was deferred
-- Red: Finding 4 second test red: plain-after-password test with the pre-fix text_service/mod.rs swapped in `cargo test --locked -p raumakey-tsf --test com -- secure::` failed `secure::a_field_whose_scope_read_waits_is_read_again_at_its_first_key`, `secure::a_field_that_became_a_password_field_is_secure_until_its_scope_is_read_again`. left "aa", right "â" (the stale 'secure' kept a plain field bypassed), and "â â" as before.
-- Red: Read-order nit red: injection-tag test against the unmodified production code `cargo test --locked -p raumakey-tsf --test com -- hosts::matrix_39` failed `hosts::matrix_39_the_injection_tag_of_a_key_is_read_before_tsf_runs_for_it`. left (true, false), right (false, false): the extra info was read after the synchronous scope read, during which it changed, so the injected key was claimed
-- Red: Read-order nit (modifiers) red: test against a mutant that reads ModifierKeys inside key_stroke after enter() `cargo test --locked -p raumakey-tsf --test com -- hosts:: typing::matrix_21` failed `hosts::the_modifiers_of_a_key_are_read_before_tsf_runs_for_it`. 'the key was tested as the letter that was typed': Ctrl, set during the scope read, made the letter a shortcut.
-- Red: Mouse-hook nit red: handler-drop test against the unmodified procedure `cargo test --locked -p raumakey-tsf --lib -- mouse_hook::tests::dropping_a_handler` failed `mouse_hook::tests::dropping_a_handler_after_its_call_never_unwinds_into_windows`. the test process aborted with 'panic in a function that cannot unwind' in raumakey_tip::mouse_hook::procedure (exit 0xc0000409): the handler's Rc was dropped outside the guard
+- Đỏ: Phát hiện 2: các test focus mới chạy với refocus có lời gọi set_focus bị thay bằng stub (`let _ = document;`) `cargo test --locked -p raumakey-tsf --test com -- focus::losing` fail ở `focus::losing_the_thread_focus_ends_the_word`, `focus::losing_the_keyboard_focus_of_the_key_event_sink_ends_the_word`. left "cá", right "cas": không có set_focus, dấu thanh đã tác động ngược qua lần mất focus
+- Đỏ: Phát hiện 1: test lock bị từ chối chạy với đột biến edit_session.rs:72 `unwrap_or(Ok(()))` `cargo test --locked -p raumakey-tsf --test com -- hosts::` fail ở `hosts::matrix_41_a_refused_edit_session_lets_the_key_through_and_ends_the_word`. 'the key reaches the application': phím bị nuốt và trạng thái bị commit dù TSF không chạy edit session nào
+- Đỏ: Phát hiện 1 (không có context): test đơn vị chạy với đột biến `return Ok(())` trong nhánh không có context `cargo test --locked -p raumakey-tsf --lib -- edit_session` fail ở `text_service::edit_session::tests::a_key_without_a_context_is_denied_without_an_edit_session`. left Ok(()), right Err(Denied)
+- Đỏ: Phát hiện 8: test Ctrl+S chạy với đột biến `ModifierKeys::read(|_| false, |_| false)` `cargo test --locked -p raumakey-tsf --test com -- typing::matrix_21` fail ở `typing::matrix_21_a_letter_typed_with_ctrl_held_is_a_shortcut_that_ends_the_word`. 'Ctrl+S reaches the application': không có các phím bổ trợ, S là phím dấu thanh và bị nuốt
+- Đỏ: Phát hiện 6: test host chọn phần vừa chèn chạy với M17 (TsfRange::select_end bỏ qua set_selection) `cargo test --locked -p raumakey-tsf --test com -- hosts::` fail ở `hosts::matrix_40_the_edit_leaves_a_caret_after_the_new_text_where_the_host_selects_it`. left "tings", right "tiếng".
+- Đỏ: Phát hiện 4: test ô mật khẩu chạy với mã production chưa sửa `cargo test --locked -p raumakey-tsf --test com -- secure::` fail ở `secure::a_field_that_became_a_password_field_is_secure_until_its_scope_is_read_again`. left "â â", right "â aa": giá trị 'không bảo mật' đã cũ trong cache khiến các phím trong ô mật khẩu bị biến đổi trong khi lần đọc lúc nhận focus bị hoãn lại
+- Đỏ: Phát hiện 4, test thứ hai: test ô thường sau ô mật khẩu với text_service/mod.rs trước khi sửa được thay vào `cargo test --locked -p raumakey-tsf --test com -- secure::` fail ở `secure::a_field_whose_scope_read_waits_is_read_again_at_its_first_key`, `secure::a_field_that_became_a_password_field_is_secure_until_its_scope_is_read_again`. left "aa", right "â" (giá trị 'bảo mật' đã cũ khiến một ô thường vẫn bị bỏ qua), và "â â" như trước.
+- Đỏ: nit về thứ tự đọc: test thẻ tiêm (injection tag) chạy với mã production chưa sửa `cargo test --locked -p raumakey-tsf --test com -- hosts::matrix_39` fail ở `hosts::matrix_39_the_injection_tag_of_a_key_is_read_before_tsf_runs_for_it`. left (true, false), right (false, false): extra info được đọc sau lần đọc scope đồng bộ, trong lúc đó nó đã thay đổi, nên phím được tiêm vào bị nhận xử lý (claim)
+- Đỏ: nit về thứ tự đọc (phím bổ trợ): test chạy với một đột biến đọc ModifierKeys bên trong key_stroke sau enter() `cargo test --locked -p raumakey-tsf --test com -- hosts:: typing::matrix_21` fail ở `hosts::the_modifiers_of_a_key_are_read_before_tsf_runs_for_it`. 'the key was tested as the letter that was typed': Ctrl, được bật trong lúc đọc scope, đã biến chữ cái thành một phím tắt.
+- Đỏ: nit về mouse hook: test drop handler chạy với procedure chưa sửa `cargo test --locked -p raumakey-tsf --lib -- mouse_hook::tests::dropping_a_handler` fail ở `mouse_hook::tests::dropping_a_handler_after_its_call_never_unwinds_into_windows`. tiến trình test bị abort với 'panic in a function that cannot unwind' trong raumakey_tip::mouse_hook::procedure (exit 0xc0000409): Rc của handler bị drop bên ngoài guard
 
-Reviews:
+Các review:
 
-- Specification and test adequacy: not approved (2 major, 4 minor, 1 nit).
-- Correctness, safety, and code quality: not approved (1 major, 4 minor, 2 nit).
-- Re-review after the first fix round: approved (1 minor).
+- Đặc tả và mức đầy đủ của test: không được duyệt (2 major, 4 minor, 1 nit).
+- Tính đúng đắn, độ an toàn và chất lượng mã: không được duyệt (1 major, 4 minor, 2 nit).
+- Review lại sau vòng sửa thứ nhất: được duyệt (1 minor).
 
-Open minor findings from the last re-review:
+Các phát hiện mức minor còn mở từ lần review lại cuối cùng:
 
-- minor, `crates/raumakey-tsf/tests/com/hosts.rs:101`: The two new read-order tests can pass without testing anything.
+- minor, `crates/raumakey-tsf/tests/com/hosts.rs:101`: Hai test mới về thứ tự đọc có thể đạt mà không thực sự kiểm tra được gì.
 
 ### raumakey-controller
 
-Implementation, step 1: 12 red and 8 green runs.
+Triển khai, bước 1: 12 lần chạy đỏ (red) và 8 lần chạy xanh (green).
 
-- Red: A1 resources and GUI subsystem: tests/binary.rs written before build.rs and the subsystem attribute `cargo test --locked -p raumakey-controller --test binary` failed `the_controller_is_a_windows_gui_application`, `only_the_controller_binary_carries_its_windows_resources`. PE Subsystem was 3 (console) instead of 2;
-- Red: B1 parser tests (tests/cli.rs) written before any library `cargo test --locked -p raumakey-controller --test cli` failed `cli (compile error E0433)`. unresolved crate raumakey_controller: the package had no library target yet
-- Red: B2 cli.rs skeleton with the real types, stub parse_args returning UnknownCommand, empty Display and USAGE `cargo test --locked -p raumakey-controller --test cli` failed `no_arguments_run_the_controller`, `version_help_and_update_take_no_arguments`, `install_options_default_to_the_package_layout`, `install_options_are_accepted_in_any_order`, `the_elevated_marker_is_an_option_of_the_privileged_commands`, `repeated_options_are_usage_errors`, `missing_values_are_usage_errors`, `unknown_options_and_stray_arguments_are_usage_errors`, and 10 more. 18 of 20 failed on their assertions against the stub (the_command_comes_first and exit_codes_are_distinct pass trivially)
-- Red: C1 fake system (tests/support), install/uninstall, startup, convert, dispatch and process-level tests written before their modules `cargo test --locked -p raumakey-controller --no-fail-fast` failed `binary (compile error)`, `commands (compile error)`, `convert (compile error)`, `install (compile error)`, `startup (compile error)`. E0432 unresolved imports raumakey_controller::{commands, convert, elevation, install, output, startup}
-- Red: C2 skeleton modules with the real traits and no-op bodies returning 0 `cargo test --locked -p raumakey-controller --no-fail-fast` failed `binary: 7 of 9 (e.g. version_prints_the_product_name_and_version, the_install_dry_run_accepts_its_options_in_any_order, the_uninstall_dry_run_meets_the_gate_contract, usage_errors_exit_with_2_and_print_the_usage, convert_writes_a_new_file_and_refuses_to_overwrite_it)`, `commands: 11 of 12`, `convert: 9 of 10`, `install: 32 of 33 (e.g. install_registers_both_tips_verifies_them_and_records_the_installation, a_failed_registration_undoes_the_registrations_made_before_it, without_administrator_rights_install_restarts_itself_elevated)`, `startup: 13 of 13`. the stubs printed nothing, changed nothing, and returned 0;
-- Red: D1 registry-backed record store test (HKCU\Software\Raumakey\Tests-controller-<pid>-<n>) before system.rs `cargo test --locked -p raumakey-controller --test record_store` failed `record_store (compile error)`. E0432 unresolved import raumakey_controller::system
-- Red: D2 stub RegistryRecordStore (read None, write and remove no-ops) `cargo test --locked -p raumakey-controller --test record_store` failed `a_record_round_trips_as_string_values`, `writing_replaces_the_values_of_architectures_the_new_record_lacks`, `values_of_another_type_are_ignored_when_reading`, `removing_deletes_the_record_and_its_empty_parent_only`, `a_record_outside_the_owned_registry_paths_is_refused`. 5 failed on their assertions against the stub
-- Red: E1 leftovers of a failed registration (the TIP's own rollback ignores errors): fake Outcome::Partial and per-DLL overrides; `cargo test --locked -p raumakey-controller --test install` failed `entries_left_by_a_failed_registration_are_removed`, `entries_left_by_a_failed_registration_that_stay_make_the_rollback_incomplete`, `a_failed_registration_over_another_dll_registers_that_dll_again`. the view of the TIP whose regsvr32 failed was neither read back nor restored
-- Red: F1 panic guard test (quiet hook installed, own test binary) before run_guarded existed `cargo test --locked -p raumakey-controller --test panic_guard` failed `panic_guard (compile error)`. E0432 unresolved import raumakey_controller::run_guarded
-- Red: G1 i686 run under WOW64 `cargo test --locked -p raumakey-controller -p raumakey-windows --target i686-pc-windows-msvc` failed `install (test binary did not start)`. 'The requested operation requires elevation.
-- Red: H1 a task lookup refused with access denied must restart elevated; `cargo test --locked -p raumakey-controller --test startup` failed `a_task_that_only_administrators_can_read_is_handled_elevated`. an access-denied lookup was reported as a failure instead of restarting elevated
-- Red: M mutation checks (scratchpad/mutate.sh: perl substitution, run the matching tests, restore and compare SHA-256) `bash <scratch> <file> <subst> --test <suite>` failed `M1 no second-restart guard: an_elevated_restart_that_is_still_not_elevated_never_restarts_again (install and startup)`, `M2 same-DLL branch disabled: a_registration_from_the_same_dll_is_kept_by_the_rollback`, `M3 rollback first-to-last: a_failed_verification_undoes_every_registration_in_reverse_order, a_failed_upgrade_restores_the_previous_installation`, `M5 shortcut removed before task creation: the_elevated_task_replaces_the_shortcut, a_failed_task_creation_keeps_the_shortcut`, `M6 verification always passes: a_failed_verification_undoes_every_registration_in_reverse_order`, `M8 no cleanup after a failed registration: the three entries_left/over_another_dll tests`, `M9 record deleted after a failed uninstall: a_failed_unregistration_keeps_the_record_for_the_next_attempt, uninstall_without_a_tip_dll_fails_and_keeps_the_record`, `M10 values may start with --: missing_values_are_usage_errors`. every mutation was caught by its intended test;
+- Đỏ: A1 tài nguyên và subsystem GUI: tests/binary.rs được viết trước build.rs và thuộc tính subsystem `cargo test --locked -p raumakey-controller --test binary` không đạt ở `the_controller_is_a_windows_gui_application`, `only_the_controller_binary_carries_its_windows_resources`. PE Subsystem là 3 (console) thay vì 2;
+- Đỏ: B1 các test parser (tests/cli.rs) được viết trước khi có bất kỳ thư viện nào `cargo test --locked -p raumakey-controller --test cli` không đạt ở `cli (compile error E0433)`. không phân giải được crate raumakey_controller: package chưa có target thư viện
+- Đỏ: B2 khung cli.rs với các kiểu thật, parse_args dạng stub trả về UnknownCommand, Display và USAGE rỗng `cargo test --locked -p raumakey-controller --test cli` không đạt ở `no_arguments_run_the_controller`, `version_help_and_update_take_no_arguments`, `install_options_default_to_the_package_layout`, `install_options_are_accepted_in_any_order`, `the_elevated_marker_is_an_option_of_the_privileged_commands`, `repeated_options_are_usage_errors`, `missing_values_are_usage_errors`, `unknown_options_and_stray_arguments_are_usage_errors`, và 10 test khác. 18 trên 20 test không đạt ở các assertion so với stub (the_command_comes_first và exit_codes_are_distinct đạt một cách hiển nhiên)
+- Đỏ: C1 hệ thống giả (tests/support), các test install/uninstall, startup, convert, dispatch và các test cấp tiến trình được viết trước các module của chúng `cargo test --locked -p raumakey-controller --no-fail-fast` không đạt ở `binary (compile error)`, `commands (compile error)`, `convert (compile error)`, `install (compile error)`, `startup (compile error)`. E0432, không phân giải được các import raumakey_controller::{commands, convert, elevation, install, output, startup}
+- Đỏ: C2 các module khung với các trait thật và phần thân không làm gì (no-op) trả về 0 `cargo test --locked -p raumakey-controller --no-fail-fast` không đạt ở `binary: 7 of 9 (e.g. version_prints_the_product_name_and_version, the_install_dry_run_accepts_its_options_in_any_order, the_uninstall_dry_run_meets_the_gate_contract, usage_errors_exit_with_2_and_print_the_usage, convert_writes_a_new_file_and_refuses_to_overwrite_it)`, `commands: 11 of 12`, `convert: 9 of 10`, `install: 32 of 33 (e.g. install_registers_both_tips_verifies_them_and_records_the_installation, a_failed_registration_undoes_the_registrations_made_before_it, without_administrator_rights_install_restarts_itself_elevated)`, `startup: 13 of 13`. các stub không in gì, không thay đổi gì và trả về 0;
+- Đỏ: D1 test kho bản ghi (record store) dựa trên registry (HKCU\Software\Raumakey\Tests-controller-<pid>-<n>) được viết trước system.rs `cargo test --locked -p raumakey-controller --test record_store` không đạt ở `record_store (compile error)`. E0432, không phân giải được import raumakey_controller::system
+- Đỏ: D2 RegistryRecordStore dạng stub (đọc trả về None, ghi và xoá không làm gì) `cargo test --locked -p raumakey-controller --test record_store` không đạt ở `a_record_round_trips_as_string_values`, `writing_replaces_the_values_of_architectures_the_new_record_lacks`, `values_of_another_type_are_ignored_when_reading`, `removing_deletes_the_record_and_its_empty_parent_only`, `a_record_outside_the_owned_registry_paths_is_refused`. 5 test không đạt ở các assertion so với stub
+- Đỏ: E1 phần sót lại của một lần đăng ký thất bại (hoàn tác (rollback) riêng của TIP bỏ qua lỗi): Outcome::Partial giả và các ghi đè theo từng DLL; `cargo test --locked -p raumakey-controller --test install` không đạt ở `entries_left_by_a_failed_registration_are_removed`, `entries_left_by_a_failed_registration_that_stay_make_the_rollback_incomplete`, `a_failed_registration_over_another_dll_registers_that_dll_again`. view của TIP có regsvr32 thất bại không được đọc lại và cũng không được khôi phục
+- Đỏ: F1 test chặn panic (panic guard) (cài một hook im lặng, binary test riêng) được viết trước khi có run_guarded `cargo test --locked -p raumakey-controller --test panic_guard` không đạt ở `panic_guard (compile error)`. E0432, không phân giải được import raumakey_controller::run_guarded
+- Đỏ: G1 chạy i686 dưới WOW64 `cargo test --locked -p raumakey-controller -p raumakey-windows --target i686-pc-windows-msvc` không đạt ở `install (test binary did not start)`. 'The requested operation requires elevation.
+- Đỏ: H1 một lần tra cứu task bị từ chối với lỗi access denied phải khởi động lại ở chế độ nâng quyền; `cargo test --locked -p raumakey-controller --test startup` không đạt ở `a_task_that_only_administrators_can_read_is_handled_elevated`. một lần tra cứu bị access denied lại bị báo là thất bại thay vì khởi động lại ở chế độ nâng quyền
+- Đỏ: M các kiểm tra đột biến (mutation) (scratchpad/mutate.sh: thay thế bằng perl, chạy các test tương ứng, khôi phục rồi so sánh SHA-256) `bash <scratch> <file> <subst> --test <suite>` không đạt ở `M1 no second-restart guard: an_elevated_restart_that_is_still_not_elevated_never_restarts_again (install and startup)`, `M2 same-DLL branch disabled: a_registration_from_the_same_dll_is_kept_by_the_rollback`, `M3 rollback first-to-last: a_failed_verification_undoes_every_registration_in_reverse_order, a_failed_upgrade_restores_the_previous_installation`, `M5 shortcut removed before task creation: the_elevated_task_replaces_the_shortcut, a_failed_task_creation_keeps_the_shortcut`, `M6 verification always passes: a_failed_verification_undoes_every_registration_in_reverse_order`, `M8 no cleanup after a failed registration: the three entries_left/over_another_dll tests`, `M9 record deleted after a failed uninstall: a_failed_unregistration_keeps_the_record_for_the_next_attempt, uninstall_without_a_tip_dll_fails_and_keeps_the_record`, `M10 values may start with --: missing_values_are_usage_errors`. mọi đột biến đều bị test dự định của nó bắt được;
 
-Implementation, step 2: 13 red and 6 green runs.
+Triển khai, bước 2: 13 lần chạy đỏ và 6 lần chạy xanh.
 
-- Red: A1 UIPI wrapper and pure WM_CLOSE/WM_ENDSESSION: window layer tests written first `cargo test --locked -p raumakey-windows --test layer window::` failed `layer (compile error)`. E0432 unresolved imports raumakey_windows::window::{WM_CLOSE, WM_ENDSESSION};
-- Red: A2 first increment: constants plus a wrapper that calls ChangeWindowMessageFilterEx without the message check `cargo test --locked -p raumakey-windows --test layer window::` failed `window::win::system_and_class_messages_are_never_let_through_from_lower_integrity`. unwrap_err on Ok: ChangeWindowMessageFilterEx accepted WM_NULL on a non-elevated test window, so system messages must be refused before the call
-- Red: B1 pure NOTIFYICON_VERSION_4 callback decoder: shell layer tests written first `cargo test --locked -p raumakey-windows --test layer shell::` failed `layer (compile error)`. E0432 unresolved imports NIN_SELECT, NIN_KEYSELECT, NINF_KEY, NotifyIconEvent, NotifyIconMessage, WM_CONTEXTMENU, decode_notify_icon_message
-- Red: B2 real types, stub decoder returning Other(0) for icon 0 `cargo test --locked -p raumakey-windows --test layer shell::` failed `shell::a_click_and_the_keyboard_select_the_icon`, `shell::the_shortcut_menu_is_anchored_at_signed_screen_coordinates`, `shell::other_notifications_keep_their_code_and_every_icon_id_is_decoded`, `shell::bits_above_the_two_words_are_ignored`. assertions against the stub
-- Red: C1 tray state machine: tests/tray.rs written before the module (raumakey-resources added as a normal dependency; `cargo test --locked -p raumakey-controller --test tray` failed `tray (compile error)`. E0432 unresolved import raumakey_controller::tray
-- Red: C2 skeleton with the real types and stub bodies `cargo test --locked -p raumakey-controller --test tray` failed `the_mode_starts_from_the_engine_defaults_v1`, `toggling_switches_between_the_two_modes`, `each_mode_shows_its_own_icon_and_a_tooltip_naming_raumakey`, `the_menu_offers_vietnamese_mode_as_a_check_item_and_exit`, `command_ids_are_distinct_non_zero_and_round_trip`, `start_adds_the_icon_with_the_current_mode_once`, `a_click_or_the_keyboard_switches_the_mode_and_its_icon`, `a_right_click_opens_the_menu_at_its_anchor`, and 12 more. 20 of 21 failed on their assertions;
-- Red: D1 run sequence over a Desktop port and Command::Run dispatch: FakeDesktop, tests/run.rs, changed commands tests written first `cargo test --locked -p raumakey-controller --no-fail-fast` failed `run (compile error)`, `commands (compile error)`, `binary, convert, panic_guard, registration, startup (compile error via tests/support)`. E0432 unresolved import raumakey_controller::run;
-- Red: D2 skeleton: Desktop trait, System::desktop, stub run_controller returning 0, dispatch unchanged `cargo test --locked -p raumakey-controller --no-fail-fast --test run --test commands` failed `the_first_instance_runs_the_tray_in_the_initial_mode_and_then_releases_the_instance`, `a_second_instance_exits_quietly_with_0`, `an_instance_that_this_process_may_not_open_counts_as_running`, `a_failed_instance_check_is_reported_and_nothing_runs`, `a_tray_that_cannot_start_releases_the_instance_and_is_reported`, `the_exit_code_of_the_message_loop_is_passed_on`, `start_errors_name_raumakey_and_the_failed_operation_in_vietnamese`, `no_arguments_run_the_controller_on_the_desktop`, and 1 more. assertions: no desktop calls, empty error text, and Command::Run still printed 'not available' with exit 2
-- Red: F1 process test of a second start (the test holds the real single-instance mutex) against the stub Windows desktop `cargo test --locked -p raumakey-controller --test binary` failed `a_second_start_exits_at_once_with_0_and_says_nothing`. exit code Some(1) instead of Some(0): the stub WinDesktop failed the instance check
-- Red: E1 tray glue tests (tests/desktop.rs: real hidden window and loop, fake shell, watchdog) and the binary's own icon-loading unit test written first `cargo test --locked -p raumakey-controller --no-fail-fast --test desktop --bin raumakey` failed `desktop (compile error)`, `raumakey bin test (compile error)`. E0432 unresolved imports desktop::{ModeIcons, TrayShell, create_tray_window}
-- Red: E2 skeleton: handler that ignores every message, no START, ModeIcons::load returning a stub error `cargo test --locked -p raumakey-controller --no-fail-fast --test desktop --bin raumakey` failed `start_shows_the_icon_a_click_switches_it_and_exit_from_the_menu_ends_the_loop_with_0`, `matrix_58_taskbar_created_adds_the_icon_again_with_the_same_mode`, `wm_close_ends_the_loop_like_exit_and_does_not_destroy_the_window`, `the_end_of_the_session_ends_the_loop_like_exit`, `choosing_vietnamese_mode_in_the_menu_switches_the_icon`, `a_window_destroyed_while_the_menu_is_open_still_removes_the_icon_and_ends_the_loop`, `an_elevated_tray_window_lets_the_shell_messages_through`, `the_mode_icons_are_not_in_a_test_executable`, and 1 more. the 7 loop tests ended through the 20 s watchdog (code -77, not 0), so a broken tray cannot hang the suite;
-- Red: G1 usage test: the no-argument description must describe the controller, not 'Not available' `cargo test --locked -p raumakey-controller --test cli usage` failed `the_usage_describes_the_controller_without_arguments`. USAGE still said 'Runs the Raumakey controller (tray icon and panel).
-- Red: M mutation checks (scratchpad/mutate-step2.sh: perl substitution, run the matching tests with --no-fail-fast, restore from a backup outside the worktree,… `bash <scratch> <name> <file> <subst> <cargo test args>` failed `M1 TaskbarCreated shows the toggled mode: matrix_58 tests in tray and desktop`, `M2 exit twice: exit_from_the_menu_ends_the_tray_and_nothing_brings_the_icon_back`, `M3 any icon id: other_notifications_and_other_icons_change_nothing`, `M4 cancelled WM_ENDSESSION exits: a_cancelled_end_of_the_session_changes_nothing`, `M5 WM_CLOSE left to DefWindowProcW: wm_close_ends_the_loop_like_exit_and_does_not_destroy_the_window, close_and_the_end_of_the_session_exit_like_the_menu (+2)`, `M6 drop does not end the loop: a_window_destroyed_while_the_menu_is_open_still_removes_the_icon_and_ends_the_loop (watchdog)`, `M7 Exit keeps the icon: 6 desktop tests`, `M8 access denied not taken as running: an_instance_that_this_process_may_not_open_counts_as_running`, and 7 more. every mutation was caught by its intended tests;
+- Đỏ: A1 wrapper UIPI và WM_CLOSE/WM_ENDSESSION thuần: các test của lớp window được viết trước `cargo test --locked -p raumakey-windows --test layer window::` không đạt ở `layer (compile error)`. E0432, không phân giải được các import raumakey_windows::window::{WM_CLOSE, WM_ENDSESSION};
+- Đỏ: A2 bước tăng dần đầu tiên: các hằng số cùng một wrapper gọi ChangeWindowMessageFilterEx mà không kiểm tra message `cargo test --locked -p raumakey-windows --test layer window::` không đạt ở `window::win::system_and_class_messages_are_never_let_through_from_lower_integrity`. unwrap_err trên Ok: ChangeWindowMessageFilterEx đã chấp nhận WM_NULL trên một cửa sổ test không nâng quyền, nên các message hệ thống phải bị từ chối trước lời gọi
+- Đỏ: B1 bộ giải mã callback NOTIFYICON_VERSION_4 thuần: các test của lớp shell được viết trước `cargo test --locked -p raumakey-windows --test layer shell::` không đạt ở `layer (compile error)`. E0432, không phân giải được các import NIN_SELECT, NIN_KEYSELECT, NINF_KEY, NotifyIconEvent, NotifyIconMessage, WM_CONTEXTMENU, decode_notify_icon_message
+- Đỏ: B2 các kiểu thật, bộ giải mã dạng stub trả về Other(0) cho icon 0 `cargo test --locked -p raumakey-windows --test layer shell::` không đạt ở `shell::a_click_and_the_keyboard_select_the_icon`, `shell::the_shortcut_menu_is_anchored_at_signed_screen_coordinates`, `shell::other_notifications_keep_their_code_and_every_icon_id_is_decoded`, `shell::bits_above_the_two_words_are_ignored`. các assertion so với stub
+- Đỏ: C1 máy trạng thái của tray: tests/tray.rs được viết trước module (raumakey-resources được thêm làm dependency thường; `cargo test --locked -p raumakey-controller --test tray` không đạt ở `tray (compile error)`. E0432, không phân giải được import raumakey_controller::tray
+- Đỏ: C2 khung với các kiểu thật và phần thân dạng stub `cargo test --locked -p raumakey-controller --test tray` không đạt ở `the_mode_starts_from_the_engine_defaults_v1`, `toggling_switches_between_the_two_modes`, `each_mode_shows_its_own_icon_and_a_tooltip_naming_raumakey`, `the_menu_offers_vietnamese_mode_as_a_check_item_and_exit`, `command_ids_are_distinct_non_zero_and_round_trip`, `start_adds_the_icon_with_the_current_mode_once`, `a_click_or_the_keyboard_switches_the_mode_and_its_icon`, `a_right_click_opens_the_menu_at_its_anchor`, và 12 test khác. 20 trên 21 test không đạt ở các assertion;
+- Đỏ: D1 trình tự chạy qua một port Desktop và dispatch Command::Run: FakeDesktop, tests/run.rs, các test commands đã thay đổi được viết trước `cargo test --locked -p raumakey-controller --no-fail-fast` không đạt ở `run (compile error)`, `commands (compile error)`, `binary, convert, panic_guard, registration, startup (compile error via tests/support)`. E0432, không phân giải được import raumakey_controller::run;
+- Đỏ: D2 khung: trait Desktop, System::desktop, run_controller dạng stub trả về 0, dispatch giữ nguyên `cargo test --locked -p raumakey-controller --no-fail-fast --test run --test commands` không đạt ở `the_first_instance_runs_the_tray_in_the_initial_mode_and_then_releases_the_instance`, `a_second_instance_exits_quietly_with_0`, `an_instance_that_this_process_may_not_open_counts_as_running`, `a_failed_instance_check_is_reported_and_nothing_runs`, `a_tray_that_cannot_start_releases_the_instance_and_is_reported`, `the_exit_code_of_the_message_loop_is_passed_on`, `start_errors_name_raumakey_and_the_failed_operation_in_vietnamese`, `no_arguments_run_the_controller_on_the_desktop`, và 1 test khác. các assertion: không có lời gọi desktop nào, văn bản lỗi rỗng, và Command::Run vẫn in 'not available' với mã thoát 2
+- Đỏ: F1 test cấp tiến trình cho lần khởi động thứ hai (test giữ mutex single-instance thật) với desktop Windows dạng stub `cargo test --locked -p raumakey-controller --test binary` không đạt ở `a_second_start_exits_at_once_with_0_and_says_nothing`. mã thoát Some(1) thay vì Some(0): WinDesktop dạng stub thất bại ở bước kiểm tra instance
+- Đỏ: E1 các test phần kết nối (glue) của tray (tests/desktop.rs: cửa sổ ẩn và vòng lặp thật, shell giả, watchdog) và unit test nạp icon riêng của binary được viết trước `cargo test --locked -p raumakey-controller --no-fail-fast --test desktop --bin raumakey` không đạt ở `desktop (compile error)`, `raumakey bin test (compile error)`. E0432, không phân giải được các import desktop::{ModeIcons, TrayShell, create_tray_window}
+- Đỏ: E2 khung: handler bỏ qua mọi message, không có START, ModeIcons::load trả về một lỗi stub `cargo test --locked -p raumakey-controller --no-fail-fast --test desktop --bin raumakey` không đạt ở `start_shows_the_icon_a_click_switches_it_and_exit_from_the_menu_ends_the_loop_with_0`, `matrix_58_taskbar_created_adds_the_icon_again_with_the_same_mode`, `wm_close_ends_the_loop_like_exit_and_does_not_destroy_the_window`, `the_end_of_the_session_ends_the_loop_like_exit`, `choosing_vietnamese_mode_in_the_menu_switches_the_icon`, `a_window_destroyed_while_the_menu_is_open_still_removes_the_icon_and_ends_the_loop`, `an_elevated_tray_window_lets_the_shell_messages_through`, `the_mode_icons_are_not_in_a_test_executable`, và 1 test khác. 7 test vòng lặp kết thúc qua watchdog 20 s (mã -77, không phải 0), nên một tray bị hỏng không thể làm treo bộ test;
+- Đỏ: G1 test usage: phần mô tả khi không có tham số phải mô tả controller, không phải 'Not available' `cargo test --locked -p raumakey-controller --test cli usage` không đạt ở `the_usage_describes_the_controller_without_arguments`. USAGE vẫn ghi 'Runs the Raumakey controller (tray icon and panel).
+- Đỏ: M các kiểm tra đột biến (scratchpad/mutate-step2.sh: thay thế bằng perl, chạy các test tương ứng với --no-fail-fast, khôi phục từ một bản sao lưu bên ngoài worktree,… `bash <scratch> <name> <file> <subst> <cargo test args>` không đạt ở `M1 TaskbarCreated shows the toggled mode: matrix_58 tests in tray and desktop`, `M2 exit twice: exit_from_the_menu_ends_the_tray_and_nothing_brings_the_icon_back`, `M3 any icon id: other_notifications_and_other_icons_change_nothing`, `M4 cancelled WM_ENDSESSION exits: a_cancelled_end_of_the_session_changes_nothing`, `M5 WM_CLOSE left to DefWindowProcW: wm_close_ends_the_loop_like_exit_and_does_not_destroy_the_window, close_and_the_end_of_the_session_exit_like_the_menu (+2)`, `M6 drop does not end the loop: a_window_destroyed_while_the_menu_is_open_still_removes_the_icon_and_ends_the_loop (watchdog)`, `M7 Exit keeps the icon: 6 desktop tests`, `M8 access denied not taken as running: an_instance_that_this_process_may_not_open_counts_as_running`, và 7 mục khác. mọi đột biến đều bị các test dự định của nó bắt được;
 
-First fix round: 10 red and 8 green runs.
+Vòng sửa đầu tiên: 10 lần chạy đỏ và 8 lần chạy xanh.
 
-- Red: finding 9 red: reproduce the registry race (controller record_store) `for i in 1..150: target/debug/deps/record_store-<hash>.exe --test-threads=8` failed `removing_deletes_the_record_and_its_empty_parent_only`. 4/150 runs failed: RegCreateKeyExW 0x80070002 / 0x800703FA (ERROR_KEY_DELETED) while another TestKey::drop deleted the empty Software\Raumakey
-- Red: finding 9 red: same race in raumakey-windows layer registry tests `for i in 1..150: target/debug/deps/layer-<hash>.exe registry:: --test-threads=8` failed `registry::values_round_trip_through_an_owned_key`. 1/150 runs failed: RegCreateKeyExW 0x800703FA
-- Red: finding 13 red: elevated restart timeout must exit 3 `cargo test --locked -p raumakey-controller --test registration elevated_restart` failed `an_elevated_restart_that_did_not_finish_leaves_the_outcome_unknown`. exit code 1, expected 3 (EXIT_INCOMPLETE)
-- Red: finding 5 mutation check: generic restart-error branch `mutate elevation.rs generic Err branch to EXIT_INCOMPLETE; cargo test --locked -p raumakey-controller --test registration cannot_start; restore` failed `an_elevated_restart_that_cannot_start_changes_nothing`. code 3 vs 1 under the mutation;
-- Red: batch B red (findings 6, 11, 15 install warning, 17, 18): new fake outcomes Removed/Unread, unprotected paths, trait method stub keeping old behaviour `cargo test --locked -p raumakey-controller --test registration` failed `a_missing_tip_file_is_found_before_asking_for_administrator_rights`, `a_registration_again_that_changed_nothing_leaves_the_rollback_incomplete`, `a_registration_whose_exit_code_was_lost_is_read_back_and_undone`, `an_unregistration_that_changed_nothing_leaves_the_rollback_incomplete`, `install_warns_about_a_tip_outside_the_protected_folders`, `the_location_warning_comes_before_the_elevated_restart_and_only_once`, `uninstall_says_whether_there_was_an_installation_record`. UAC restart before the file check (exit 0 vs 1);
-- Red: finding 5 mutation checks M1-M4 on install.rs coverage tests (tests passed against the existing branches) `python mutate.py install.rs <branch>; cargo test --locked -p raumakey-controller --test registration <test>; restore` failed `a_previous_registration_that_cannot_be_restored_leaves_the_rollback_incomplete`, `a_failed_registration_that_left_the_previous_one_intact_needs_no_cleanup`, `a_failed_registration_that_removed_the_same_dlls_registration_leaves_the_rollback_incomplete`, `an_unregistration_that_cannot_run_keeps_the_record`. each mutation (restore Ok(code) to true;
-- Red: raumakey-windows red: for_user and program_files_x86 tests before the APIs exist `cargo test --locked -p raumakey-windows --test layer task_scheduler` failed `task_scheduler::each_account_has_its_own_task`, `task_scheduler::the_task_of_an_account_without_one_does_not_exist`, `known_folder::program_files_x86_resolves`. compile errors: no ElevatedLogonTask::for_user, no known_folder::program_files_x86
-- Red: batch C red (findings 1, 2, 10, 15 startup, 16, startup half of 5/13): new API (for_user field, per-account task methods, program check, is_inside_folder… `cargo test --locked --no-fail-fast -p raumakey-controller --test startup --test cli --test commands --test location` failed `the_restarted_startup_names_the_account_that_asked`, `the_elevated_marker_is_an_option_of_the_privileged_commands`, `the_usage_text_names_every_command`, `the_usage_explains_an_unknown_outcome`, `startup_and_clipboard_conversion_are_dispatched`, `files_below_the_folder_are_inside`, `a_declined_elevation_for_the_task_keeps_the_new_shortcut`, `none_does_not_claim_success_when_the_task_could_not_be_looked_up`, and 9 more. --for-user not parsed;
-- Red: finding 5 mutation checks M5-M6 on startup.rs coverage tests (both passed against the old flow too) `python mutate.py startup.rs <branch>; cargo test --locked -p raumakey-controller --test startup <test>; restore` failed `a_shortcut_that_cannot_be_removed_after_the_task_was_created_is_reported`, `none_reports_a_task_that_cannot_be_deleted`. reporting the failure as EXIT_OK turned each test red;
-- Red: findings 3/4/14 red under the reviewers' mutations `M7: replace the `if elevated {..}` block with `let _ = (elevated, shell_messages);` / M8: Window::create_hidden -> create_message_only; cargo test --locked -p raumakey-controller --test desktop; restore` failed `an_elevated_tray_window_lets_the_shell_messages_through`, `the_tray_window_is_a_hidden_top_level_window`. M7: MSGFLTINFO_STATUS(0) vs ALREADYALLOWED_FORWND(1) for TaskbarCreated 0xC10E;
+- Đỏ: phát hiện 9 đỏ: tái hiện tranh chấp (race) trên registry (record_store của controller) `for i in 1..150: target/debug/deps/record_store-<hash>.exe --test-threads=8` không đạt ở `removing_deletes_the_record_and_its_empty_parent_only`. 4/150 lần chạy không đạt: RegCreateKeyExW 0x80070002 / 0x800703FA (ERROR_KEY_DELETED) trong khi một TestKey::drop khác xoá Software\Raumakey rỗng
+- Đỏ: phát hiện 9 đỏ: cùng race đó trong các test registry của layer raumakey-windows `for i in 1..150: target/debug/deps/layer-<hash>.exe registry:: --test-threads=8` không đạt ở `registry::values_round_trip_through_an_owned_key`. 1/150 lần chạy không đạt: RegCreateKeyExW 0x800703FA
+- Đỏ: phát hiện 13 đỏ: lần khởi động lại nâng quyền bị hết thời gian chờ thì phải thoát với mã 3 `cargo test --locked -p raumakey-controller --test registration elevated_restart` không đạt ở `an_elevated_restart_that_did_not_finish_leaves_the_outcome_unknown`. mã thoát 1, mong đợi 3 (EXIT_INCOMPLETE)
+- Đỏ: kiểm tra đột biến cho phát hiện 5: nhánh lỗi khởi động lại tổng quát `mutate elevation.rs generic Err branch to EXIT_INCOMPLETE; cargo test --locked -p raumakey-controller --test registration cannot_start; restore` không đạt ở `an_elevated_restart_that_cannot_start_changes_nothing`. mã 3 so với 1 dưới đột biến;
+- Đỏ: lô B đỏ (các phát hiện 6, 11, 15 phần cảnh báo của install, 17, 18): các kết quả giả mới Removed/Unread, các đường dẫn không được bảo vệ, phương thức trait dạng stub giữ hành vi cũ `cargo test --locked -p raumakey-controller --test registration` không đạt ở `a_missing_tip_file_is_found_before_asking_for_administrator_rights`, `a_registration_again_that_changed_nothing_leaves_the_rollback_incomplete`, `a_registration_whose_exit_code_was_lost_is_read_back_and_undone`, `an_unregistration_that_changed_nothing_leaves_the_rollback_incomplete`, `install_warns_about_a_tip_outside_the_protected_folders`, `the_location_warning_comes_before_the_elevated_restart_and_only_once`, `uninstall_says_whether_there_was_an_installation_record`. khởi động lại qua UAC trước khi kiểm tra file (thoát 0 so với 1);
+- Đỏ: các kiểm tra đột biến M1-M4 cho phát hiện 5 trên các test độ phủ của install.rs (các test này đạt với các nhánh hiện có) `python mutate.py install.rs <branch>; cargo test --locked -p raumakey-controller --test registration <test>; restore` không đạt ở `a_previous_registration_that_cannot_be_restored_leaves_the_rollback_incomplete`, `a_failed_registration_that_left_the_previous_one_intact_needs_no_cleanup`, `a_failed_registration_that_removed_the_same_dlls_registration_leaves_the_rollback_incomplete`, `an_unregistration_that_cannot_run_keeps_the_record`. mỗi đột biến (restore Ok(code) thành true;
+- Đỏ: raumakey-windows đỏ: các test for_user và program_files_x86 được viết trước khi có các API `cargo test --locked -p raumakey-windows --test layer task_scheduler` không đạt ở `task_scheduler::each_account_has_its_own_task`, `task_scheduler::the_task_of_an_account_without_one_does_not_exist`, `known_folder::program_files_x86_resolves`. lỗi biên dịch: không có ElevatedLogonTask::for_user, không có known_folder::program_files_x86
+- Đỏ: lô C đỏ (các phát hiện 1, 2, 10, 15 phần startup, 16, nửa startup của 5/13): API mới (trường for_user, các phương thức task theo từng tài khoản, kiểm tra chương trình, is_inside_folder… `cargo test --locked --no-fail-fast -p raumakey-controller --test startup --test cli --test commands --test location` không đạt ở `the_restarted_startup_names_the_account_that_asked`, `the_elevated_marker_is_an_option_of_the_privileged_commands`, `the_usage_text_names_every_command`, `the_usage_explains_an_unknown_outcome`, `startup_and_clipboard_conversion_are_dispatched`, `files_below_the_folder_are_inside`, `a_declined_elevation_for_the_task_keeps_the_new_shortcut`, `none_does_not_claim_success_when_the_task_could_not_be_looked_up`, và 9 test khác. --for-user chưa được parse;
+- Đỏ: các kiểm tra đột biến M5-M6 cho phát hiện 5 trên các test độ phủ của startup.rs (cả hai test cũng đạt với luồng cũ) `python mutate.py startup.rs <branch>; cargo test --locked -p raumakey-controller --test startup <test>; restore` không đạt ở `a_shortcut_that_cannot_be_removed_after_the_task_was_created_is_reported`, `none_reports_a_task_that_cannot_be_deleted`. việc báo thất bại đó thành EXIT_OK khiến từng test chuyển sang đỏ;
+- Đỏ: các phát hiện 3/4/14 đỏ dưới các đột biến của reviewer `M7: replace the `if elevated {..}` block with `let _ = (elevated, shell_messages);` / M8: Window::create_hidden -> create_message_only; cargo test --locked -p raumakey-controller --test desktop; restore` không đạt ở `an_elevated_tray_window_lets_the_shell_messages_through`, `the_tray_window_is_a_hidden_top_level_window`. M7: MSGFLTINFO_STATUS(0) so với ALREADYALLOWED_FORWND(1) cho TaskbarCreated 0xC10E;
 
-Reviews:
+Các lượt review:
 
-- Specification and test adequacy: not approved (1 major, 5 minor, 2 nit).
-- Correctness, safety, and code quality: not approved (2 major, 4 minor, 5 nit).
-- Re-review after the first fix round: approved (2 minor, 1 nit).
+- Đặc tả và mức đầy đủ của test: không được duyệt (1 major, 5 minor, 2 nit).
+- Tính đúng đắn, an toàn và chất lượng mã: không được duyệt (2 major, 4 minor, 5 nit).
+- Review lại sau vòng sửa đầu tiên: được duyệt (2 minor, 1 nit).
 
-Open minor findings from the last re-review:
+Các phát hiện minor còn mở từ lần review lại gần nhất:
 
-- minor, `crates/raumakey-controller/tests/record_store.rs:59`: The registry-test race is fixed only inside one test process.
-- minor, `crates/raumakey-controller/src/cli.rs:39`: EXIT_FAILED is documented as 'the command failed;
-- nit, `crates/raumakey-windows/src/task_scheduler.rs:82`: `ElevatedLogonTask::NAME`, `new()` and the `Default` impl are still documented as 'the product's task'.
+- minor, `crates/raumakey-controller/tests/record_store.rs:59`: Race trong các test registry chỉ được sửa bên trong một tiến trình test.
+- minor, `crates/raumakey-controller/src/cli.rs:39`: EXIT_FAILED được mô tả trong tài liệu là 'the command failed;
+- nit, `crates/raumakey-windows/src/task_scheduler.rs:82`: `ElevatedLogonTask::NAME`, `new()` và impl `Default` vẫn được mô tả trong tài liệu là 'the product's task'.
 
-### Verification of Phase 2a
+### Kiểm chứng giai đoạn 2a
 
-After merging `raumakey-tsf` and `raumakey-controller` on top of `0bdfbcc` (plan §14.6):
+Sau khi merge `raumakey-tsf` và `raumakey-controller` lên trên `0bdfbcc` (kế hoạch §14.6):
 
-- `cargo fmt --all --check`: pass.
-- `cargo xtask ci`: Clippy with `-D warnings` passed with both feature sets; 1,887 tests passed
-  with default features and 1,961 with the compatibility features, 0 failed, 20 ignored (manual
-  tests and the 3 `BUG` tests); `fuzz_smoke` passed 10 tests.
+- `cargo fmt --all --check`: đạt.
+- `cargo xtask ci`: Clippy với `-D warnings` đạt với cả hai bộ feature; 1,887 test đạt với các
+  feature mặc định và 1,961 test với các feature tương thích, 0 không đạt, 20 bị bỏ qua (các test
+  thủ công và 3 test `BUG`); `fuzz_smoke` đạt 10 test.
 - `cargo test --locked -p raumakey-tsf -p raumakey-controller -p raumakey-windows --target
-  i686-pc-windows-msvc`: 697 passed under WOW64, 17 manual tests ignored.
-- `cargo xtask cross` and `cross --release`: pass for x86_64, i686, and aarch64.
-- `cargo xtask inspect` and `inspect --release`: all 57 and all 66 checks pass.
-- `cargo xtask package`, then the packaged `raumakey.exe` with `install --dry-run` (both option
-  orders), `uninstall --dry-run`, `--version`, and `update`: exit 0, and the plans name the
-  Raumakey CLSID and profile GUID.
+  i686-pc-windows-msvc`: 697 test đạt dưới WOW64, 17 test thủ công bị bỏ qua.
+- `cargo xtask cross` và `cross --release`: đạt cho x86_64, i686 và aarch64.
+- `cargo xtask inspect` và `inspect --release`: tất cả 57 và tất cả 66 kiểm tra đều đạt.
+- `cargo xtask package`, sau đó `raumakey.exe` đã đóng gói với `install --dry-run` (cả hai thứ
+  tự tuỳ chọn), `uninstall --dry-run`, `--version` và `update`: thoát với mã 0, và các plan chạy
+  thử nêu tên CLSID và GUID profile của Raumakey.
 
-No TSF host application has activated the TIP and no tray has been observed on a desktop; the
-manual check lists in `raumakey_tip::server` and in the controller's `desktop` module are not
-run yet.
+Chưa có ứng dụng chủ TSF nào kích hoạt TIP và chưa quan sát thấy tray nào trên desktop; các danh
+sách kiểm tra thủ công trong `raumakey_tip::server` và trong module `desktop` của controller vẫn
+chưa được chạy.
 
-## Decisions D25, D27, D28–D30, D34
+## Các quyết định D25, D27, D28–D30, D34
 
-Implemented on 2026-10-17 in two worktrees from `d378f71` after the product owner's decisions
-(plan §15), each reviewed by an independent reviewer and fixed until approved.
+Được triển khai ngày 2026-10-17 trong hai worktree tách từ `d378f71` sau các quyết định của chủ
+sản phẩm (kế hoạch §15), mỗi worktree được một reviewer độc lập review và được sửa cho tới khi
+được duyệt.
 
-### Engine, macros, TIP session core, vectors (D25, D28, D29, D30, D34)
+### Engine, macro, lõi session của TIP, vector (D25, D28, D29, D30, D34)
 
-- Red, D29: four tests failed because 33-scalar triggers were accepted
+- Đỏ, D29: bốn test không đạt vì trigger dài 33 scalar vẫn được chấp nhận
   (`d29_a_trigger_has_at_most_32_scalars`, `d29_a_trigger_longer_than_32_scalars_is_an_import_issue`,
   `d29_creating_a_macro_with_a_trigger_longer_than_32_scalars_fails`,
   `d29_the_longest_trigger_expands_with_the_default_context_and_a_longer_one_is_rejected`).
-- Red, D30: six tests failed, among them
-  `d30_a_replacement_fits_one_insert_in_nfc_and_in_nfd_with_a_delimiter` (4,096 emoji accepted),
-  `d30_adaptation_that_would_exceed_the_insert_limit_falls_back_to_the_stored_text`, and
+- Đỏ, D30: sáu test không đạt, trong đó có
+  `d30_a_replacement_fits_one_insert_in_nfc_and_in_nfd_with_a_delimiter` (chấp nhận 4,096 emoji),
+  `d30_adaptation_that_would_exceed_the_insert_limit_falls_back_to_the_stored_text`, và
   `d47_d53_every_accepted_replacement_expands_at_every_boundary`.
-- Red, D28: compile errors for the missing token queries, then 12 of 15 tests in
+- Đỏ, D28: lỗi biên dịch do thiếu các truy vấn token, sau đó không đạt ở 12 trên 15 test trong
   `crates/raumakey-engine/tests/tokens.rs`, `table::d28_token_triggers_and_trigger_prefixes`,
-  `macro_engine::d47_an_accepted_trigger_with_boundary_punctuation_expands`, and
+  `macro_engine::d47_an_accepted_trigger_with_boundary_punctuation_expands`, và
   `macros::d28_a_trigger_across_punctuation_expands_as_one_token`.
-- D34: `d34_circumflex_without_spell_check_marks_the_rightmost_a_e_or_o` pins existing behaviour;
-  a temporary reversal of the candidate order made it fail (`vni oa6` gave `ôa`).
-- Red, D25: `matrix::b29_secure_fields_never_expand_macros`,
+- D34: `d34_circumflex_without_spell_check_marks_the_rightmost_a_e_or_o` cố định hành vi hiện có;
+  việc tạm thời đảo ngược thứ tự ứng viên đã làm nó không đạt (`vni oa6` cho ra `ôa`).
+- Đỏ, D25: `matrix::b29_secure_fields_never_expand_macros`,
   `options::secure_field_keys_are_processed_without_macros`,
   `config::d25_restricted_mode_transforms_secure_fields_without_macros`,
-  `macro_engine::d25_no_macro_expands_for_a_key_in_a_secure_field`, and the session gate
-  `gates::d25_bypass_never_lets_the_engine_edit_a_secure_field` (a Backspace edited the field).
-- Review: approved with three minor findings. A differential run of 6,000 random scripts over 15
-  option sets with a table without punctuation triggers gave byte-identical traces to the
-  previous engine, and 24,000 scripts with token triggers kept every ownership invariant. The
-  fix round added the tests that three surviving mutations exposed, made a Backspace over a
-  tracked token's punctuation restore the word before it (red:
-  `d28_backspace_over_a_tracked_tokens_punctuation_restores_the_word_before_it` and
-  `macros::d28_a_backspace_over_the_dot_restores_the_word_before_it`), documented lenient
-  loading of data stored under the old limits, and extended the `macro_files` fuzz reference to
-  the token queries. A second re-review approved the Backspace change: an exact-restore oracle
-  over 3,656 cases matched, and four mutations of the restore were caught. Its one new minor
-  finding, that a store loaded leniently could give a new macro the identifier of a skipped
-  entry, was fixed in the main checkout (red: `d29_d30_new_ids_never_reuse_an_entry_skipped_by_lenient_loading`,
-  `next_id` returned 4 instead of 6).
-- Deliberately changed expectations: the three `BUG` tests became passing tests; the engine's
-  own matrix #29 tests now assert "no macros in secure fields" (the bypass moved to the
-  adapters); inputs that D30 makes invalid were shortened.
+  `macro_engine::d25_no_macro_expands_for_a_key_in_a_secure_field`, và gate của session
+  `gates::d25_bypass_never_lets_the_engine_edit_a_secure_field` (một Backspace đã sửa ô nhập).
+- Review: được duyệt với ba phát hiện minor. Một lần chạy đối chiếu (differential) 6,000 script
+  ngẫu nhiên trên 15 bộ tuỳ chọn với một bảng không có trigger dấu câu cho ra các trace giống hệt
+  từng byte so với engine trước đó, và 24,000 script với trigger token giữ được mọi bất biến về
+  quyền sở hữu. Vòng sửa đã thêm các test mà ba đột biến sống sót làm lộ ra, làm cho một Backspace
+  xoá dấu câu của một token đang được theo dõi khôi phục từ đứng trước nó (đỏ:
+  `d28_backspace_over_a_tracked_tokens_punctuation_restores_the_word_before_it` và
+  `macros::d28_a_backspace_over_the_dot_restores_the_word_before_it`), ghi tài liệu cho việc nạp
+  dễ dãi (lenient) dữ liệu được lưu theo các giới hạn cũ, và mở rộng tham chiếu fuzz `macro_files`
+  sang các truy vấn token. Lần review lại thứ hai đã duyệt thay đổi về Backspace: một oracle khôi
+  phục chính xác trên 3,656 trường hợp đều khớp, và bốn đột biến của phần khôi phục đều bị bắt.
+  Phát hiện minor mới duy nhất của lần review đó, rằng một kho được nạp dễ dãi có thể cấp cho
+  một macro mới mã định danh của một mục đã bị bỏ qua, đã được sửa trong checkout chính (đỏ:
+  `d29_d30_new_ids_never_reuse_an_entry_skipped_by_lenient_loading`, `next_id` trả về 4 thay vì 6).
+- Các kỳ vọng được cố ý thay đổi: ba test `BUG` đã trở thành test đạt; các test matrix #29 riêng
+  của engine giờ khẳng định "không có macro trong ô bảo mật" (phần bypass đã chuyển sang các
+  adapter); các đầu vào mà D30 làm cho không hợp lệ đã được rút ngắn.
 
-### Control pipe security (D27)
+### Bảo mật pipe điều khiển (D27)
 
-- Red: the new descriptor tests failed to compile; the process-identity test failed with
-  `E_ACCESSDENIED` from `OpenProcessToken` while impersonating a low-integrity token; the pipe
-  tests failed because low-integrity and AppContainer clients were refused and the descriptor had
-  no AppContainer ACE.
-- Review: not approved at first. The requested low mandatory label gave every low-integrity
-  process of the user full control of the pipe (a probe replaced its DACL and posed as the
-  controller), while AppContainer clients connect without it. The fix removed the label, added a
-  client-side refusal of pipes labeled below medium (red: both squatter tests connected), made a
-  test harness stop the server when the client panics (red: the test hung until killed), and
-  pinned the label parsing with a medium-labeled pipe. D27 in plan §15 records the amendment.
-  The re-review approved it.
+- Đỏ: các test descriptor mới không biên dịch được; test định danh tiến trình không đạt với
+  `E_ACCESSDENIED` từ `OpenProcessToken` khi đang mạo danh (impersonate) một token mức toàn vẹn
+  thấp (low integrity); các test pipe không đạt vì các client mức toàn vẹn thấp và AppContainer
+  bị từ chối và descriptor không có ACE cho AppContainer.
+- Review: ban đầu không được duyệt. Nhãn bắt buộc mức thấp (low mandatory label) được yêu cầu đã
+  trao cho mọi tiến trình mức toàn vẹn thấp của người dùng toàn quyền điều khiển pipe (một probe
+  đã thay DACL của pipe và giả làm controller), trong khi các client AppContainer kết nối được mà
+  không cần nhãn đó. Bản sửa đã bỏ nhãn, thêm việc phía client từ chối các pipe có nhãn thấp hơn
+  mức trung bình (medium) (đỏ: cả hai test chiếm chỗ (squatter) đều kết nối được), làm cho một
+  test harness dừng server khi client panic (đỏ: test bị treo cho tới khi bị kill), và cố định
+  việc parse nhãn bằng một pipe có nhãn mức trung bình. D27 trong kế hoạch §15 ghi lại sửa đổi
+  này. Lần review lại đã duyệt nó.
+
+## Bản dùng thử, README tiếng Việt và sửa script cài đặt
+
+Ngày 2026-10-17, chủ dự án yêu cầu một bản build để dùng thử, một file hướng dẫn build, và chuyển
+mọi tài liệu sang tiếng Việt. Phần mã thay đổi `xtask`, bộ test COM của TSF và một comment của
+controller.
+
+### README của package (D33)
+
+- Đỏ: `readmes_state_unsigned_and_verification_level` được sửa để đòi README tiếng Việt (UTF-8 có
+  BOM, CRLF, các cụm "chưa được ký số", "chưa kiểm chứng khi chạy thật", "Ctrl+Shift",
+  "GUIDE.md") và fail tại `xtask\src\package.rs:588` với `UTF-8 byte order mark`.
+- Xanh: `readme` sinh văn bản tiếng Việt có BOM; `assert_windows_text` (ASCII) vẫn chỉ áp cho
+  script.
+
+### Script cài đặt (§14.4 mục 8)
+
+- Lỗi khi chạy thật: trên package release, `powershell -NoProfile -ExecutionPolicy Bypass -File
+  install.ps1 -DryRun` (Windows PowerShell 5.1.26100) thoát với mã 1 và báo `The variable
+  '$LASTEXITCODE' cannot be retrieved because it has not been set.` Nguyên nhân: script gọi
+  `raumakey.exe`, một chương trình subsystem GUI, bằng `& $controller`; PowerShell 5.1 không chờ
+  chương trình GUI và không đặt mã thoát. `raumakey.exe install --dry-run` chạy trực tiếp thì đạt,
+  và `installer-dry-run` của cổng phát hành chỉ chạy controller trực tiếp, nên lỗi lọt qua.
+- Đỏ: `dry_runs_also_run_the_packaged_scripts_with_windows_powershell` không biên dịch được
+  (`E0425`: chưa có `script_dry_run_commands`). Sau khi thêm hàm đó,
+  `install_script_self_elevates_and_passes_both_tips` và
+  `uninstall_script_self_elevates_without_tip_paths` fail tại `xtask\src\package.rs:596` (script
+  thiếu `System.Diagnostics.ProcessStartInfo`).
+- Xanh: script khởi động controller bằng `ProcessStartInfo` (không dùng shell, đầu ra chuẩn và
+  lỗi chuẩn được chuyển hướng theo UTF-8), đọc lỗi chuẩn bất đồng bộ để tránh deadlock, chờ
+  controller kết thúc rồi lấy `ExitCode`; `Join-Arguments` đặt dấu ngoặc kép cho từng tham số theo
+  quy tắc của `CommandLineToArgvW`. `installer-dry-run` chạy thêm `install.ps1 -DryRun` và
+  `uninstall.ps1 -DryRun` bằng `powershell.exe` với cùng hợp đồng đầu ra. 103 test của `xtask` đạt.
+- Kiểm tra bằng tay trên package release: `install.ps1 -DryRun` và `uninstall.ps1 -DryRun` thoát
+  với mã 0 và in đầy đủ kế hoạch, kể cả khi package nằm trong thư mục có dấu cách và chữ tiếng
+  Việt (`Thư mục thử`).
+- Chưa chạy: lần cài thật qua UAC (cần chủ dự án), và `cargo xtask release-gate` (cần file review
+  toàn branch).
+
+### Review
+
+- Một reviewer độc lập đã duyệt, không có phát hiện blocker hay major, và nêu 11 phát hiện
+  minor/nit. Reviewer đã chạy lại hai script `-DryRun` bằng Windows PowerShell 5.1, thử mã thoát
+  khác 0, thử trường hợp thiếu `raumakey.exe`, và cho `Join-Arguments` chạy khứ hồi qua
+  `CommandLineToArgvW` (đường dẫn có dấu cách, chữ tiếng Việt, dấu `\` ở cuối, dấu ngoặc kép bên
+  trong, chuỗi rỗng).
+- Đã sửa:
+  1. Script kiểm tra `raumakey.exe` trước khi xin quyền quản trị. Lỗi khi chạy controller được in
+     ra, và cửa sổ quản trị viên vẫn chờ Enter (`try`/`catch`/`finally`).
+  2. Có test chốt `ReadToEndAsync()`.
+  3. `installer_dry_run_commands` trả về cả bốn lần chạy và có test riêng.
+  4. `powershell.exe` được lấy từ `%SystemRoot%\System32\WindowsPowerShell\v1.0`, không tìm theo
+     search path (search path bắt đầu bằng thư mục của `xtask.exe`).
+  5. Regex dùng `\z` thay cho `$` (`$` của .NET còn khớp trước ký tự xuống dòng cuối).
+  6. Comment trong `crates/raumakey-controller/src/lib.rs` không còn nói rằng
+     `$out = & raumakey.exe` chờ được controller.
+  7. `GUIDE.md` được commit cùng thay đổi này.
+  8. README ghi thêm đường dẫn Settings của Windows 10, và một bước kiểm tra hàng phím số (D36).
+- Chấp nhận, không sửa:
+  - Lỗi chuẩn được in sau đầu ra chuẩn nên thứ tự giữa hai luồng bị mất. Điều này được ghi trong
+    comment của script.
+  - Khi đầu ra của `powershell.exe` bị chuyển hướng, `Write-Host` mã hoá theo code page của console.
+    Ký tự không phải ASCII trong đường dẫn có thể thành `?` trong log của gate, nhưng hợp đồng GUID
+    không bị ảnh hưởng.
+  - Reviewer đề xuất gate chạy script từ một thư mục có dấu cách và chữ tiếng Việt. Việc này chưa
+    làm; trường hợp đó chỉ được kiểm tra bằng tay.
+- Đỏ lần hai: `the_installer_dry_run_runs_the_controller_then_both_scripts_with_windows_powershell`
+  không biên dịch được (`E0425`: chưa có `installer_dry_run_commands`). Sau khi thêm hàm đó, hai
+  test script fail tại `xtask\src\package.rs:631` và test README fail tại
+  `xtask\src\package.rs:685`. Xanh: 103 test của `xtask`, Clippy sạch.
+- Kiểm tra bằng tay sau khi sửa: hai script `-DryRun` thoát với mã 0. Chạy từ `Thư mục thử`, đầu ra
+  có đủ 20 dòng CLSID. Khi xoá `raumakey.exe`, `install.ps1` (không có `-DryRun`) báo
+  `raumakey.exe was not found next to this script` và thoát với mã 1 trước khi hỏi quyền quản trị.
+
+### Bộ test COM của TSF và Caps Lock (§14.4 mục 9)
+
+- Lỗi: lần chạy `cargo xtask ci` thứ hai fail 37 test trong `crates/raumakey-tsf/tests/com`, dù
+  crate TSF không đổi so với lần chạy đạt trước đó. Commit `56980c7` cũng fail y hệt, chạy trong
+  một worktree riêng, nên lỗi do trạng thái của máy. Chạy riêng từng test thì 14 test fail; ví dụ
+  `typing::telex_words_are_typed_through_real_tsf_ranges` cho ra `tieengs vieetj nguƯoƯif`. Các
+  test còn lại fail theo dây chuyền, vì một test panic để lại một object của server.
+- Nguyên nhân: Caps Lock của desktop đang bật (`GetKeyState(VK_CAPITAL)` = 1). Một luồng mới nhận
+  trạng thái các phím bật/tắt của desktop. Text service dịch phím bằng `ToUnicodeEx` với trạng
+  thái đó nên ra chữ hoa, còn `Document::app_types` chèn chữ thường như test viết. Hai văn bản
+  không khớp, nên text service không sửa văn bản và cho phím đi qua. Trong ứng dụng thật, ứng dụng
+  cũng chèn chữ hoa khi Caps Lock bật, nên đây là giả định của bộ test, không phải lỗi của TIP.
+- Sửa: `Tip::activate_after` gọi `release_every_key`, hàm này dùng `SetKeyboardState` để thả mọi
+  phím và tắt mọi phím bật/tắt của luồng test. Hàm chỉ đổi trạng thái của luồng gọi, không gửi
+  input nào. Đỏ: 14 test fail khi chạy riêng (Caps Lock bật). Xanh: cả 47 test đạt hai lần liên
+  tiếp, trong khi Caps Lock của desktop vẫn bật.

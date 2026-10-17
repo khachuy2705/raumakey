@@ -1,21 +1,26 @@
 # Raumakey
 
-Raumakey is a Vietnamese input method for Windows, licensed GPL-3.0-or-later and implemented in Rust with native Win32 and TSF integration. It is under development.
+Raumakey là bộ gõ tiếng Việt cho Windows, phát hành theo giấy phép GPL-3.0-or-later, viết bằng Rust và tích hợp trực tiếp với Win32 và TSF. Dự án đang trong giai đoạn phát triển.
 
-Status on 2026-10-17: the core libraries (model, engine, macros, configuration, policy, IPC, conversion, migration, resources, Windows wrappers), the TSF text service (`raumakey_tip.dll`: COM layer and key path, without its connection to the controller yet), the controller's command line (install, uninstall, startup, convert) and a minimal tray, the shared test suites (fuzz smoke, compatibility vectors, test runner), and the `xtask` build tooling are implemented and pass their automated tests. The controller's IPC hub, keyboard hook, fallback transport, and panel, and the Windows acceptance harness, are not written yet. Raumakey has not been tried in a real Windows application yet, so treat it as a development build. Section 14 of the implementation plan lists what is done and what is outstanding; section 20 of the design has the detailed evidence of the earlier snapshot.
+Trạng thái ngày 2026-10-17: các thư viện lõi (model, engine, macro, cấu hình, policy, IPC, chuyển mã, migration, tài nguyên, lớp bọc Windows), dịch vụ văn bản TSF (`raumakey_tip.dll`: lớp COM và đường xử lý phím, chưa kết nối với controller), dòng lệnh của controller (install, uninstall, startup, convert) cùng một biểu tượng khay tối giản, các bộ test dùng chung (fuzz smoke, vector tương thích, test runner) và công cụ build `xtask` đã được triển khai và đạt toàn bộ test tự động. IPC hub, hook bàn phím, transport đường dự phòng (fallback) và bảng cài đặt của controller, cũng như bộ nghiệm thu trên Windows, chưa được viết. Raumakey chưa được thử trong ứng dụng Windows thật, nên hãy xem đây là bản phát triển. Mục 14 của kế hoạch triển khai liệt kê việc đã xong và việc còn lại; mục 20 của thiết kế ghi bằng chứng chi tiết của lần chụp trạng thái trước đó.
 
-## Target
+## Build và dùng thử
 
-- Windows 10 and later
-- Runtime acceptance: x86_64
-- Compile gates: i686, x86_64, and ARM64 MSVC targets
-- Native Win32 UI, tray controller, COM TSF TIP, fallback input transport, macros, conversion, configuration, and read-only EVKey migration
+[`GUIDE.md`](GUIDE.md) hướng dẫn dựng môi trường, build, đóng gói, cài đặt, dùng thử và gỡ cài đặt.
 
-## Documents
+## Mục tiêu
 
-- Design and implementation status: [`docs/superpowers/specs/2026-10-16-raumakey-design.md`](docs/superpowers/specs/2026-10-16-raumakey-design.md)
-- Implementation plan: [`docs/superpowers/plans/2026-10-16-raumakey-implementation.md`](docs/superpowers/plans/2026-10-16-raumakey-implementation.md)
-- Clean-room behavioral reference: [`docs/reference/evkey_clean_room_spec.md`](docs/reference/evkey_clean_room_spec.md)
-- Compatibility matrix: [`docs/reference/evkey_compatibility_test_matrix.md`](docs/reference/evkey_compatibility_test_matrix.md)
+- Windows 10 trở lên
+- Nghiệm thu khi chạy thật: x86_64
+- Cổng biên dịch: các target MSVC i686, x86_64 và ARM64
+- Giao diện Win32 native, controller ở khay hệ thống, COM TSF TIP, transport đường dự phòng, macro, chuyển mã, cấu hình và migration chỉ đọc từ dữ liệu EVKey
 
-The original reconstruction dossier is retained locally under `restricted_evidence/` and excluded from Git. Implementation agents are prohibited from reading it.
+## Tài liệu
+
+- Hướng dẫn build và dùng thử: [`GUIDE.md`](GUIDE.md)
+- Thiết kế và trạng thái triển khai: [`docs/superpowers/specs/2026-10-16-raumakey-design.md`](docs/superpowers/specs/2026-10-16-raumakey-design.md)
+- Kế hoạch triển khai: [`docs/superpowers/plans/2026-10-16-raumakey-implementation.md`](docs/superpowers/plans/2026-10-16-raumakey-implementation.md)
+- Đặc tả hành vi clean-room: [`docs/reference/evkey_clean_room_spec.md`](docs/reference/evkey_clean_room_spec.md)
+- Ma trận tương thích: [`docs/reference/evkey_compatibility_test_matrix.md`](docs/reference/evkey_compatibility_test_matrix.md)
+
+Hồ sơ tái dựng gốc được giữ cục bộ trong `restricted_evidence/` và không đưa lên Git. Agent triển khai bị cấm đọc thư mục này.

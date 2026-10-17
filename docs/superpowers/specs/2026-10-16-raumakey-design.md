@@ -1,56 +1,56 @@
-# Raumakey Rust Rewrite Design
+# Thiết kế viết lại Raumakey bằng Rust
 
-**Date:** 2026-10-16 (last updated 2026-10-17: implementation status added as §20)
+**Ngày:** 2026-10-16 (cập nhật lần cuối 2026-10-17: bổ sung trạng thái triển khai thành §20)
 
-**Status:** Approved; implementation in progress (see §20)
+**Trạng thái:** Đã được duyệt; đang triển khai (xem §20)
 
-**Product:** Raumakey
+**Sản phẩm:** Raumakey
 
-**Repository:** `https://github.com/khachuy2705/raumakey.git`
+**Kho mã:** `https://github.com/khachuy2705/raumakey.git`
 
-## 1. Purpose
+## 1. Mục đích
 
-Raumakey is a GPL-compatible Vietnamese input method for Windows, rewritten in Rust. It provides a native Win32 controller and configuration UI, a COM TSF Text Input Processor, Telex/VNI/VIQR/user-defined input methods, macros, text conversion, application-specific compatibility policy, and safe read-only migration from EVKey data.
+Raumakey là một kiểu gõ tiếng Việt cho Windows, tương thích GPL, được viết lại bằng Rust. Nó cung cấp một controller và giao diện cấu hình Win32 native, một TSF Text Input Processor dạng COM, các kiểu gõ Telex/VNI/VIQR/tự định nghĩa, macro, chuyển đổi văn bản, chính sách tương thích riêng cho từng ứng dụng, và migration (chuyển dữ liệu) an toàn, chỉ đọc, từ dữ liệu EVKey.
 
-The first public release is one full-parity release rather than a sequence of partial releases. Development may use internal milestones, but none is represented as the completed product.
+Release công khai đầu tiên là một release duy nhất tương đương đầy đủ (full parity) thay vì một chuỗi các release từng phần. Quá trình phát triển có thể dùng các mốc nội bộ, nhưng không mốc nào được trình bày như sản phẩm đã hoàn thành.
 
-## 2. Success criteria
+## 2. Tiêu chí thành công
 
-The release must:
+Release phải:
 
-1. Run on Windows 10 or later on x86_64 after user-run acceptance testing.
-2. Cross-compile the controller, TIP, and supporting artifacts for i686, x86_64, and ARM64 MSVC targets.
-3. Support Telex, VNI, VIQR, and user-defined mappings; old/new tone placement; semantic backspace; invalid-word restoration; NFC and NFD output; macros; clipboard/file text conversion; and per-application policy.
-4. Provide a lightweight native Win32 tray controller and dialogs.
-5. Register a new Raumakey COM/TSF identity without replacing or impersonating EVKey.
-6. Import supported EVKey settings and macros without modifying or deleting the source data.
-7. Meet the security, privacy, TDD, review, and verification gates in this document.
+1. Chạy trên Windows 10 trở lên trên x86_64 sau khi người dùng tự chạy test nghiệm thu.
+2. Biên dịch chéo (cross-compile) controller, TIP và các artifact hỗ trợ cho các target MSVC i686, x86_64 và ARM64.
+3. Hỗ trợ Telex, VNI, VIQR và ánh xạ phím tự định nghĩa; đặt dấu kiểu cũ/kiểu mới; backspace theo ngữ nghĩa; khôi phục từ không hợp lệ; đầu ra NFC và NFD; macro; chuyển đổi văn bản trên clipboard/tệp; và chính sách theo từng ứng dụng.
+4. Cung cấp một tray controller Win32 native gọn nhẹ cùng các hộp thoại.
+5. Đăng ký một danh tính COM/TSF mới của Raumakey mà không thay thế hay mạo danh EVKey.
+6. Nhập các thiết lập và macro EVKey được hỗ trợ mà không sửa đổi hay xoá dữ liệu nguồn.
+7. Đáp ứng các gate về bảo mật, quyền riêng tư, TDD, review và kiểm chứng trong tài liệu này.
 
-A successful cross-build, whether on a Linux or a Windows host, is not evidence of Windows runtime correctness. Runtime x86_64 acceptance remains pending until the Windows harness and manual matrix pass on Windows 10 or later.
+Một lần cross-build thành công, dù trên host Linux hay host Windows, không phải là bằng chứng cho tính đúng đắn khi chạy thật trên Windows. Nghiệm thu khi chạy thật trên x86_64 vẫn đang chờ cho đến khi harness Windows và ma trận kiểm tra thủ công đạt trên Windows 10 trở lên.
 
-## 3. Product identity
+## 3. Danh tính sản phẩm
 
-Raumakey uses fixed identities distinct from EVKey:
+Raumakey dùng các danh tính cố định, khác biệt với EVKey:
 
-- TSF COM CLSID: `{0FC48F2B-4F91-44A0-B500-DE512E801432}`
-- TSF language profile GUID: `{DB875058-BBF9-407C-85A8-950BE7D14C22}`
-- Installer upgrade code: `{BF73893F-FCEB-4BAE-AE1C-E81D7107ECE5}`
-- Named-object prefix: `Local\\Raumakey.` followed by the session/user-qualified object name
-- Registry root owned by the product: `HKCU\\Software\\Raumakey`
+- CLSID COM của TSF: `{0FC48F2B-4F91-44A0-B500-DE512E801432}`
+- GUID profile ngôn ngữ TSF: `{DB875058-BBF9-407C-85A8-950BE7D14C22}`
+- Upgrade code của installer: `{BF73893F-FCEB-4BAE-AE1C-E81D7107ECE5}`
+- Tiền tố named object: `Local\\Raumakey.` theo sau là tên object được định danh theo session/người dùng
+- Gốc registry thuộc sở hữu của sản phẩm: `HKCU\\Software\\Raumakey`
 
-The migration component may read known EVKey paths. No Raumakey component may register EVKey's CLSID/profile, write beneath EVKey's registry root, use EVKey branding, or overwrite an EVKey file.
+Thành phần migration được phép đọc các đường dẫn EVKey đã biết. Không thành phần nào của Raumakey được phép đăng ký CLSID/profile của EVKey, ghi vào bên dưới gốc registry của EVKey, dùng thương hiệu EVKey, hoặc ghi đè một tệp EVKey.
 
-## 4. Legal and evidence boundary
+## 4. Ranh giới pháp lý và bằng chứng
 
-The original reconstruction dossier is retained under `restricted_evidence/` and excluded from Git. Implementation and code-review agents must not read that directory. They may use only the approved design, implementation plan, clean-room behavioral specification, compatibility vectors, code already written in the repository, and properly licensed upstream source.
+Hồ sơ tái dựng ban đầu được lưu giữ dưới `restricted_evidence/` và bị loại khỏi Git. Các agent triển khai và review mã không được đọc thư mục đó. Chúng chỉ được dùng thiết kế đã được duyệt, kế hoạch triển khai, đặc tả hành vi clean-room, các vector tương thích, mã đã được viết trong kho mã, và mã nguồn upstream có giấy phép hợp lệ.
 
-Before reusing or translating UniKey source, the implementation must record the exact repository URL, immutable commit, license text, affected files, and required notices in `THIRD_PARTY.md`. The repository's final GPL-compatible license version must match the actual upstream obligations; it must not be guessed. A source translation is treated as a derivative and retains attribution.
+Trước khi tái sử dụng hoặc chuyển dịch mã nguồn UniKey, phần triển khai phải ghi lại chính xác URL kho mã, commit bất biến, văn bản giấy phép, các tệp bị ảnh hưởng và các thông báo bắt buộc vào `THIRD_PARTY.md`. Phiên bản giấy phép tương thích GPL cuối cùng của kho mã phải khớp với các nghĩa vụ upstream thực tế; không được phỏng đoán. Một bản chuyển dịch mã nguồn được coi là tác phẩm phái sinh và giữ nguyên ghi công.
 
-EVKey decompiler output, pseudocode, resources, icons, strings, class layouts, and control flow are forbidden implementation inputs.
+Đầu ra decompiler của EVKey, pseudocode, resource, icon, chuỗi, bố cục class và luồng điều khiển là những đầu vào bị cấm dùng cho việc triển khai.
 
-## 5. Architecture
+## 5. Kiến trúc
 
-Raumakey is a Cargo workspace with inward-pointing dependencies.
+Raumakey là một Cargo workspace với các phụ thuộc hướng vào trong.
 
 ```text
 crates/
@@ -71,19 +71,19 @@ tests/                  shared fixtures, contract suites, and Windows harness
 fuzz/                   cargo-fuzz targets (separate workspace, excluded from the main one)
 ```
 
-`raumakey-resources` and `fuzz/` were added by the implementation plan (§1.1, §11, §12).
+`raumakey-resources` và `fuzz/` được bổ sung bởi kế hoạch triển khai (§1.1, §11, §12).
 
-`raumakey-model` and `raumakey-engine` must not depend on Windows APIs, HWND, COM interfaces, registry types, handles, raw pointers, clipboard APIs, or process-global mutable state. Windows adapters depend on core crates, never the reverse.
+`raumakey-model` và `raumakey-engine` không được phụ thuộc vào Windows API, HWND, interface COM, kiểu registry, handle, con trỏ thô (raw pointer), API clipboard, hay trạng thái khả biến toàn cục của tiến trình. Các adapter Windows phụ thuộc vào các crate lõi, không bao giờ theo chiều ngược lại.
 
-### 5.1 Core contracts
+### 5.1 Các hợp đồng lõi
 
-The canonical contracts are the `InputEvent`, `EngineOptions`, `EngineState`, `EditTransaction`, `HostContext`, `HostPolicy`, and typed errors described in `docs/reference/evkey_clean_room_spec.md`, with Raumakey-owned version numbers and identities.
+Các hợp đồng chuẩn là `InputEvent`, `EngineOptions`, `EngineState`, `EditTransaction`, `HostContext`, `HostPolicy` và các lỗi có kiểu (typed error) được mô tả trong `docs/reference/evkey_clean_room_spec.md`, với số phiên bản và danh tính thuộc sở hữu của Raumakey.
 
-`EngineState` is session-scoped and contains no operating-system resources. `EditTransaction.delete_before` counts host-visible UTF-16 code units, is range-checked before application, and never splits a surrogate pair.
+`EngineState` có phạm vi theo session và không chứa tài nguyên nào của hệ điều hành. `EditTransaction.delete_before` đếm các code unit UTF-16 mà host nhìn thấy, được kiểm tra phạm vi trước khi áp dụng, và không bao giờ tách đôi một cặp surrogate.
 
-### 5.2 TSF path
+### 5.2 Đường TSF
 
-The default input path is:
+Đường nhập liệu mặc định là:
 
 ```text
 physical key
@@ -94,49 +94,49 @@ physical key
   -> successful apply commits next EngineState
 ```
 
-The engine runs inside the TIP process for the TSF path. Raw keystrokes and document text do not travel to the controller. Each TSF activation/document session owns a serial executor and independent state. Configuration and macro snapshots are immutable for the duration of one request.
+Với đường TSF, engine chạy bên trong tiến trình của TIP. Phím gõ thô và văn bản tài liệu không được chuyển tới controller. Mỗi phiên kích hoạt/tài liệu TSF sở hữu một executor tuần tự và trạng thái độc lập. Các snapshot cấu hình và macro là bất biến trong suốt thời gian của một yêu cầu.
 
-If TSF application fails, the context changes, or the available range is shorter than `delete_before`, the adapter does not commit the proposed next state. It ends the composition and resets or passes through according to policy.
+Nếu việc áp dụng qua TSF thất bại, context thay đổi, hoặc vùng khả dụng ngắn hơn `delete_before`, adapter không commit trạng thái kế tiếp được đề xuất. Nó kết thúc composition và reset hoặc cho phím đi qua (pass through) tuỳ theo chính sách.
 
-### 5.3 Fallback path
+### 5.3 Đường dự phòng (fallback)
 
-`CompatibilityPolicy` selects exactly one transport for a host:
+`CompatibilityPolicy` chọn đúng một transport cho mỗi host:
 
-1. `TSF` by default.
-2. `SyntheticKey` when an explicit host rule or failed capability probe requires it.
-3. `Clipboard` only when explicitly enabled and never in a secure field.
+1. `TSF` theo mặc định.
+2. `SyntheticKey` khi một quy tắc host tường minh hoặc một lần thăm dò khả năng (capability probe) thất bại đòi hỏi điều đó.
+3. `Clipboard` chỉ khi được bật tường minh và không bao giờ dùng trong ô bảo mật.
 
-The controller owns fallback session state partitioned by process ID, thread ID, foreground epoch, and document identity when available. Replayed keys carry a Raumakey-specific sentinel and are ignored by the hook. No physical key may be processed by more than one transport.
+Controller sở hữu trạng thái session của đường dự phòng, được phân vùng theo process ID, thread ID, epoch foreground, và danh tính tài liệu khi có. Các phím được phát lại mang một sentinel riêng của Raumakey và bị hook bỏ qua. Không phím vật lý nào được phép xử lý bởi nhiều hơn một transport.
 
-Clipboard fallback snapshots clipboard sequence ownership, writes only for the duration of the operation, and restores the previous data only if the clipboard sequence still proves Raumakey owns the latest update. It never restores over another application's newer clipboard content.
+Đường dự phòng clipboard chụp snapshot quyền sở hữu sequence của clipboard, chỉ ghi trong suốt thời gian của thao tác, và chỉ khôi phục dữ liệu trước đó nếu sequence của clipboard vẫn chứng minh rằng Raumakey sở hữu lần cập nhật mới nhất. Nó không bao giờ khôi phục đè lên nội dung clipboard mới hơn của một ứng dụng khác.
 
-## 6. Input methods and engine behavior
+## 6. Kiểu gõ và hành vi của engine
 
-The engine supports:
+Engine hỗ trợ:
 
-- Telex, VNI, VIQR, and versioned user-defined semantic key maps.
-- Vietnamese vowel/consonant sequence validation.
-- `qu` and `gi` onset handling.
-- Configurable old/new tone placement.
-- Repeated mark/tone undo with literal fallback.
-- Semantic backspace using bounded state history.
-- Spell checking and optional restoration of invalid converted words to raw keystrokes.
-- NFC, NFD, and preserve normalization modes without malformed UTF-16.
-- Lower/title/upper case preservation.
+- Telex, VNI, VIQR và các bảng phím ngữ nghĩa tự định nghĩa có phiên bản.
+- Kiểm tra tính hợp lệ của chuỗi nguyên âm/phụ âm tiếng Việt.
+- Xử lý phụ âm đầu `qu` và `gi`.
+- Đặt dấu kiểu cũ/kiểu mới có thể cấu hình.
+- Huỷ dấu phụ/dấu thanh khi gõ lặp, với đường dự phòng là ký tự nguyên văn.
+- Backspace theo ngữ nghĩa dùng lịch sử trạng thái có giới hạn.
+- Kiểm tra chính tả và tuỳ chọn khôi phục các từ đã chuyển đổi nhưng không hợp lệ về phím gõ thô.
+- Các chế độ chuẩn hoá NFC, NFD và giữ nguyên (preserve) mà không tạo ra UTF-16 sai dạng.
+- Giữ nguyên kiểu chữ thường/hoa chữ đầu/hoa toàn bộ.
 
-Invalid semantic actions must not silently swallow the original key. Every transformation is expressed as an `EditTransaction`; output injection is an adapter responsibility.
+Các hành động ngữ nghĩa không hợp lệ không được âm thầm nuốt mất phím gốc. Mọi phép biến đổi được biểu diễn dưới dạng một `EditTransaction`; việc chèn đầu ra là trách nhiệm của adapter.
 
-The compatibility matrix is the initial behavioral contract. Baseline vectors remain labeled as baseline until a legal EVKey runtime observation or an explicit Raumakey product decision establishes otherwise.
+Ma trận tương thích là hợp đồng hành vi ban đầu. Các vector baseline vẫn được gắn nhãn baseline cho đến khi một quan sát hợp pháp trên EVKey lúc chạy thật hoặc một quyết định sản phẩm tường minh của Raumakey xác lập điều khác.
 
-## 7. Macros and conversion
+## 7. Macro và chuyển đổi
 
-Macro entries contain a stable ID, NFC trigger, NFC replacement, enabled flag, boundary policy, and case policy. Lookup is deterministic and based on Unicode scalars, not byte offsets. Expansion occurs only at a configured boundary. Macro processing can operate while Vietnamese mode is off only when the user enables that option.
+Mỗi mục macro chứa một ID ổn định, trigger NFC, nội dung thay thế NFC, cờ bật, chính sách ranh giới, và chính sách chữ hoa/thường. Việc tra cứu là tất định và dựa trên Unicode scalar, không dựa trên offset byte. Việc bung macro (expansion) chỉ xảy ra tại một ranh giới đã được cấu hình. Việc xử lý macro trong lúc chế độ tiếng Việt đang tắt chỉ có thể hoạt động khi người dùng bật tuỳ chọn đó.
 
-The converter supports in-memory text conversion and explicit clipboard/file operations. File conversion never overwrites the source by default. Clipboard conversion is disabled for secure fields and reports ownership conflicts rather than replacing newer clipboard content.
+Bộ chuyển đổi hỗ trợ chuyển đổi văn bản trong bộ nhớ và các thao tác tường minh trên clipboard/tệp. Theo mặc định, chuyển đổi tệp không bao giờ ghi đè tệp nguồn. Chuyển đổi clipboard bị tắt đối với ô bảo mật và báo cáo xung đột quyền sở hữu thay vì thay thế nội dung clipboard mới hơn.
 
-## 8. Configuration and persistence
+## 8. Cấu hình và lưu trữ bền vững
 
-Default data root:
+Thư mục dữ liệu gốc mặc định:
 
 ```text
 %LOCALAPPDATA%\\Raumakey\\
@@ -147,382 +147,384 @@ Default data root:
   logs\\
 ```
 
-Portable mode is enabled only by a `raumakey.portable` marker beside the executable. It is never inferred merely from write access.
+Chế độ portable chỉ được bật bởi một tệp đánh dấu `raumakey.portable` nằm cạnh tệp thực thi. Nó không bao giờ được suy ra chỉ từ việc có quyền ghi.
 
-Every store contains `version` and monotonically increasing `revision`. A write uses a same-directory temporary file, durable flush, `ReplaceFileW`, and a read-back checksum. Optimistic revision checking returns `Conflict` instead of silently overwriting another writer. Unknown migrated fields are retained in an extension map.
+Mỗi store chứa `version` và `revision` tăng đơn điệu. Một lần ghi dùng một tệp tạm trong cùng thư mục, flush bền vững, `ReplaceFileW`, và một checksum đọc lại. Việc kiểm tra revision lạc quan trả về `Conflict` thay vì âm thầm ghi đè lên một bên ghi khác. Các trường không xác định khi migration được giữ lại trong một extension map.
 
-The controller publishes immutable config/macro revisions to TIP clients over the typed control channel. A disconnected TIP continues with its last valid snapshot and reconnects with bounded exponential backoff.
+Controller công bố các revision cấu hình/macro bất biến tới các client TIP qua kênh điều khiển có kiểu. Một TIP bị mất kết nối tiếp tục dùng snapshot hợp lệ cuối cùng của nó và kết nối lại với exponential backoff có giới hạn.
 
 ## 9. Migration
 
-Migration discovers supported EVKey registry, settings, exception, and macro sources. It:
+Migration phát hiện các nguồn registry, thiết lập, ngoại lệ và macro EVKey được hỗ trợ. Nó:
 
-1. Opens sources read-only.
-2. Parses fields independently, quarantining corrupt fields rather than resetting the entire configuration.
-3. Preserves unknown fields and raw source bytes needed for rollback evidence.
-4. Normalizes only fields whose new schema requires it.
-5. Commits Raumakey data atomically.
-6. Reads back and verifies revision/checksum.
-7. Marks the migration complete only after verification.
+1. Mở các nguồn ở chế độ chỉ đọc.
+2. Phân tích từng trường một cách độc lập, cách ly các trường bị hỏng thay vì reset toàn bộ cấu hình.
+3. Giữ lại các trường không xác định và các byte nguồn thô cần cho bằng chứng hoàn tác (rollback).
+4. Chỉ chuẩn hoá những trường mà schema mới đòi hỏi.
+5. Commit dữ liệu Raumakey một cách nguyên tử.
+6. Đọc lại và kiểm chứng revision/checksum.
+7. Chỉ đánh dấu migration hoàn tất sau khi kiểm chứng.
 
-Migration is idempotent. It never deletes, renames, rewrites, unregisters, or changes permissions on an EVKey source.
+Migration có tính luỹ đẳng (idempotent). Nó không bao giờ xoá, đổi tên, ghi lại, huỷ đăng ký, hay thay đổi quyền trên một nguồn EVKey.
 
-## 10. IPC and process boundaries
+## 10. IPC và ranh giới tiến trình
 
-The normal control channel is a same-user, same-session named pipe whose ACL grants the user's SID full access and, under plan D27, grants AppContainer processes of that user client access only; clients refuse a pipe whose mandatory label is below medium. Frames contain protocol version, message kind, payload length, client identity, request ID, and checksum. Lengths are validated before allocation. The normal channel carries configuration, macro snapshots, control commands, and opt-in diagnostics; it does not carry raw user keystrokes or document text.
+Kênh điều khiển thông thường là một named pipe cùng người dùng, cùng session, có ACL cấp toàn quyền cho SID của người dùng và, theo D27 của kế hoạch, chỉ cấp quyền truy cập client cho các tiến trình AppContainer của chính người dùng đó; client từ chối một pipe có mandatory label thấp hơn medium. Các frame chứa phiên bản giao thức, loại thông điệp, độ dài payload, danh tính client, request ID và checksum. Độ dài được kiểm tra tính hợp lệ trước khi cấp phát. Kênh thông thường mang cấu hình, snapshot macro, lệnh điều khiển, và chẩn đoán opt-in (chỉ bật khi người dùng chọn); nó không mang phím gõ thô của người dùng hay văn bản tài liệu.
 
-The EVKey legacy wire codec is an optional Cargo feature named `evkey-compat`, disabled in release builds by default. It preserves the documented field widths, offsets, sequence matching, timeouts, and validation rules. Activation fails closed if a conflicting EVKey named object already exists. A legacy transaction is never retried after an ambiguous timeout because replay could double-apply text.
+Wire codec cũ (legacy) của EVKey là một Cargo feature tuỳ chọn tên `evkey-compat`, mặc định bị tắt trong các build release. Nó giữ nguyên độ rộng trường, offset, cách khớp sequence, timeout và các quy tắc kiểm tra hợp lệ đã được tài liệu hoá. Việc kích hoạt thất bại theo hướng đóng (fail closed) nếu đã tồn tại một named object EVKey xung đột. Một transaction legacy không bao giờ được thử lại sau một timeout mơ hồ, vì việc phát lại có thể áp dụng văn bản hai lần.
 
-## 11. Native controller and UI
+## 11. Controller native và UI
 
-The controller uses a hidden Win32 window, one tray icon, and modeless/modal native dialogs. The compact panel exposes Vietnamese mode, input method, tone style, and expand/collapse. Expanded tabs cover input, hotkeys, macros, application rules, conversion, system behavior, and product information.
+Controller dùng một cửa sổ Win32 ẩn, một icon tray, và các hộp thoại native dạng modeless/modal. Bảng thu gọn hiển thị chế độ tiếng Việt, kiểu gõ, kiểu đặt dấu, và nút mở rộng/thu gọn. Các tab mở rộng bao gồm nhập liệu, phím tắt, macro, quy tắc ứng dụng, chuyển đổi, hành vi hệ thống, và thông tin sản phẩm.
 
-The UI thread performs no engine, file, network, or blocking IPC work. Background work posts typed results back to the hidden window. `TaskbarCreated` recreates the tray icon without changing mode. All user-visible resources and icons are newly created for Raumakey.
+Thread UI không thực hiện công việc engine, tệp, mạng, hay IPC chặn (blocking). Công việc nền gửi (post) các kết quả có kiểu về cửa sổ ẩn. `TaskbarCreated` tạo lại icon tray mà không thay đổi chế độ. Mọi resource và icon mà người dùng nhìn thấy đều được tạo mới cho Raumakey.
 
-Hotkeys are classified before engine input and include a user-configurable mode toggle and hard reset. Modifier handling distinguishes AltGr from ordinary Ctrl+Alt shortcuts. A reset commits or ends the current composition without changing already committed text.
+Phím tắt được phân loại trước khi vào engine và bao gồm phím bật/tắt chế độ và phím hard reset mà người dùng cấu hình được. Việc xử lý phím bổ trợ phân biệt AltGr với các tổ hợp Ctrl+Alt thông thường. Một lần reset sẽ commit hoặc kết thúc composition hiện tại mà không thay đổi văn bản đã được commit.
 
-## 12. COM/TSF registration and lifecycle
+## 12. Đăng ký COM/TSF và vòng đời
 
-The TIP is a Rust `cdylib` exposing only required COM exports. All FFI and COM entry points catch panics and convert failures to HRESULT values; no unwind crosses an ABI boundary.
+TIP là một `cdylib` Rust chỉ export các hàm COM bắt buộc. Mọi entry point FFI và COM đều bắt panic và chuyển lỗi thành giá trị HRESULT; không có unwind nào vượt qua ranh giới ABI.
 
-Registration uses the fixed Raumakey CLSID/profile GUID, the correct WOW64 registry view for the DLL bitness, keyboard TIP categories, and declared capabilities. The installer sequence is register COM, install language profile, verify registry/profile state, then commit installer state. Failure rolls back only Raumakey-owned entries.
+Việc đăng ký dùng CLSID/GUID profile cố định của Raumakey, registry view WOW64 đúng với bitness của DLL, các category TIP bàn phím, và các khả năng đã khai báo. Trình tự của installer là đăng ký COM, cài đặt profile ngôn ngữ, kiểm chứng trạng thái registry/profile, rồi commit trạng thái installer. Khi thất bại, chỉ các mục thuộc sở hữu của Raumakey được hoàn tác (rollback).
 
-Activation creates per-document state and advises required sinks. Deactivation ends composition, unadvises sinks, removes hooks, cancels bounded work, and frees all resources. DLL unload eligibility reflects outstanding COM object and lock counts.
+Việc kích hoạt tạo trạng thái riêng cho từng tài liệu và advise các sink cần thiết. Việc huỷ kích hoạt kết thúc composition, unadvise các sink, gỡ các hook, huỷ các công việc có giới hạn, và giải phóng mọi tài nguyên. Điều kiện cho phép unload DLL phản ánh số lượng COM object và lock còn tồn tại.
 
-## 13. Startup, installer, and update boundary
+## 13. Ranh giới khởi động, installer và cập nhật
 
-The default executable manifest is `asInvoker` with `uiAccess=false`. Normal autostart uses a Startup shortcut. An elevated scheduled task is created only after an explicit user choice and is removed idempotently when disabled.
+Manifest mặc định của tệp thực thi là `asInvoker` với `uiAccess=false`. Tự khởi động thông thường dùng một shortcut trong thư mục Startup. Một scheduled task được nâng quyền chỉ được tạo sau khi người dùng chọn tường minh, và được gỡ bỏ một cách idempotent khi bị tắt.
 
-`xtask` drives cross-compilation, PE inspection, installer generation, package manifests, checksums, and artifact collection. Version information, icons, and the executables' manifests are embedded at build time: each binary crate's `build.rs` calls `raumakey-resources` and passes the `.res` file to the linker, so no `rc.exe` is needed (plan D1; the `build.rs` files do not exist yet, see §20). Shipped binaries link the MSVC CRT statically, so the TIP never depends on the Visual C++ redistributable (plan D23). The x86_64 package contains the x86_64 controller and both x86_64 and i686 TIPs. ARM64 artifacts are compile-gated and packaged separately until runtime validation exists.
+`xtask` điều khiển việc biên dịch chéo, kiểm tra PE, tạo installer, manifest của package, checksum, và thu thập artifact. Thông tin phiên bản, icon, và manifest của các tệp thực thi được nhúng lúc build: `build.rs` của mỗi crate binary gọi `raumakey-resources` và truyền tệp `.res` cho linker, nên không cần `rc.exe` (kế hoạch D1; các tệp `build.rs` chưa tồn tại, xem §20). Các binary được phát hành link tĩnh MSVC CRT, nên TIP không bao giờ phụ thuộc vào Visual C++ redistributable (kế hoạch D23). Package x86_64 chứa controller x86_64 và cả hai TIP x86_64 và i686. Các artifact ARM64 chỉ kiểm tra biên dịch (compile-gated) và được đóng gói riêng cho đến khi có kiểm chứng khi chạy thật.
 
-The first release does not imitate the unknown EVKey updater protocol. Update logic is outside the engine and controller trust core. A future updater must require an authenticated manifest and verify package hash and signature before installation. Until a signing certificate exists, packages are explicitly reported as unsigned.
+Release đầu tiên không bắt chước giao thức updater chưa rõ của EVKey. Logic cập nhật nằm ngoài lõi tin cậy của engine và controller. Một updater trong tương lai phải yêu cầu manifest đã được xác thực và kiểm chứng hash cùng chữ ký của package trước khi cài đặt. Cho đến khi có chứng chỉ ký, các package được báo cáo tường minh là chưa ký.
 
-## 14. Security and privacy
+## 14. Bảo mật và quyền riêng tư
 
-- Secure/password fields bypass transformation, macros, clipboard transport, and content diagnostics. The opt-in `Restricted` mode keeps Vietnamese transformation in secure fields but still never expands macros or uses the clipboard (plan D25).
-- Named objects and pipes are restricted to the current user/session; the control pipe also admits AppContainer clients of the same user with client access only, and clients refuse a pipe created below medium integrity (plan D27).
-- Every external length, offset, sequence, UTF-16 value, and config field is validated before use.
-- No default telemetry exists.
-- Opt-in logs may contain timestamps, component, error code, revision, host executable basename, and test vector ID; they must not contain raw keys, document text, clipboard data, macro trigger/replacement, or full paths containing user content.
-- Panics, poisoned locks, COM errors, I/O errors, and timeouts have typed recovery paths.
-- Dependency and license audits are release gates.
+- Ô bảo mật/ô mật khẩu bỏ qua phép biến đổi, macro, transport clipboard, và chẩn đoán nội dung. Chế độ opt-in `Restricted` giữ phép biến đổi tiếng Việt trong ô bảo mật nhưng vẫn không bao giờ bung macro hay dùng clipboard (kế hoạch D25).
+- Named object và pipe bị giới hạn trong người dùng/session hiện tại; pipe điều khiển cũng chấp nhận các client AppContainer của cùng người dùng nhưng chỉ với quyền truy cập client, và client từ chối một pipe được tạo dưới mức toàn vẹn trung bình (medium integrity) (kế hoạch D27).
+- Mọi độ dài, offset, sequence, giá trị UTF-16 và trường cấu hình đến từ bên ngoài đều được kiểm tra tính hợp lệ trước khi dùng.
+- Không có telemetry mặc định.
+- Log opt-in có thể chứa timestamp, thành phần, mã lỗi, revision, basename tệp thực thi của host, và ID test vector; chúng không được chứa phím thô, văn bản tài liệu, dữ liệu clipboard, trigger/nội dung thay thế của macro, hay đường dẫn đầy đủ chứa nội dung của người dùng.
+- Panic, lock bị poisoned, lỗi COM, lỗi I/O và timeout đều có đường phục hồi có kiểu.
+- Kiểm toán phụ thuộc và giấy phép là các cổng phát hành.
 
-## 15. Testing strategy
+## 15. Chiến lược test
 
-### 15.1 Host-independent tests
+### 15.1 Test không phụ thuộc host
 
-Every production behavior follows red-green-refactor. The workspace runs unit and integration tests for engine behavior, macros, stores, policy, codec, migration fixtures, and converter behavior. Property tests assert deterministic output, valid UTF-16, safe transaction application, and state invariants. Fuzz targets cover input sequences, malformed UTF-16, configuration, macro files, IPC frames, sequence wrap, and transaction boundaries.
+Mọi hành vi production đều tuân theo chu trình red-green-refactor. Workspace chạy unit test và integration test cho hành vi engine, macro, store, chính sách, codec, fixture migration, và hành vi bộ chuyển đổi. Property test khẳng định đầu ra tất định, UTF-16 hợp lệ, áp dụng transaction an toàn, và các bất biến trạng thái. Các fuzz target bao phủ chuỗi đầu vào, UTF-16 sai dạng, cấu hình, tệp macro, frame IPC, sequence quay vòng (wrap), và ranh giới transaction.
 
-Windows APIs are behind narrow ports so state commit/rollback, context changes, HRESULT mapping, and registration planning can be tested with fakes on any host.
+Windows API được đặt sau các port hẹp để commit/rollback trạng thái, thay đổi context, ánh xạ HRESULT, và lập kế hoạch đăng ký có thể được test bằng fake trên bất kỳ host nào.
 
-On a Windows host, `raumakey-windows` also runs native Win32 integration tests. Tests with machine-wide or user-visible side effects (global hooks, `SendInput`, the real clipboard, the notification icon, scheduled tasks, `regsvr32`, elevation, TSF registration) are `#[ignore]`d and run manually.
+Trên host Windows, `raumakey-windows` còn chạy integration test Win32 native. Các test có tác dụng phụ trên toàn máy hoặc người dùng nhìn thấy được (hook toàn cục, `SendInput`, clipboard thật, icon thông báo, scheduled task, `regsvr32`, nâng quyền, đăng ký TSF) được đánh dấu `#[ignore]` và chạy thủ công.
 
-### 15.2 Cross-build gates
+### 15.2 Các gate cross-build
 
-The release gate cross-builds `i686-pc-windows-msvc`, `x86_64-pc-windows-msvc`, and `aarch64-pc-windows-msvc` with LLVM. On a Windows host without Visual Studio, the targets link with `rust-lld` against the MSVC CRT and Windows SDK import libraries produced by `xwin`, configured in the machine-local Cargo home. On a Linux host, `cargo xwin` supplies them (plan D1). It validates exports, PE architecture, manifests, resources, COM identities, and expected artifact inventory.
+Cổng phát hành cross-build `i686-pc-windows-msvc`, `x86_64-pc-windows-msvc` và `aarch64-pc-windows-msvc` bằng LLVM. Trên host Windows không có Visual Studio, các target link bằng `rust-lld` với MSVC CRT và các import library của Windows SDK do `xwin` tạo ra, được cấu hình trong Cargo home cục bộ của máy. Trên host Linux, `cargo xwin` cung cấp chúng (kế hoạch D1). Cổng này kiểm tra tính hợp lệ của export, kiến trúc PE, manifest, resource, danh tính COM, và danh mục artifact dự kiến.
 
-### 15.3 Windows acceptance harness
+### 15.3 Harness nghiệm thu trên Windows
 
-`raumakey-test-runner.exe` executes deterministic vectors and exports JSON containing test ID, OS/build, architecture, application/version, config revision, transaction sequence, final text, and pass/fail status. It never captures unrelated user input.
+`raumakey-test-runner.exe` thực thi các vector tất định và xuất JSON chứa test ID, OS/build, kiến trúc, ứng dụng/phiên bản, revision cấu hình, chuỗi transaction, văn bản cuối cùng, và trạng thái pass/fail. Nó không bao giờ ghi lại đầu vào không liên quan của người dùng.
 
-A PowerShell suite verifies install, both registry views, COM registration, profile installation, startup modes, upgrade, rollback, and uninstall. Manual acceptance covers Notepad, Office, Edge/Chrome, Windows Terminal, password fields, Explorer restart, multiple documents, layout switching, and application policy.
+Một bộ test PowerShell kiểm chứng việc cài đặt, cả hai registry view, đăng ký COM, cài đặt profile, các chế độ khởi động, nâng cấp, hoàn tác (rollback), và gỡ cài đặt. Nghiệm thu thủ công bao gồm Notepad, Office, Edge/Chrome, Windows Terminal, ô mật khẩu, khởi động lại Explorer, nhiều tài liệu, chuyển layout bàn phím, và chính sách ứng dụng.
 
-## 16. Quality gates
+## 16. Cổng chất lượng
 
-For each implementation task:
+Với mỗi task triển khai:
 
-1. A relevant test is written and observed failing for the intended reason.
-2. Minimal production code makes it pass.
-3. The full applicable suite passes without ignored failures.
-4. An independent reviewer checks specification compliance and code quality.
-5. Important findings are fixed and re-reviewed before the next dependent task.
+1. Một test liên quan được viết và được quan sát thấy fail vì đúng lý do dự định.
+2. Mã production tối thiểu làm cho test đó pass.
+3. Toàn bộ suite áp dụng được đều pass mà không có lần fail nào bị bỏ qua.
+4. Một reviewer độc lập kiểm tra việc tuân thủ đặc tả và chất lượng mã.
+5. Các phát hiện quan trọng được sửa và review lại trước task phụ thuộc kế tiếp.
 
-Before packaging:
+Trước khi đóng gói:
 
 - `cargo fmt --check`
-- Clippy for the workspace with warnings denied
-- Full workspace tests
-- Property and fuzz smoke suites
-- Dependency vulnerability and license audit
-- All three cross-builds
-- PE/export/manifest/resource inspection
-- Installer dry-run contract checks
-- Whole-branch independent review
-- SHA-256 manifest for every artifact
+- Clippy cho workspace, không cho phép cảnh báo (warnings denied)
+- Toàn bộ test của workspace
+- Các bộ smoke test property và fuzz
+- Kiểm toán lỗ hổng phụ thuộc và giấy phép
+- Cả ba cross-build
+- Kiểm tra PE/export/manifest/resource
+- Kiểm tra hợp đồng chạy thử (dry run) của installer
+- Review độc lập trên toàn bộ branch
+- Manifest SHA-256 cho mọi artifact
 
-## 17. Delivery stages
+## 17. Các giai đoạn bàn giao
 
-Internal implementation order is:
+Thứ tự triển khai nội bộ là:
 
-1. Workspace, provenance, toolchain, and core contracts.
-2. Engine and input methods.
-3. Macro, conversion, stores, and migration.
-4. Policy, control IPC, and legacy codec.
-5. Native controller, tray, dialogs, hotkeys, and fallback path.
-6. TSF COM TIP and registration.
-7. Installer, cross-builds, Windows harness, and documentation.
-8. Hardening, audit, full review, and release candidate.
+1. Workspace, nguồn gốc (provenance), toolchain, và các hợp đồng lõi.
+2. Engine và các kiểu gõ.
+3. Macro, chuyển đổi, store, và migration.
+4. Chính sách, IPC điều khiển, và codec legacy.
+5. Controller native, tray, hộp thoại, phím tắt, và đường dự phòng.
+6. TIP COM TSF và đăng ký.
+7. Installer, cross-build, harness Windows, và tài liệu.
+8. Gia cố (hardening), kiểm toán, review toàn bộ, và release candidate.
 
-These stages are engineering gates, not partial product releases.
+Các giai đoạn này là các gate kỹ thuật, không phải các release sản phẩm từng phần.
 
-## 18. Explicit non-goals for the first release
+## 18. Những mục ngoài phạm vi được nêu rõ cho release đầu tiên
 
-- Reusing EVKey branding, GUIDs, icons, resources, or updater protocol.
-- Claiming byte-for-byte or implementation equivalence with EVKey.
-- Runtime support claims for ARM64 or i686 before those architectures are executed on real Windows systems.
-- Cloud telemetry, account synchronization, automatic network update, or a web-based UI.
-- Deleting or modifying legacy application data during migration.
+- Tái sử dụng thương hiệu, GUID, icon, resource, hay giao thức updater của EVKey.
+- Tuyên bố tương đương từng byte hoặc tương đương về cách triển khai với EVKey.
+- Tuyên bố hỗ trợ khi chạy thật cho ARM64 hoặc i686 trước khi các kiến trúc đó được chạy trên hệ thống Windows thật.
+- Telemetry trên cloud, đồng bộ tài khoản, cập nhật tự động qua mạng, hoặc UI dựa trên web.
+- Xoá hoặc sửa đổi dữ liệu ứng dụng cũ trong quá trình migration.
 
-## 19. Final acceptance wording
+## 19. Câu chữ nghiệm thu cuối cùng
 
-The project may be reported as **cross-build verified** only after all host-independent quality gates and all three MSVC target builds pass with fresh evidence. It may be reported as **runtime x86_64 verified on Windows 10+** only after the user-run automated and manual Windows acceptance results pass and are attached to the release evidence.
+Dự án chỉ được báo cáo là **đã kiểm chứng cross-build (cross-build verified)** sau khi mọi cổng chất lượng không phụ thuộc host và cả ba build target MSVC đều đạt với bằng chứng mới. Dự án chỉ được báo cáo là **đã kiểm chứng khi chạy thật trên x86_64 với Windows 10+ (runtime x86_64 verified on Windows 10+)** sau khi các kết quả nghiệm thu Windows tự động và thủ công do người dùng chạy đều đạt và được đính kèm vào bằng chứng release.
 
-## 20. Implementation status (as of 2026-10-17)
+## 20. Trạng thái triển khai (tính đến 2026-10-17)
 
-The follow-up in §20.11 supersedes the Git and `xtask` status below. Other entries remain a
-historical snapshot, not evidence that their checks were repeated by the follow-up. Plan §14
-tracks the current status by task; plan §14.5 replaces the next steps in §20.10.
+Đợt tiếp nối (follow-up) ở §20.11 thay thế trạng thái Git và `xtask` dưới đây. Các mục khác
+vẫn là một snapshot lịch sử, không phải bằng chứng rằng các bước kiểm tra của chúng đã được đợt
+tiếp nối thực hiện lại. Kế hoạch §14 theo dõi trạng thái hiện tại theo từng task; kế hoạch §14.5
+thay thế các bước tiếp theo ở §20.10.
 
-This section is a dated snapshot of what the repository contains and what is still outstanding. It does not change the requirements in §1–§19. The evidence was gathered on 2026-10-17 on the Windows 11 x86_64 development host (Rust 1.99.1, `rust-lld` + `xwin`, plan D1). It comes from running the gates in §20.2 and from a read-only audit of every crate against the implementation plan, with each finding checked a second time against the code. Nothing here was derived from `restricted_evidence/`.
+Mục này là một snapshot có ghi ngày về những gì kho mã chứa và những việc còn lại. Mục này không thay đổi các yêu cầu trong §1–§19. Bằng chứng được thu thập ngày 2026-10-17 trên host phát triển Windows 11 x86_64 (Rust 1.99.1, `rust-lld` + `xwin`, kế hoạch D1). Bằng chứng đến từ việc chạy các gate trong §20.2 và từ một đợt rà soát chỉ đọc (read-only audit) mọi crate so với kế hoạch triển khai, trong đó mỗi phát hiện được kiểm tra lần thứ hai với mã nguồn. Không có nội dung nào ở đây được rút ra từ `restricted_evidence/`.
 
-On the same date, §2, §5, §13, §15, and §19 were aligned with plan decisions D1 and D23 and with the `raumakey-resources` crate that the plan added. No requirement changed.
+Cùng ngày đó, §2, §5, §13, §15 và §19 đã được điều chỉnh cho khớp với các quyết định D1 và D23 của kế hoạch và với crate `raumakey-resources` mà kế hoạch đã bổ sung. Không có yêu cầu nào thay đổi.
 
-### 20.1 Summary
+### 20.1 Tóm tắt
 
-- **Implemented (libraries):** ten library crates and `xtask` are implemented and tested: `raumakey-model`, `-engine`, `-macro`, `-config`, `-policy`, `-ipc` (including the `evkey-compat` codec), `-converter`, `-migrate`, `-resources`, and `-windows`. Eight of the libraries are complete against the plan; `raumakey-migrate`, `raumakey-windows`, and `xtask` are mostly complete (§20.4). Together they hold about 39k lines of source (including in-file unit tests) and 33k lines of integration tests. 1,235 tests pass, or 1,309 with `evkey-compat`.
-- **Not started (product):** the controller (`raumakey.exe`) and the TSF TIP (`raumakey_tip.dll`) are empty stubs. No library code runs in a shipped binary yet, and no matrix row has been observed in a real Windows host application.
-- **Not started (verification):** the `raumakey-tests` package is an empty stub; its `raumakey-test-runner` binary is `fn main() {}` but is built and packaged. The fixtures, contract suites, fuzz smoke suite, `fuzz/` workspace, PowerShell acceptance suite, and manual checklist do not exist.
-- **Not in Git:** apart from the docs commit `771c3af`, everything is untracked: 271 files, including `Cargo.lock`, the plan, `LICENSE`, and `THIRD_PARTY.md`.
-- **Release wording (§19):** neither "cross-build verified" nor "runtime x86_64 verified" can be claimed. The release gate would stop at PE inspection. Even a passing `xtask release-gate` would not yet justify "cross-build verified", although it records that wording: it has no whole-branch review step, only notes a missing fuzz smoke suite, and never runs the `raumakey-windows/evkey-compat` tests (§20.6, item 7).
+- **Đã triển khai (thư viện):** mười crate thư viện và `xtask` đã được triển khai và có test: `raumakey-model`, `-engine`, `-macro`, `-config`, `-policy`, `-ipc` (bao gồm codec `evkey-compat`), `-converter`, `-migrate`, `-resources` và `-windows`. Tám thư viện đã hoàn chỉnh so với kế hoạch; `raumakey-migrate`, `raumakey-windows` và `xtask` gần hoàn chỉnh (§20.4). Tổng cộng chúng có khoảng 39k dòng mã nguồn (bao gồm unit test nằm trong cùng tệp) và 33k dòng integration test. 1,235 test đạt, hoặc 1,309 test khi bật `evkey-compat`.
+- **Chưa bắt đầu (sản phẩm):** controller (`raumakey.exe`) và TSF TIP (`raumakey_tip.dll`) là các stub rỗng. Chưa có mã thư viện nào chạy trong một binary phát hành, và chưa có hàng nào của ma trận được quan sát trong một ứng dụng chủ Windows thật.
+- **Chưa bắt đầu (kiểm chứng):** package `raumakey-tests` là một stub rỗng; binary `raumakey-test-runner` của nó là `fn main() {}` nhưng vẫn được build và đóng gói. Các fixture, bộ test hợp đồng (contract suite), bộ fuzz smoke, workspace `fuzz/`, bộ test nghiệm thu PowerShell và danh sách kiểm tra thủ công đều chưa tồn tại.
+- **Chưa có trong Git:** ngoài commit tài liệu `771c3af`, mọi thứ đều chưa được theo dõi (untracked): 271 tệp, bao gồm `Cargo.lock`, kế hoạch, `LICENSE` và `THIRD_PARTY.md`.
+- **Cách diễn đạt khi phát hành (§19):** không thể tuyên bố "cross-build verified" lẫn "runtime x86_64 verified". Cổng phát hành sẽ dừng ở bước kiểm tra PE. Ngay cả khi `xtask release-gate` đạt thì cũng chưa đủ cơ sở cho "cross-build verified", dù nó ghi lại đúng cách diễn đạt đó: nó không có bước review toàn branch, chỉ ghi chú việc thiếu bộ fuzz smoke, và không bao giờ chạy các test `raumakey-windows/evkey-compat` (§20.6, mục 7).
 
-### 20.2 Gate evidence
+### 20.2 Bằng chứng của các gate
 
-| Gate | Command | Result on 2026-10-17 |
+| Gate | Lệnh | Kết quả ngày 2026-10-17 |
 |---|---|---|
-| Formatting | `cargo fmt --all --check` | Pass |
-| Lints | `cargo clippy --workspace --all-targets -- -D warnings`, with default features and with `raumakey-ipc/evkey-compat,raumakey-windows/evkey-compat` | Pass |
-| Tests | `cargo test --workspace` | 1,235 passed, 0 failed, 8 ignored |
-| Tests with the legacy codec | the same, with `--features raumakey-ipc/evkey-compat,raumakey-windows/evkey-compat` | 1,309 passed, 0 failed, 8 ignored |
-| CI task | `cargo xtask ci` | Reports a pass, but skips the fuzz smoke suite (there is no `fuzz_smoke` target) and never enables `raumakey-windows/evkey-compat`, so 13 legacy-adapter tests and that module's lints never run |
-| Cross-build | `cargo xtask cross` and `cargo xtask cross --release` | Pass for x86_64, i686, and aarch64, building stub binaries |
-| PE inspection | `cargo xtask inspect` and `--release` | **Fail**: 27 of 57 (debug) and 27 of 66 (release) checks. `raumakey.exe` is a console binary without manifest, version, or icon resources; `raumakey_tip.dll` lacks the four COM exports, its resources, and the identity GUIDs. The static-CRT check (D23) passes for all nine release artifacts |
-| Dependency audit | `cargo xtask audit` (cargo-deny 0.20.2) | Pass, with warnings for a duplicate `syn` and unused license allowances |
-| Packaging | `cargo xtask package` | Produces debug x64 and ARM64 packages (`-debug` suffix) and `raumakey-debug.wxs` from the stub binaries; `package --release` was not run; MSI skipped because `wix` is not installed; unsigned |
-| Release gate | `cargo xtask release-gate` | Not run. It would stop at `inspect` and record `package` and the installer dry-run as not run. Once `inspect` passes, the dry run would still fail, because the stub `raumakey.exe` prints no plan naming the CLSID and profile GUID |
-| Windows acceptance | §15.3 harness and manual matrix | Not available |
+| Định dạng | `cargo fmt --all --check` | Đạt |
+| Lint | `cargo clippy --workspace --all-targets -- -D warnings`, với feature mặc định và với `raumakey-ipc/evkey-compat,raumakey-windows/evkey-compat` | Đạt |
+| Test | `cargo test --workspace` | 1,235 đạt, 0 không đạt, 8 bị bỏ qua |
+| Test với codec legacy | như trên, với `--features raumakey-ipc/evkey-compat,raumakey-windows/evkey-compat` | 1,309 đạt, 0 không đạt, 8 bị bỏ qua |
+| Tác vụ CI | `cargo xtask ci` | Báo đạt, nhưng bỏ qua bộ fuzz smoke (không có target `fuzz_smoke`) và không bao giờ bật `raumakey-windows/evkey-compat`, nên 13 test của adapter legacy và các lint của module đó không bao giờ chạy |
+| Cross-build | `cargo xtask cross` và `cargo xtask cross --release` | Đạt cho x86_64, i686 và aarch64, build ra các binary stub |
+| Kiểm tra PE | `cargo xtask inspect` và `--release` | **Không đạt**: 27 trên 57 (debug) và 27 trên 66 (release) bước kiểm tra. `raumakey.exe` là một binary console không có tài nguyên manifest, phiên bản hay icon; `raumakey_tip.dll` thiếu bốn export COM, các tài nguyên của nó và các GUID định danh. Bước kiểm tra CRT tĩnh (D23) đạt cho cả chín artifact release |
+| Rà soát phụ thuộc | `cargo xtask audit` (cargo-deny 0.20.2) | Đạt, kèm cảnh báo về một `syn` trùng lặp và các giấy phép được cho phép nhưng không dùng đến |
+| Đóng gói | `cargo xtask package` | Tạo các package debug x64 và ARM64 (hậu tố `-debug`) và `raumakey-debug.wxs` từ các binary stub; `package --release` chưa được chạy; MSI bị bỏ qua vì chưa cài `wix`; chưa ký |
+| Cổng phát hành | `cargo xtask release-gate` | Chưa chạy. Nó sẽ dừng ở `inspect` và ghi `package` cùng bước chạy thử (dry run) của installer là chưa chạy. Khi `inspect` đạt, bước chạy thử vẫn sẽ không đạt, vì `raumakey.exe` dạng stub không in ra kế hoạch cài đặt nào nêu tên CLSID và GUID của profile |
+| Nghiệm thu Windows | harness §15.3 và ma trận thủ công | Chưa có |
 
-The 8 ignored tests are the manual `raumakey-windows` tests described in §15.1. Nothing records that they have ever been run. `cargo xtask` is an alias defined only in the machine-local Cargo configuration; a fresh clone must use `cargo run -p xtask -- <command>`.
+8 test bị bỏ qua là các test thủ công của `raumakey-windows` được mô tả ở §15.1. Không có ghi nhận nào cho thấy chúng từng được chạy. `cargo xtask` là một alias chỉ được định nghĩa trong cấu hình Cargo cục bộ của máy; một bản clone mới phải dùng `cargo run -p xtask -- <command>`.
 
-### 20.3 Status by delivery stage (§17)
+### 20.3 Trạng thái theo giai đoạn bàn giao (§17)
 
-| Stage | Status | Notes |
+| Giai đoạn | Trạng thái | Ghi chú |
 |---|---|---|
-| 1. Workspace, provenance, toolchain, core contracts | Done, not committed | Workspace (resolver 3, edition 2024), toolchain pinned to 1.99.1 with the three MSVC targets, GPL-3.0 `LICENSE`, `THIRD_PARTY.md`, `deny.toml`, `raumakey-model` |
-| 2. Engine and input methods | Done (library) | Every plan §3.10 golden vector and every engine-level matrix row has a test; no binary calls the engine yet |
-| 3. Macro, conversion, stores, migration | Mostly done (library) | Missing: a Windows registry source for migration, discovery of default EVKey folders, command-line wiring |
-| 4. Policy, control IPC, legacy codec | Done (library) | Missing on the controller side: a multi-client server hub and a snapshot builder |
-| 5. Controller, tray, dialogs, hotkeys, fallback path | Building blocks only | `raumakey-resources` is ready. `raumakey-windows` has the hook, input, clipboard, pipe, shell, and task-scheduler wrappers, but not the window, dialog, `PostMessageW`, and icon-loading wrappers the controller needs (§20.6, item 3). `raumakey-controller` is `fn main() {}` |
-| 6. TSF COM TIP and registration | Registration code only | Planner, executor, and verification exist in `raumakey-windows` and are tested with fakes; the Windows registration port has run only in a manual test; `raumakey-tsf` is a single doc comment |
-| 7. Installer, cross-builds, Windows harness, documentation | Partial | `xtask` is implemented (§20.2); the harness, fixtures, fuzzing, PowerShell suite, and manual checklist have not started |
-| 8. Hardening, audit, review, release candidate | Not started | `xtask audit` passes; no review records exist |
+| 1. Workspace, nguồn gốc (provenance), toolchain, hợp đồng lõi | Xong, chưa commit | Workspace (resolver 3, edition 2024), toolchain ghim ở 1.99.1 với ba target MSVC, `LICENSE` GPL-3.0, `THIRD_PARTY.md`, `deny.toml`, `raumakey-model` |
+| 2. Engine và các kiểu gõ | Xong (thư viện) | Mọi golden vector của kế hoạch §3.10 và mọi hàng ma trận ở mức engine đều có test; chưa có binary nào gọi engine |
+| 3. Macro, chuyển đổi, store, migration | Gần xong (thư viện) | Còn thiếu: nguồn registry Windows cho migration, việc dò tìm các thư mục EVKey mặc định, việc nối vào dòng lệnh |
+| 4. Chính sách, IPC điều khiển, codec legacy | Xong (thư viện) | Còn thiếu ở phía controller: một server hub nhiều client và một bộ dựng snapshot |
+| 5. Controller, tray, hộp thoại, phím tắt, đường dự phòng (fallback) | Chỉ có các khối xây dựng | `raumakey-resources` đã sẵn sàng. `raumakey-windows` có các wrapper cho hook, input, clipboard, pipe, shell và task scheduler, nhưng chưa có các wrapper cho cửa sổ, hộp thoại, `PostMessageW` và tải icon mà controller cần (§20.6, mục 3). `raumakey-controller` là `fn main() {}` |
+| 6. TIP COM TSF và đăng ký | Chỉ có mã đăng ký | Planner, executor và phần xác minh có trong `raumakey-windows` và được test bằng fake; port đăng ký Windows mới chỉ chạy trong một test thủ công; `raumakey-tsf` chỉ là một doc comment |
+| 7. Installer, cross-build, harness Windows, tài liệu | Một phần | `xtask` đã được triển khai (§20.2); harness, fixture, fuzzing, bộ test PowerShell và danh sách kiểm tra thủ công chưa bắt đầu |
+| 8. Gia cố, rà soát (audit), review, bản release candidate | Chưa bắt đầu | `xtask audit` đạt; chưa có bản ghi review nào |
 
-The stages did not run in order: the stage 7 tooling (`xtask`) exists while the stage 5 and 6 binaries (controller and TIP) have not been started. Plan §13 allows this, because `xtask` depends on neither binary.
+Các giai đoạn không diễn ra theo thứ tự: công cụ của giai đoạn 7 (`xtask`) đã có trong khi các binary của giai đoạn 5 và 6 (controller và TIP) chưa được bắt đầu. Kế hoạch §13 cho phép điều này, vì `xtask` không phụ thuộc vào binary nào trong hai binary đó.
 
-### 20.4 Status by component
+### 20.4 Trạng thái theo thành phần
 
-"Complete" means that every plan requirement for the library has code and tests. It says nothing about runtime behavior on Windows.
+"Hoàn chỉnh" nghĩa là mọi yêu cầu của kế hoạch đối với thư viện đều có mã và test. Điều này không nói lên gì về hành vi runtime trên Windows.
 
-| Component | Plan | Status | Tests passing | Main gaps |
+| Thành phần | Kế hoạch | Trạng thái | Số test đạt | Thiếu sót chính |
 |---|---|---|---|---|
-| `raumakey-model` | §2 | Complete | 44 | Content-bearing types derive `Debug` (§20.7) |
-| `raumakey-engine` | §3 | Complete; one branch untested | 125 | Never run with the real `MacroTable`; the plan §3.6 Circumflex fallback with spell checking off is untested (§20.8, item 9); several grammar decisions unrecorded (§20.9) |
-| `raumakey-macro` | §4 | Complete | 149 | Not wired: the controller must load `macros.toml` into a `MacroStore` with `from_entries` and save `entries()` back, keeping `MacroDocument.entry_extras` and `extensions` (plan §4) |
-| `raumakey-config` | §5 | Complete | 136 | Not wired; commit durability (§20.7); `.lock` and `.bak-*` files accumulate |
-| `raumakey-policy` | §6 | Complete | 107 | Not wired; probe-record limits differ between layers (§20.7) |
-| `raumakey-ipc` | §7 | Complete | 107; 168 with `evkey-compat` | No server hub or snapshot builder; the legacy codec is not connected to any engine |
-| `raumakey-converter` | §8 | Complete | 127 | No CLI or UI; `config.toml` stores charset names as unchecked strings |
-| `raumakey-migrate` | §9 | Mostly complete | 115 | No Windows `LegacyRegistry` adapter, no default folder discovery, no `migrate` command; `FIELD_MAP` is empty (D18) |
-| `raumakey-resources` | §11 | Complete | 82 | No `build.rs` calls it, so no binary carries a manifest, version information, or icons |
-| `raumakey-windows` | §10.1, §10.4 | Mostly complete | 147 and 8 manual; 160 with `evkey-compat` | Registration verification reads the `CTF\TIP` registry keys instead of enumerating the profile, as plan §10.4 requires (§20.7). Wrappers the controller and TIP need are missing: windows, message-only windows, dialogs, icon loading, the DLL module path, `GetMessageExtraInfo`, TSF sinks. Side-effecting paths are proven only by manual tests |
-| `raumakey-controller` | §10.2 | Not started | 0 | Everything in plan §10.2 (§20.6) |
-| `raumakey-tsf` | §10.3 | Not started | 0 | Everything in plan §10.3 (§20.6) |
-| `xtask` | §12 | Mostly complete | 96 | CI feature set, fuzz skip, review gate, notices (§20.6) |
-| `raumakey-tests`, `fuzz/`, `tests/windows/` | §12 | Not started | 0 | Fixtures, contract suites, fuzz targets, acceptance runner, acceptance suite |
+| `raumakey-model` | §2 | Hoàn chỉnh | 44 | Các kiểu mang nội dung derive `Debug` (§20.7) |
+| `raumakey-engine` | §3 | Hoàn chỉnh; một nhánh mã chưa có test | 125 | Chưa từng chạy với `MacroTable` thật; phương án dự phòng Circumflex của kế hoạch §3.6 khi tắt kiểm tra chính tả chưa có test (§20.8, mục 9); một số quyết định về ngữ pháp chưa được ghi lại (§20.9) |
+| `raumakey-macro` | §4 | Hoàn chỉnh | 149 | Chưa được nối vào: controller phải nạp `macros.toml` vào một `MacroStore` bằng `from_entries` và lưu `entries()` trở lại, giữ nguyên `MacroDocument.entry_extras` và `extensions` (kế hoạch §4) |
+| `raumakey-config` | §5 | Hoàn chỉnh | 136 | Chưa được nối vào; độ bền của commit (§20.7); các tệp `.lock` và `.bak-*` tích tụ dần |
+| `raumakey-policy` | §6 | Hoàn chỉnh | 107 | Chưa được nối vào; giới hạn bản ghi probe khác nhau giữa các tầng (§20.7) |
+| `raumakey-ipc` | §7 | Hoàn chỉnh | 107; 168 khi bật `evkey-compat` | Chưa có server hub hay bộ dựng snapshot; codec legacy chưa được kết nối với engine nào |
+| `raumakey-converter` | §8 | Hoàn chỉnh | 127 | Chưa có CLI hay UI; `config.toml` lưu tên bảng mã dưới dạng chuỗi không được kiểm tra |
+| `raumakey-migrate` | §9 | Gần hoàn chỉnh | 115 | Chưa có adapter `LegacyRegistry` cho Windows, chưa dò tìm thư mục mặc định, chưa có lệnh `migrate`; `FIELD_MAP` rỗng (D18) |
+| `raumakey-resources` | §11 | Hoàn chỉnh | 82 | Chưa có `build.rs` nào gọi nó, nên chưa có binary nào mang manifest, thông tin phiên bản hay icon |
+| `raumakey-windows` | §10.1, §10.4 | Gần hoàn chỉnh | 147 và 8 test thủ công; 160 khi bật `evkey-compat` | Phần xác minh đăng ký đọc các khoá registry `CTF\TIP` thay vì liệt kê profile như kế hoạch §10.4 yêu cầu (§20.7). Còn thiếu các wrapper mà controller và TIP cần: cửa sổ, cửa sổ message-only, hộp thoại, tải icon, đường dẫn module của DLL, `GetMessageExtraInfo`, sink TSF. Các đường thực thi có tác dụng phụ chỉ được chứng minh bằng test thủ công |
+| `raumakey-controller` | §10.2 | Chưa bắt đầu | 0 | Toàn bộ kế hoạch §10.2 (§20.6) |
+| `raumakey-tsf` | §10.3 | Chưa bắt đầu | 0 | Toàn bộ kế hoạch §10.3 (§20.6) |
+| `xtask` | §12 | Gần hoàn chỉnh | 96 | Tập feature của CI, việc bỏ qua fuzz, gate review, các thông báo giấy phép (notice) (§20.6) |
+| `raumakey-tests`, `fuzz/`, `tests/windows/` | §12 | Chưa bắt đầu | 0 | Fixture, bộ test hợp đồng, target fuzz, runner nghiệm thu, bộ test nghiệm thu |
 
-### 20.5 Compatibility-matrix coverage
+### 20.5 Độ phủ của ma trận tương thích
 
-Coverage of the 58 rows of `docs/reference/evkey_compatibility_test_matrix.md`:
+Độ phủ trên 58 hàng của `docs/reference/evkey_compatibility_test_matrix.md`:
 
-| Coverage | Rows | Count |
+| Độ phủ | Hàng | Số lượng |
 |---|---|---|
-| Asserted by library tests | #1–#8, #10–#18, #21–#23, #28, #30–#38, #45–#54 | 40 |
-| Partly asserted | #9, #25, #26, #27, #29, #41, #42, #44, #55, #56 | 10 |
-| Runtime only; building blocks tested | #19, #20, #24, #39, #40, #58 | 6 |
-| Not covered | #57 (no `update` command) | 1 |
-| Not applicable | #43 (needs EVKey binaries) | 1 |
+| Có test thư viện kiểm tra (assert) | #1–#8, #10–#18, #21–#23, #28, #30–#38, #45–#54 | 40 |
+| Được kiểm tra một phần | #9, #25, #26, #27, #29, #41, #42, #44, #55, #56 | 10 |
+| Chỉ ở runtime; các khối xây dựng đã có test | #19, #20, #24, #39, #40, #58 | 6 |
+| Chưa được bao phủ | #57 (chưa có lệnh `update`) | 1 |
+| Không áp dụng | #43 (cần các binary EVKey) | 1 |
 
-- No row meets the matrix's own pass criteria yet. Those require every run to record architecture, Windows build, host application and version, configuration revision, input events, transaction sequence, and final text, and the runner that should record them, `raumakey-test-runner`, is an empty stub.
-- The engine tests for macro rows #47–#52 use test doubles; no test runs the engine with the real `raumakey_macro::MacroTable`.
-- #9 is not checked for user-defined key maps. #18 reaches the history eviction path only with the context limit raised above its default.
-- #30–#38 run only with `--features raumakey-ipc/evkey-compat`, over a deterministic fake. The tests over real kernel objects need `raumakey-windows/evkey-compat`, which `xtask ci` omits. The #42 parity tests have run only on x86_64: no gate runs the i686 tests under WOW64, and ARM64 is only compiled.
-- Raumakey decisions replace the expected value of three rows: #18 falls back to pass-through and reset instead of legacy op 2 (plan §3.9), #27 stores probes in `app_rules.toml` (plan §6), and #39 tags replays with `RAUMAKEY_INJECTED_TAG` (D6).
-- The policy crate contradicts #29 (§20.8, item 1).
+- Chưa có hàng nào đáp ứng tiêu chí đạt của chính ma trận. Các tiêu chí đó yêu cầu mỗi lần chạy phải ghi lại kiến trúc, bản build Windows, ứng dụng chủ và phiên bản của nó, revision cấu hình, các sự kiện input, chuỗi transaction và văn bản cuối cùng, trong khi runner lẽ ra phải ghi lại chúng, `raumakey-test-runner`, là một stub rỗng.
+- Các test engine cho các hàng macro #47–#52 dùng test double; chưa có test nào chạy engine với `raumakey_macro::MacroTable` thật.
+- #9 chưa được kiểm tra với bảng phím tự định nghĩa. #18 chỉ chạm tới đường loại bỏ lịch sử (history eviction) khi giới hạn context được nâng lên trên mức mặc định.
+- #30–#38 chỉ chạy với `--features raumakey-ipc/evkey-compat`, trên một fake tất định. Các test trên kernel object thật cần `raumakey-windows/evkey-compat`, thứ mà `xtask ci` bỏ sót. Các test tương đương (parity) của #42 mới chỉ chạy trên x86_64: không có gate nào chạy các test i686 dưới WOW64, còn ARM64 chỉ được biên dịch.
+- Các quyết định của Raumakey thay thế giá trị kỳ vọng của ba hàng: #18 lùi về pass-through và reset thay vì op 2 legacy (kế hoạch §3.9), #27 lưu probe trong `app_rules.toml` (kế hoạch §6), và #39 gắn tag cho các lần replay bằng `RAUMAKEY_INJECTED_TAG` (D6).
+- Crate policy mâu thuẫn với #29 (§20.8, mục 1).
 
-### 20.6 Outstanding work
+### 20.6 Việc còn lại
 
-Group A blocks every runtime claim; within it, item 3 is a prerequisite of items 1 and 2, which can then proceed in parallel. In group B, the `live` mode of item 5 and most of item 6 need group A; items 4 and 7 do not. Group C depends on neither group, and item 8 comes first (§20.10). The library gaps in §20.4 and the defects in §20.7 are outstanding as well; fix those that break a design requirement before release, starting with commit durability (§8 requires a durable flush).
+Nhóm A chặn mọi tuyên bố về runtime; trong nhóm này, mục 3 là điều kiện tiên quyết của mục 1 và 2, và sau đó hai mục này có thể tiến hành song song. Trong nhóm B, chế độ `live` của mục 5 và phần lớn mục 6 cần nhóm A; mục 4 và 7 thì không. Nhóm C không phụ thuộc vào nhóm nào trong hai nhóm trên, và mục 8 được làm trước tiên (§20.10). Các thiếu sót thư viện trong §20.4 và các lỗi trong §20.7 cũng là việc còn lại; cần sửa những lỗi vi phạm một yêu cầu thiết kế trước khi phát hành, bắt đầu từ độ bền của commit (§8 yêu cầu một lần flush bền vững).
 
-**A. Shipped binaries (these block every runtime claim)**
+**A. Các binary phát hành (những mục này chặn mọi tuyên bố về runtime)**
 
-1. **TSF TIP (`raumakey-tsf`, plan §10.3).**
-   - Exports `DllGetClassObject`, `DllCanUnloadNow`, `DllRegisterServer`, and `DllUnregisterServer`, behind panic guards.
-   - A class factory and a `TextService` implementing `ITfTextInputProcessorEx` and the five sinks of plan §10.3 (key event, thread manager event, text edit, thread focus, compartment event), plus the activation and deactivation lifecycle.
-   - Per-document state, and the `OnTestKeyDown`/`OnKeyDown` path that applies one edit session and commits the next state only after it succeeds.
-   - Replay keys sent with `SendInput` and tagged `RAUMAKEY_INJECTED_TAG` after a successful edit session, the matching bypass through `GetMessageExtraInfo` (matrix #39), and detection of password input scopes.
-   - The TSF range-edit capability probe, reported with `Command::ReportProbe` (§5.3, matrix #27), and opt-in `Diagnostic` events sent only while `RuntimeSnapshot.diagnostics_enabled` is set (§10).
-   - The snapshot client thread with backoff and defaults v1, and local hotkey classification while disconnected (D24).
-   - Object and lock counts, and a `build.rs` for its resources.
-   - The `evkey-compat` legacy path, which must tag and bypass `0xEBCA1234` (clean-room spec §3.1, §3.4).
+1. **TSF TIP (`raumakey-tsf`, kế hoạch §10.3).**
+   - Export `DllGetClassObject`, `DllCanUnloadNow`, `DllRegisterServer` và `DllUnregisterServer`, có panic guard bao bọc.
+   - Một class factory và một `TextService` hiện thực `ITfTextInputProcessorEx` cùng năm sink của kế hoạch §10.3 (key event, thread manager event, text edit, thread focus, compartment event), cộng với vòng đời kích hoạt và huỷ kích hoạt.
+   - Trạng thái theo từng tài liệu, và đường `OnTestKeyDown`/`OnKeyDown` áp dụng một edit session và chỉ commit trạng thái kế tiếp sau khi edit session đó thành công.
+   - Các phím replay được gửi bằng `SendInput` và gắn tag `RAUMAKEY_INJECTED_TAG` sau một edit session thành công, cơ chế bỏ qua tương ứng thông qua `GetMessageExtraInfo` (ma trận #39), và việc phát hiện input scope mật khẩu.
+   - Probe khả năng sửa range của TSF, được báo cáo bằng `Command::ReportProbe` (§5.3, ma trận #27), và các sự kiện `Diagnostic` tuỳ chọn bật (opt-in) chỉ được gửi khi `RuntimeSnapshot.diagnostics_enabled` được đặt (§10).
+   - Thread client snapshot có backoff và mặc định v1, và việc phân loại phím tắt cục bộ khi mất kết nối (D24).
+   - Bộ đếm object và lock, và một `build.rs` cho các tài nguyên của nó.
+   - Đường legacy `evkey-compat`, đường này phải gắn tag và bỏ qua `0xEBCA1234` (đặc tả clean-room §3.1, §3.4).
 
-   Add an edit-session/range port first, so commit and rollback can be tested with fakes (§15.1). The adapter must call `engine.reset()` when the document changes: the engine answers a reset event that carries a different owner with `ContextMismatch`.
-2. **Controller (`raumakey-controller`, plan §10.2).**
-   - GUI subsystem, attaching to the console for subcommands.
-   - The CLI (`install`, `uninstall`, `startup`, `migrate`, `convert`, `update`, `--version`). It must accept options in any order, because the packaged `install.ps1` and the release gate order them differently.
-   - Single instance, hidden window, message loop, and worker thread.
-   - Tray with the V/E icons and `TaskbarCreated` handling; compact panel and tabs with new Vietnamese strings. Decide whether those strings become RT_STRING resources; if so, extend `raumakey_resources::Artifact::resources`, which emits no string table today.
-   - IPC server hub that calls `verify_peer_same_user_and_session` on every connection (§20.7), publishes snapshots, persists reported probes, records opt-in `Diagnostic` events in `DiagnosticsLog`, and implements the controller side of D24 (swallow `VirtualKey` hotkeys, broadcast `ModeChanged` and `ResetAll`).
-   - Hook thread with the D24 classifier and its adapter duties.
-   - Fallback transport with the session map, D20 backspaces, and the clipboard transport.
-   - Configuration lifecycle: D9 data root, stores, diagnostics, and validation of the `[conversion]` charset names in `config.toml`.
-   - The `evkey-compat` legacy server, the quiet panic hook, and a `build.rs` for its resources.
-3. **Missing building blocks in `raumakey-windows`.**
-   - Window class, message-only window, `PostMessageW`, dialogs, and controls.
-   - Icon loading from the module's own resources, and the DLL's module handle and path (`DllRegisterServer` needs them).
-   - `GetMessageExtraInfo`, TSF sink and edit-session helpers, input-scope detection, and foreground-change tracking.
-   - A read-only Windows adapter for the migration `LegacyRegistry` port, and default EVKey folder candidates for `raumakey_migrate::discover` when `migrate` gets no `--from`.
-   - Profile verification that enumerates the installed profile through TSF (plan §10.4).
-   - x64 + x86 install orchestration with cross-architecture rollback and the `HKLM\Software\Raumakey\Install` record.
+   Cần thêm trước một port edit-session/range, để commit và hoàn tác (rollback) có thể được test bằng fake (§15.1). Adapter phải gọi `engine.reset()` khi tài liệu thay đổi: engine trả lời một sự kiện reset mang owner khác bằng `ContextMismatch`.
+2. **Controller (`raumakey-controller`, kế hoạch §10.2).**
+   - Subsystem GUI, gắn vào console khi chạy lệnh con.
+   - CLI (`install`, `uninstall`, `startup`, `migrate`, `convert`, `update`, `--version`). CLI phải chấp nhận các tuỳ chọn theo bất kỳ thứ tự nào, vì `install.ps1` được đóng gói và cổng phát hành sắp xếp chúng theo thứ tự khác nhau.
+   - Một instance duy nhất, cửa sổ ẩn, vòng lặp message và worker thread.
+   - Tray với các icon V/E và xử lý `TaskbarCreated`; bảng cài đặt dạng gọn và các tab với chuỗi tiếng Việt mới. Quyết định xem các chuỗi đó có trở thành tài nguyên RT_STRING hay không; nếu có, mở rộng `raumakey_resources::Artifact::resources`, hàm hiện chưa phát ra string table nào.
+   - Server hub IPC gọi `verify_peer_same_user_and_session` trên mọi kết nối (§20.7), công bố snapshot, lưu bền các probe được báo cáo, ghi các sự kiện `Diagnostic` opt-in vào `DiagnosticsLog`, và hiện thực phía controller của D24 (nuốt các phím tắt `VirtualKey`, broadcast `ModeChanged` và `ResetAll`).
+   - Hook thread với bộ phân loại D24 và các nhiệm vụ adapter của nó.
+   - Kênh truyền dự phòng (fallback) với session map, các backspace theo D20 và kênh truyền qua clipboard.
+   - Vòng đời cấu hình: thư mục dữ liệu gốc theo D9, các store, chẩn đoán, và kiểm tra hợp lệ các tên bảng mã trong `[conversion]` của `config.toml`.
+   - Server legacy `evkey-compat`, panic hook im lặng, và một `build.rs` cho các tài nguyên của nó.
+3. **Các khối xây dựng còn thiếu trong `raumakey-windows`.**
+   - Window class, cửa sổ message-only, `PostMessageW`, hộp thoại và control.
+   - Tải icon từ chính tài nguyên của module, và module handle cùng đường dẫn của DLL (`DllRegisterServer` cần chúng).
+   - `GetMessageExtraInfo`, các helper cho sink TSF và edit session, phát hiện input scope, và theo dõi thay đổi cửa sổ foreground.
+   - Một adapter Windows chỉ đọc cho port `LegacyRegistry` của migration, và các thư mục EVKey mặc định ứng viên cho `raumakey_migrate::discover` khi `migrate` không nhận `--from`.
+   - Xác minh profile bằng cách liệt kê profile đã cài đặt qua TSF (kế hoạch §10.4).
+   - Điều phối cài đặt x64 + x86 với hoàn tác (rollback) xuyên kiến trúc và bản ghi `HKLM\Software\Raumakey\Install`.
 
-**B. Verification infrastructure**
+**B. Hạ tầng kiểm chứng**
 
-4. `raumakey-tests`: machine-readable vectors in `tests/fixtures/compat/*.toml`; contract suites, including one that runs the engine with the real `MacroTable`; `fuzz_targets` and `tests/fuzz_smoke.rs`; and the `fuzz/` cargo-fuzz workspace.
-5. `raumakey-test-runner`: `vectors --json` and `live --app notepad`, recording the fields the matrix pass criteria require.
-6. `tests/windows/Invoke-RaumakeyAcceptance.ps1` and `MANUAL_ACCEPTANCE.md`. Run the 8 manual tests and keep their results as evidence.
+4. `raumakey-tests`: các vector máy đọc được trong `tests/fixtures/compat/*.toml`; các bộ test hợp đồng, trong đó có một bộ chạy engine với `MacroTable` thật; `fuzz_targets` và `tests/fuzz_smoke.rs`; và workspace cargo-fuzz `fuzz/`.
+5. `raumakey-test-runner`: `vectors --json` và `live --app notepad`, ghi lại các trường mà tiêu chí đạt của ma trận yêu cầu.
+6. `tests/windows/Invoke-RaumakeyAcceptance.ps1` và `MANUAL_ACCEPTANCE.md`. Chạy 8 test thủ công và giữ kết quả của chúng làm bằng chứng.
 7. `xtask`:
-   - Add `raumakey-windows/evkey-compat`, and the controller and TIP features, to the CI feature set.
-   - Make a missing fuzz smoke suite fail `release-gate` instead of only adding a note.
-   - Add an evidence slot for the whole-branch review (§16), and pass `--locked`.
-   - Ship the generated notices and license texts in packages.
-   - Extend `inspect` to check Common Controls v6, PerMonitorV2, and the supportedOS entry.
-   - Run the i686 tests under WOW64, and compile the WiX source in CI.
-   - Stop `package` from shipping binaries that fail `inspect`.
+   - Thêm `raumakey-windows/evkey-compat`, cùng các feature của controller và TIP, vào tập feature của CI.
+   - Làm cho việc thiếu bộ fuzz smoke khiến `release-gate` không đạt, thay vì chỉ thêm một ghi chú.
+   - Thêm một ô bằng chứng cho review toàn branch (§16), và truyền `--locked`.
+   - Đưa các thông báo giấy phép được sinh ra và văn bản giấy phép vào package.
+   - Mở rộng `inspect` để kiểm tra Common Controls v6, PerMonitorV2 và mục supportedOS.
+   - Chạy các test i686 dưới WOW64, và biên dịch mã nguồn WiX trong CI.
+   - Ngăn `package` đóng gói các binary không đạt `inspect`.
 
-**C. Process, provenance, documentation**
+**C. Quy trình, nguồn gốc, tài liệu**
 
-8. Commit the implementation. Until then there is no history, release evidence cannot identify the source tree, and the proptest regression seeds can be lost. From now on, record each task's failing test run and each independent review (§16); the existing code has neither.
-9. `THIRD_PARTY.md`: the MSVC CRT is linked into the shipped binaries (D23) but listed as "not shipped". Record its basis, ship notices for transitive crates, and cite the source of the VNI Windows table.
-10. Plan upkeep:
-    - Write statements for D17 and D21, which only the §10.4 heading cites, and add a decision index.
-    - Record the code-level decisions listed in §20.9.
-    - Update the dependency tables of plan §1.1 and §1.3 to match the manifests.
-    - Add `RuntimeSnapshot.diagnostics_enabled` and the 4 KiB control-message cap to plan §7.
-    - Record that `RegisterProfile` replaces `InstallLayoutOrTip`, a deviation from clean-room spec §6.1, and whether the `-ineime` / `-r -ineime` modes get an equivalent path or are dropped, as §6.1 requires for them.
+8. Commit phần triển khai. Cho đến lúc đó sẽ không có lịch sử, bằng chứng phát hành không thể xác định cây mã nguồn, và các seed hồi quy của proptest có thể bị mất. Từ nay trở đi, ghi lại lần chạy test fail của mỗi task và mỗi lần review độc lập (§16); mã hiện có không có thứ nào trong hai thứ này.
+9. `THIRD_PARTY.md`: MSVC CRT được link vào các binary phát hành (D23) nhưng lại được liệt kê là "not shipped". Ghi lại căn cứ cho việc này, đưa kèm thông báo giấy phép cho các crate phụ thuộc gián tiếp, và dẫn nguồn của bảng VNI Windows.
+10. Duy trì kế hoạch:
+    - Viết nội dung cho D17 và D21, vốn chỉ được tiêu đề §10.4 trích dẫn, và thêm một mục lục quyết định.
+    - Ghi lại các quyết định ở mức mã được liệt kê trong §20.9.
+    - Cập nhật bảng phụ thuộc của kế hoạch §1.1 và §1.3 cho khớp với các manifest.
+    - Thêm `RuntimeSnapshot.diagnostics_enabled` và giới hạn 4 KiB cho message điều khiển vào kế hoạch §7.
+    - Ghi lại rằng `RegisterProfile` thay thế `InstallLayoutOrTip`, một điểm lệch khỏi đặc tả clean-room §6.1, và liệu các chế độ `-ineime` / `-r -ineime` có được một đường tương đương hay bị bỏ, như §6.1 yêu cầu đối với chúng.
 
-### 20.7 Known risks and technical debt
+### 20.7 Rủi ro đã biết và nợ kỹ thuật
 
-Each item was confirmed against the code. Items marked *(Windows)* still need confirmation on a real system.
+Mỗi mục đã được xác nhận với mã nguồn. Các mục được đánh dấu *(Windows)* vẫn cần xác nhận trên một hệ thống thật.
 
-- **Commit durability.** `AtomicStore` flushes the temporary file but not the swap. `ReplaceFileW` runs without write-through, and no directory flush follows, so a committed revision may not survive a power loss.
-- **Sandboxed hosts (Windows, plan D27).** The control pipe grants `ALL APPLICATION PACKAGES` client access and carries no mandatory label, so TIPs in AppContainer hosts connect; in-process tests confirm it with an impersonated AppContainer token, but no real AppContainer host has been tried. Any AppContainer process of the user can read the configuration and macros and send client commands. TIPs in low-integrity hosts that are not AppContainers cannot connect and stay on defaults v1; under D24 both the controller hook and such a TIP then classify the modifier-only toggle. Clients refuse a pipe labeled below medium, so a low-integrity process that takes the pipe name first cannot pose as the controller. Less-privileged AppContainers and restricted tokens are not admitted.
-- **TSF registration verification (Windows).** Verification checks TSF-internal keys under `HKLM\SOFTWARE\Microsoft\CTF\TIP` instead of enumerating profiles through TSF, and it has never run against a real registration. If that key is shared between the 32-bit and 64-bit registry views, unregistering one TIP removes the profile the other relies on. Rollback leaves a profile that existed before registration with the new parameters.
-- **Secure fields in fallback hosts.** Outside TSF, the only password signal is the `ES_PASSWORD` style on Edit and RichEdit controls. No UI Automation check exists, and no IPC message carries a secure state detected by the TIP to the controller.
-- **Privacy by convention.** Several types that hold typed text, document text, macro text, or key codes derive `Debug`, among them `InputEvent`, `EditTransaction`, `MacroEntry`, `EngineState`, `ClipboardText`, `MacroDocument`, and `KeyboardEvent`. Nothing logs them today, but a single `{:?}` in a log or panic message would break §14.
-- **Unverified pipe peers.** `PipeServer::accept` returns an unverified connection, so the controller must call `verify_peer_same_user_and_session` itself.
-- **Probe-record limits.** `app_rules.toml` has no cap, IPC snapshots allow 4,096 records, and the policy cache keeps 1,024, evicting the rest silently.
-- **Macro test doubles.** The engine's macro doubles differ from `MacroTable` in case detection, `CasePolicy::Exact`, `BoundaryPolicy`, and NFC renormalization, so the engine and the table could disagree without any test failing.
-- **Silent fallback.** A macro replacement longer than 8,192 UTF-16 units commits the word without expansion and without any signal. No test covers it.
-- **Hook shutdown.** `HookThread::stop` detaches the thread after 2 s, which can leave the hooks installed.
-- **Packages today.** The generated `install.ps1`, `uninstall.ps1`, and MSI custom actions call controller subcommands that do not exist. They would exit 0 without registering anything.
-- **Data-root clutter.** `<file>.lock` files are never removed, and `set_aside` leaves `<file>.bak-<ms>` copies that are never pruned.
-- **Tests that pass vacuously.** Three Windows-only converter tests skip themselves entirely when the temporary folder is not on a drive letter, the administrative share is unreachable, or the volume creates no 8.3 names; a fourth skips its UNC case when the share is unreachable. All of them still report success.
-- **Cleanup.** `serde` in `raumakey-migrate`, `toml` in `xtask`, and `windows-core` in `raumakey-windows` are unused dependencies. `raumakey-windows` depends on `raumakey-ipc` unconditionally. The TIP profile icon index is defined in both `raumakey-resources` and `raumakey-windows`, and nothing checks that the two values match.
+- **Độ bền của commit.** `AtomicStore` flush tệp tạm nhưng không flush thao tác hoán đổi. `ReplaceFileW` chạy không có write-through, và không có lần flush thư mục nào theo sau, nên một revision đã commit có thể không còn sau khi mất điện.
+- **Host chạy sandbox (Windows, kế hoạch D27).** Pipe điều khiển cấp quyền truy cập client cho `ALL APPLICATION PACKAGES` và không mang mandatory label, nên các TIP trong host AppContainer kết nối được; các test trong tiến trình xác nhận điều này bằng một token AppContainer được giả danh (impersonate), nhưng chưa thử với host AppContainer thật nào. Bất kỳ tiến trình AppContainer nào của người dùng cũng có thể đọc cấu hình và macro và gửi lệnh client. Các TIP trong host mức toàn vẹn thấp (low integrity) không phải AppContainer thì không kết nối được và giữ mặc định v1; theo D24, khi đó cả hook của controller lẫn TIP như vậy đều phân loại phím bật/tắt chỉ gồm phím bổ trợ. Client từ chối pipe có nhãn dưới mức toàn vẹn trung bình (medium), nên một tiến trình mức toàn vẹn thấp chiếm tên pipe trước không thể giả làm controller. Các AppContainer ít đặc quyền hơn (less-privileged) và token bị hạn chế (restricted token) không được chấp nhận.
+- **Xác minh đăng ký TSF (Windows).** Bước xác minh kiểm tra các khoá nội bộ của TSF dưới `HKLM\SOFTWARE\Microsoft\CTF\TIP` thay vì liệt kê profile qua TSF, và chưa từng chạy với một lần đăng ký thật. Nếu khoá đó được dùng chung giữa view registry 32-bit và 64-bit, việc huỷ đăng ký một TIP sẽ xoá profile mà TIP kia dựa vào. Hoàn tác (rollback) để lại một profile vốn đã tồn tại trước khi đăng ký nhưng mang các tham số mới.
+- **Ô bảo mật trong host dùng đường dự phòng.** Ngoài TSF, tín hiệu mật khẩu duy nhất là style `ES_PASSWORD` trên các control Edit và RichEdit. Chưa có bước kiểm tra UI Automation nào, và không có message IPC nào chuyển trạng thái bảo mật mà TIP phát hiện được tới controller.
+- **Quyền riêng tư dựa trên quy ước.** Một số kiểu chứa văn bản đã gõ, văn bản tài liệu, văn bản macro hoặc mã phím derive `Debug`, trong đó có `InputEvent`, `EditTransaction`, `MacroEntry`, `EngineState`, `ClipboardText`, `MacroDocument` và `KeyboardEvent`. Hiện chưa có gì log chúng, nhưng chỉ một `{:?}` trong một log hoặc thông điệp panic là sẽ vi phạm §14.
+- **Peer của pipe chưa được xác minh.** `PipeServer::accept` trả về một kết nối chưa được xác minh, nên controller phải tự gọi `verify_peer_same_user_and_session`.
+- **Giới hạn bản ghi probe.** `app_rules.toml` không có giới hạn, snapshot IPC cho phép 4,096 bản ghi, còn cache của policy giữ 1,024 bản ghi và loại bỏ phần còn lại một cách im lặng.
+- **Test double cho macro.** Các double macro của engine khác `MacroTable` ở việc nhận diện chữ hoa/thường, `CasePolicy::Exact`, `BoundaryPolicy` và việc chuẩn hoá lại NFC, nên engine và bảng có thể không thống nhất mà không có test nào fail.
+- **Phương án dự phòng im lặng.** Một nội dung thay thế macro dài hơn 8,192 đơn vị UTF-16 sẽ commit từ mà không mở rộng và không có tín hiệu nào. Chưa có test nào bao phủ trường hợp này.
+- **Tắt hook.** `HookThread::stop` tách (detach) thread sau 2 s, điều này có thể khiến các hook vẫn còn được cài.
+- **Package hiện tại.** `install.ps1`, `uninstall.ps1` được sinh ra và các custom action của MSI gọi những lệnh con của controller chưa tồn tại. Chúng sẽ thoát với mã 0 mà không đăng ký gì cả.
+- **Rác trong thư mục dữ liệu gốc.** Các tệp `<file>.lock` không bao giờ bị xoá, và `set_aside` để lại các bản sao `<file>.bak-<ms>` không bao giờ được dọn.
+- **Test đạt một cách hình thức.** Ba test converter chỉ dành cho Windows tự bỏ qua hoàn toàn khi thư mục tạm không nằm trên một ký tự ổ đĩa, administrative share không truy cập được, hoặc volume không tạo tên 8.3; test thứ tư bỏ qua trường hợp UNC của nó khi share không truy cập được. Tất cả chúng vẫn báo thành công.
+- **Dọn dẹp.** `serde` trong `raumakey-migrate`, `toml` trong `xtask` và `windows-core` trong `raumakey-windows` là các phụ thuộc không dùng đến. `raumakey-windows` phụ thuộc vào `raumakey-ipc` vô điều kiện. Chỉ số icon của profile TIP được định nghĩa ở cả `raumakey-resources` lẫn `raumakey-windows`, và không có gì kiểm tra rằng hai giá trị đó khớp nhau.
 
-### 20.8 Open design questions
+### 20.8 Câu hỏi thiết kế còn mở
 
-These need a product decision. Record each answer as a plan decision (Dn), then align this design, the plan, the code, and the tests.
+Các câu hỏi này cần một quyết định sản phẩm. Ghi lại mỗi câu trả lời thành một quyết định của kế hoạch (Dn), rồi điều chỉnh thiết kế này, kế hoạch, mã nguồn và test cho khớp.
 
-All nine items were decided on 2026-10-17; plan §15 records the answers as D17, D21, and D25–D37. Until the code and this design are aligned (plan §14.5 step 3), the text below describes the questions as they were asked.
+Cả chín mục đã được quyết định ngày 2026-10-17; kế hoạch §15 ghi các câu trả lời thành D17, D21 và D25–D37. Cho đến khi mã nguồn và thiết kế này được điều chỉnh cho khớp (kế hoạch §14.5 bước 3), phần văn bản dưới đây mô tả các câu hỏi đúng như khi chúng được đặt ra.
 
-1. **Secure-field mode `Restricted`.** §14 and matrix #29 say secure fields bypass transformation, macros, and clipboard. Plan §6 and `raumakey-policy` let `Restricted` keep transformation, and a test asserts this. The engine bypasses secure fields in every mode, so the setting currently has no effect.
-2. **The controller's global keyboard hook (D24).** The hook receives every key on the desktop, including keys typed into TSF hosts, while §5.2 says raw keystrokes stay in the TIP on the TSF path. Either state the privacy rules for the hook handler (classify only, store nothing, run the engine only for fallback hosts) or revise D24. Also decide what happens while a TIP is disconnected and both sides may classify the same key.
-3. **EVKey settings import.** `FIELD_MAP` ships empty (D18). An import therefore brings in macros and executable-list named sets and keeps every other setting only as raw evidence. Success criterion 6 ("import supported EVKey settings") is met only because no setting is declared supported. Confirm this, or plan the mappings.
-4. **Migration evidence.** §9 step 3 keeps raw source bytes for rollback evidence. The importer keeps only a fingerprint of the macro file, never macro text (a privacy choice); it keeps `setting.tree` as base64 within an 8 MiB budget, `setting.ini` as parsed values, and registry values as typed values. §9 also lists exception sources, which do not exist: application exceptions arrive only through the executable-list heuristic.
-5. **TSF profile installation.** Plan §10.4 uses `ITfInputProcessorProfileMgr::RegisterProfile`. Clean-room spec §6.1 installs the profile with `InstallLayoutOrTip` (and MUST keep its profile-string format), verifies that state, and requires the `-ineime` / `-r -ineime` modes to have an equivalent path or a deliberate, recorded omission. Decide, and write D17 and D21. Until they say otherwise, plan §10.4 requires verification to enumerate the profile, which the code does not do yet (§20.7).
-6. **Pipe access from AppContainer and low-integrity hosts** (§20.7). Add the required ACE and label, or accept that TIPs in such hosts run on defaults v1.
-7. **App-rule precedence.** Within one tier, the first declared named set or rule decides each field. Plan §6 lists named sets "in declared order" within a chain where later steps override earlier ones.
-8. **Package contents.** Besides the binaries §13 names, the x64 package ships `tools/raumakey-test-runner.exe`, install and uninstall scripts, and a README.
-9. **Circumflex fallback.** With spell checking off, plan §3.6 picks "the last candidate" of a list ordered last to first, while the code picks the rightmost vowel. The wording is ambiguous, and no test covers the case.
+1. **Chế độ ô bảo mật `Restricted`.** §14 và ma trận #29 nói rằng ô bảo mật bỏ qua biến đổi, macro và clipboard. Kế hoạch §6 và `raumakey-policy` cho phép `Restricted` giữ biến đổi, và có một test khẳng định điều này. Engine bỏ qua ô bảo mật ở mọi chế độ, nên hiện tại thiết lập này không có tác dụng.
+2. **Hook bàn phím toàn cục của controller (D24).** Hook nhận mọi phím trên desktop, kể cả các phím gõ vào host TSF, trong khi §5.2 nói rằng phím gõ thô ở lại trong TIP trên đường TSF. Hoặc nêu rõ các quy tắc quyền riêng tư cho handler của hook (chỉ phân loại, không lưu gì, chỉ chạy engine cho host dùng đường dự phòng), hoặc sửa lại D24. Đồng thời quyết định điều gì xảy ra khi một TIP mất kết nối và cả hai phía có thể cùng phân loại một phím.
+3. **Nhập thiết lập EVKey.** `FIELD_MAP` được phát hành ở dạng rỗng (D18). Do đó một lần nhập mang vào macro và các named set dạng danh sách tệp thực thi, còn mọi thiết lập khác chỉ được giữ ở dạng bằng chứng thô. Tiêu chí thành công 6 ("nhập các thiết lập EVKey được hỗ trợ") được đáp ứng chỉ vì không có thiết lập nào được khai báo là được hỗ trợ. Xác nhận điều này, hoặc lên kế hoạch cho các ánh xạ.
+4. **Bằng chứng migration.** §9 bước 3 giữ các byte nguồn thô làm bằng chứng cho hoàn tác (rollback). Bộ nhập chỉ giữ dấu vân tay (fingerprint) của tệp macro, không bao giờ giữ văn bản macro (một lựa chọn vì quyền riêng tư); nó giữ `setting.tree` dưới dạng base64 trong hạn mức 8 MiB, `setting.ini` dưới dạng các giá trị đã phân tích, và các giá trị registry dưới dạng giá trị có kiểu. §9 cũng liệt kê các nguồn ngoại lệ, vốn không tồn tại: ngoại lệ ứng dụng chỉ đến qua heuristic danh sách tệp thực thi.
+5. **Cài đặt profile TSF.** Kế hoạch §10.4 dùng `ITfInputProcessorProfileMgr::RegisterProfile`. Đặc tả clean-room §6.1 cài đặt profile bằng `InstallLayoutOrTip` (và PHẢI giữ định dạng chuỗi profile của nó), xác minh trạng thái đó, và yêu cầu các chế độ `-ineime` / `-r -ineime` phải có một đường tương đương hoặc một sự lược bỏ có chủ ý và được ghi lại. Hãy quyết định, rồi viết D17 và D21. Cho đến khi chúng nói khác đi, kế hoạch §10.4 yêu cầu bước xác minh phải liệt kê profile, điều mà mã nguồn chưa làm (§20.7).
+6. **Truy cập pipe từ host AppContainer và host mức toàn vẹn thấp** (§20.7). Thêm ACE và nhãn cần thiết, hoặc chấp nhận rằng các TIP trong những host như vậy chạy với mặc định v1.
+7. **Thứ tự ưu tiên của quy tắc ứng dụng.** Trong cùng một tầng, named set hoặc quy tắc được khai báo đầu tiên quyết định từng trường. Kế hoạch §6 liệt kê các named set "theo thứ tự khai báo" bên trong một chuỗi mà ở đó các bước sau ghi đè các bước trước.
+8. **Nội dung package.** Ngoài các binary mà §13 nêu tên, package x64 còn đóng gói `tools/raumakey-test-runner.exe`, các script cài đặt và gỡ cài đặt, và một README.
+9. **Phương án dự phòng Circumflex.** Khi tắt kiểm tra chính tả, kế hoạch §3.6 chọn "ứng viên cuối cùng" trong một danh sách được sắp từ cuối lên đầu, trong khi mã nguồn chọn nguyên âm ở bên phải nhất. Cách diễn đạt này mơ hồ, và chưa có test nào bao phủ trường hợp đó.
 
-### 20.9 Decisions
+### 20.9 Các quyết định
 
-The plan records decisions D1, D2, D4–D7, D9, D13, D17–D21, D23, and D24. The other numbers are unused.
+Kế hoạch ghi lại các quyết định D1, D2, D4–D7, D9, D13, D17–D21, D23 và D24. Các số còn lại không được dùng.
 
-| Decision | Summary | Design § | Implementation |
+| Quyết định | Tóm tắt | Thiết kế § | Triển khai |
 |---|---|---|---|
-| D1 | Toolchain and hosts: pinned stable Rust; `rust-lld` + `xwin` on Windows, `cargo xwin` on Linux; resources from `build.rs`; i686 tests under WOW64 | §13, §15 | Done, except the `build.rs` files and running the i686 tests under WOW64 |
-| D2 | `publish = false`; GPL-3.0-or-later | §1, §4 | Done |
-| D4 | Versioned engine defaults v1 | §6 | Done |
-| D5 | Hotkeys: toggle `Ctrl+Shift`; hard reset `Ctrl+Shift+Alt+F12` and `Ctrl+Shift+Alt+Space` | §11 | Library done |
-| D6 | Injected-input tag `0x524B5931` ("RKY1") | §5.3 | Library done |
-| D7 | Shift+Space commits the word unchanged | §7 | Done |
-| D9 | Portable data root `<exe_dir>/data/`, only with a `raumakey.portable` marker | §8 | Library done, not wired |
-| D13 | Default named sets: chromium-family, terminals, games | §5.3 | Done |
-| D17, D21 | TSF registration entries, registry views, categories, verification | §12 | Code in `raumakey-windows`; decision text missing |
-| D18 | Settings are imported only through `FIELD_MAP`, which ships empty | §2, §9 | Done |
-| D19 | Converter charsets | §7 | Done |
-| D20 | Fallback sends one backspace per deleted scalar | §5.3 | Not started (controller) |
-| D23 | Static CRT in shipped artifacts | §13 | Done in `xtask`; `inspect --release` finds no VC runtime imports |
-| D24 | Single hotkey owner | §11 | Classifier done; ownership protocol not implemented |
+| D1 | Toolchain và host: Rust stable được ghim; `rust-lld` + `xwin` trên Windows, `cargo xwin` trên Linux; tài nguyên từ `build.rs`; test i686 dưới WOW64 | §13, §15 | Xong, trừ các tệp `build.rs` và việc chạy test i686 dưới WOW64 |
+| D2 | `publish = false`; GPL-3.0-or-later | §1, §4 | Xong |
+| D4 | Bộ mặc định có phiên bản của engine, v1 | §6 | Xong |
+| D5 | Phím tắt: bật/tắt `Ctrl+Shift`; reset cứng `Ctrl+Shift+Alt+F12` và `Ctrl+Shift+Alt+Space` | §11 | Xong phần thư viện |
+| D6 | Tag cho input được chèn `0x524B5931` ("RKY1") | §5.3 | Xong phần thư viện |
+| D7 | Shift+Space commit từ mà không thay đổi | §7 | Xong |
+| D9 | Thư mục dữ liệu gốc portable `<exe_dir>/data/`, chỉ khi có tệp đánh dấu `raumakey.portable` | §8 | Xong phần thư viện, chưa được nối vào |
+| D13 | Các named set mặc định: chromium-family, terminals, games | §5.3 | Xong |
+| D17, D21 | Các mục đăng ký TSF, view registry, category, xác minh | §12 | Có mã trong `raumakey-windows`; thiếu văn bản quyết định |
+| D18 | Thiết lập chỉ được nhập qua `FIELD_MAP`, vốn được phát hành ở dạng rỗng | §2, §9 | Xong |
+| D19 | Các bảng mã của converter | §7 | Xong |
+| D20 | Đường dự phòng (fallback) gửi một backspace cho mỗi scalar bị xoá | §5.3 | Chưa bắt đầu (controller) |
+| D23 | CRT tĩnh trong các artifact phát hành | §13 | Xong trong `xtask`; `inspect --release` không tìm thấy import VC runtime nào |
+| D24 | Một chủ sở hữu phím tắt duy nhất | §11 | Bộ phân loại đã xong; giao thức sở hữu chưa được triển khai |
 
-The code also makes decisions that the plan does not record yet:
+Mã nguồn cũng đưa ra những quyết định mà kế hoạch chưa ghi lại:
 
-- **Engine:** `transformed` is derived from the current tone and marks (the plan leaves this open); letters count as a syllable prefix if later marks could still make them one; five extra rhymes after `qu`; no plain `g` before e/ê/y; a VIQR-escaped boundary punctuation key commits the word; the Circumflex fallback (§20.8, item 9).
-- **Model and macros:** a trigger typed exactly as stored is never case-adapted; legacy import trims edge whitespace, keeps whitespace-only replacements, rejects input over 16 MiB or with more than 100,000 macro lines (blank, comment, and header lines not counted), and exports CRLF without a BOM; a modifier-only hotkey needs at least two modifiers.
-- **Policy and IPC:** first-declared-wins precedence within a tier; the probe cache cap and its eviction order; the 4 KiB control-message cap; `RuntimeSnapshot.diagnostics_enabled`; legacy bounds (at most 0x800 deleted units, sequence numbers skip 0, future epochs rejected, the bridge dropped after three failed exchanges); legacy activation accepts an existing mutex, as clean-room spec §6 requires.
-- **Configuration and migration:** `Conflict` is also returned when the file changed under the same revision; an exhausted revision restarts at 0; lock waits are bounded at 10 s; macro text never enters `migration.json`.
-- **Converter, resources, and Windows layer:** the clipboard port writes only while the sequence number is unchanged; the manifest also sets the UTF-8 active code page; TSF registration runs inside `DllRegisterServer` under the `regsvr32` of matching bitness; the registry write guard applies the same rules to HKCU and HKLM.
+- **Engine:** `transformed` được suy ra từ dấu thanh và các dấu phụ hiện tại (kế hoạch để ngỏ điểm này); các chữ cái được tính là tiền tố âm tiết nếu các dấu thêm vào sau đó vẫn có thể biến chúng thành tiền tố âm tiết; năm vần bổ sung sau `qu`; không có `g` đơn trước e/ê/y; một phím dấu câu ranh giới được escape kiểu VIQR sẽ commit từ; phương án dự phòng Circumflex (§20.8, mục 9).
+- **Model và macro:** một trigger được gõ đúng y như khi lưu thì không bao giờ được điều chỉnh chữ hoa/thường; việc nhập legacy cắt khoảng trắng ở hai đầu, giữ các nội dung thay thế chỉ gồm khoảng trắng, từ chối đầu vào lớn hơn 16 MiB hoặc có hơn 100,000 dòng macro (không tính dòng trống, dòng chú thích và dòng tiêu đề), và xuất CRLF không có BOM; một phím tắt chỉ gồm phím bổ trợ cần ít nhất hai phím bổ trợ.
+- **Policy và IPC:** thứ tự ưu tiên "khai báo trước thì thắng" trong một tầng; giới hạn của cache probe và thứ tự loại bỏ của nó; giới hạn 4 KiB cho message điều khiển; `RuntimeSnapshot.diagnostics_enabled`; các giới hạn legacy (tối đa 0x800 đơn vị bị xoá, số thứ tự bỏ qua 0, epoch tương lai bị từ chối, bridge bị huỷ sau ba lần trao đổi thất bại); kích hoạt legacy chấp nhận một mutex đã tồn tại, như đặc tả clean-room §6 yêu cầu.
+- **Cấu hình và migration:** `Conflict` cũng được trả về khi tệp đã thay đổi dưới cùng một revision; một revision đã cạn sẽ bắt đầu lại từ 0; thời gian chờ lock bị giới hạn ở 10 s; văn bản macro không bao giờ đi vào `migration.json`.
+- **Converter, tài nguyên và tầng Windows:** port clipboard chỉ ghi khi số thứ tự (sequence number) không thay đổi; manifest còn đặt active code page UTF-8; việc đăng ký TSF chạy bên trong `DllRegisterServer` dưới `regsvr32` có cùng bitness; guard ghi registry áp dụng cùng các quy tắc cho HKCU và HKLM.
 
-### 20.10 Recommended next steps
+### 20.10 Các bước tiếp theo được khuyến nghị
 
-1. Fix the `xtask ci` feature set and make `release-gate` fail when the fuzz smoke suite is missing or no whole-branch review is recorded. Then commit the current tree, so later work has history and traceable evidence.
-2. Decide §20.8 items 2, 5, and 6 and record them as plan decisions: they define the hook thread, the install command and its verification, and the pipe ACL the TIP connects through. Decide items 1, 3, and 4 before the TIP's secure-field path and the `migrate` command are written.
-3. Add the `build.rs` files and the missing `raumakey-windows` building blocks. Then implement the TIP: its four COM exports, class factory, and registration, and the key path behind an edit-session port, with fakes for matrix rows #19, #20, #40, and #41.
-4. Implement the controller: first the GUI subsystem and the CLI with `install`/`uninstall --dry-run`, which together with step 3 let `xtask inspect` and the installer dry-run pass; then the IPC hub, tray, hook thread, and panel.
-5. Build `raumakey-tests` and the acceptance runner, then the PowerShell suite and the manual checklist, and run the 8 manual tests.
-6. Settle the remaining §20.8 questions (items 7–9) and refresh this section.
+1. Sửa tập feature của `xtask ci` và làm cho `release-gate` không đạt khi thiếu bộ fuzz smoke hoặc chưa có review toàn branch nào được ghi lại. Sau đó commit cây hiện tại, để các công việc sau có lịch sử và bằng chứng truy vết được.
+2. Quyết định các mục 2, 5 và 6 của §20.8 và ghi chúng thành quyết định của kế hoạch: chúng định nghĩa hook thread, lệnh cài đặt cùng bước xác minh của nó, và ACL của pipe mà TIP kết nối qua. Quyết định các mục 1, 3 và 4 trước khi viết đường xử lý ô bảo mật của TIP và lệnh `migrate`.
+3. Thêm các tệp `build.rs` và các khối xây dựng còn thiếu của `raumakey-windows`. Sau đó triển khai TIP: bốn export COM, class factory và đăng ký của nó, và đường xử lý phím phía sau một port edit-session, với fake cho các hàng ma trận #19, #20, #40 và #41.
+4. Triển khai controller: trước tiên là subsystem GUI và CLI với `install`/`uninstall --dry-run`, những thứ cùng với bước 3 sẽ giúp `xtask inspect` và bước chạy thử (dry run) của installer đạt; sau đó là hub IPC, tray, hook thread và bảng cài đặt.
+5. Xây dựng `raumakey-tests` và runner nghiệm thu, sau đó là bộ test PowerShell và danh sách kiểm tra thủ công, rồi chạy 8 test thủ công.
+6. Giải quyết các câu hỏi còn lại của §20.8 (mục 7–9) và cập nhật lại mục này.
 
-### 20.11 Review follow-up (2026-10-17)
+### 20.11 Đợt tiếp nối sau review (2026-10-17)
 
-A targeted review against the current source confirmed that the controller, TIP, and shared
-test runner remain stubs. The initial tree was clean at `24ba7a6`, so the earlier statement
-that implementation files were untracked no longer applies. This was not a whole-branch
-independent review.
+Một đợt review có trọng tâm đối chiếu với mã nguồn hiện tại đã xác nhận rằng controller, TIP và
+test runner dùng chung vẫn là stub. Cây ban đầu sạch tại `24ba7a6`, nên nhận định trước đó rằng
+các tệp triển khai chưa được theo dõi (untracked) không còn đúng nữa. Đây không phải là một đợt
+review độc lập toàn branch.
 
-The next increment fixes the verification gaps in §20.6 B7: CI covers every workspace legacy
-feature; dependency-resolving Cargo commands use `--locked`; missing fuzz smoke tests fail CI
-and the release gate; and a revision-bound whole-branch review attestation is required before
-release-gate packaging. Evidence also rejects missing, duplicated, or reordered gate steps
-instead of treating any nonempty list of successful steps as a complete verification.
+Đợt tăng trưởng (increment) tiếp theo sửa các lỗ hổng kiểm chứng trong §20.6 B7: CI bao phủ mọi
+feature legacy của workspace; các lệnh Cargo có phân giải phụ thuộc dùng `--locked`; thiếu fuzz
+smoke test thì CI và cổng phát hành không đạt; và cần có một xác nhận (attestation) review toàn
+branch gắn với revision trước khi đóng gói trong release-gate. Bằng chứng cũng từ chối các bước
+gate bị thiếu, bị trùng hoặc bị đổi thứ tự, thay vì coi bất kỳ danh sách không rỗng nào gồm các
+bước thành công là một lần kiểm chứng đầy đủ.
 
-The fuzz suite itself still does not exist, so default CI and the release gate are expected
-to fail until it is implemented. `ci --no-fuzz` remains available for explicit partial checks.
-The review record contract is documented in plan §12. No approval record was manufactured.
-Package contents, standalone packaging checks, Windows acceptance, and product implementation
-remain outstanding. The policy/engine disagreement about `Restricted` secure fields was
-reconfirmed in source and remains unresolved (§20.8 item 1).
+Bản thân bộ fuzz vẫn chưa tồn tại, nên CI mặc định và cổng phát hành được dự kiến sẽ không đạt
+cho đến khi bộ này được triển khai. `ci --no-fuzz` vẫn có sẵn cho các lần kiểm tra một phần có
+chủ đích. Hợp đồng của bản ghi review được mô tả trong kế hoạch §12. Không có bản ghi duyệt nào
+bị làm giả. Nội dung package, các bước kiểm tra đóng gói độc lập, nghiệm thu Windows và việc
+triển khai sản phẩm vẫn là việc còn lại. Sự bất đồng giữa policy và engine về ô bảo mật
+`Restricted` đã được xác nhận lại trong mã nguồn và vẫn chưa được giải quyết (§20.8 mục 1).
 
-See `docs/superpowers/plans/2026-10-17-review-followup.md` for scope and TDD evidence.
-The follow-up passed formatting, Clippy with warnings denied, and workspace tests on Windows:
-1,241 tests with default features and 1,315 with all compatibility features; 8 existing
-manual tests remained ignored in each run. `xtask` has 102 passing tests. The default CI and
-release-gate failure paths were exercised and correctly recorded `not verified`.
+Xem `docs/superpowers/plans/2026-10-17-review-followup.md` để biết phạm vi và bằng chứng TDD.
+Đợt tiếp nối đã đạt kiểm tra định dạng, Clippy ở chế độ coi cảnh báo là lỗi, và test workspace
+trên Windows: 1,241 test với feature mặc định và 1,315 test với mọi feature tương thích; 8 test
+thủ công hiện có vẫn bị bỏ qua trong mỗi lần chạy. `xtask` có 102 test đạt. Các đường thất bại
+của CI mặc định và release-gate đã được thực thi và ghi nhận đúng `not verified`.

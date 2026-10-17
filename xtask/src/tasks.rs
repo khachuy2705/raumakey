@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 use crate::evidence::{
     ArtifactEvidence, CROSS_BUILD_VERIFIED, Evidence, StepEvidence, StepStatus, evidence_file_name,
 };
-use crate::gate::{STEPS, dry_run_commands, dry_run_problems, validate_review};
+use crate::gate::{STEPS, dry_run_problems, installer_dry_run_commands, validate_review};
 use crate::inspect::{format_table, inspect_file};
 use crate::notices;
 use crate::package::{
@@ -353,8 +353,14 @@ fn installer_dry_run(ctx: &mut Context) -> Result<()> {
         &version,
         Profile::Release,
     ));
+    let system_root = env::var_os("SystemRoot")
+        .or_else(|| env::var_os("windir"))
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            Error::new("neither SystemRoot nor windir is set; Windows PowerShell cannot be found")
+        })?;
     let mut problems = Vec::new();
-    for spec in dry_run_commands(&package_dir) {
+    for spec in installer_dry_run_commands(&package_dir, &system_root) {
         let captured = ctx.runner.capture_with_timeout(&spec, DRY_RUN_TIMEOUT)?;
         let output = format!("{}{}", captured.stdout, captured.stderr);
         for line in output.lines() {

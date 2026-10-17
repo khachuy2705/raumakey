@@ -1,55 +1,60 @@
-# Third-party provenance and notices
+# Nguồn gốc và thông báo của bên thứ ba
 
-Raumakey is licensed under GPL-3.0-or-later (see `LICENSE`).
+Raumakey được cấp phép theo GPL-3.0-or-later (xem `LICENSE`).
 
 ## UniKey
 
-**Not used.** No UniKey source file has been copied, translated, or adapted. The Vietnamese
-engine was written from the Raumakey implementation plan
-(`docs/superpowers/plans/2026-10-16-raumakey-implementation.md`), the clean-room behavioral
-specification, and the compatibility matrix. Behaviors labeled "baseline" in the matrix are
-treated as behavioral expectations only.
+**Không sử dụng.** Không có tệp mã nguồn UniKey nào được sao chép, chuyển dịch hay phỏng
+theo. Engine tiếng Việt được viết dựa trên kế hoạch triển khai Raumakey
+(`docs/superpowers/plans/2026-10-16-raumakey-implementation.md`), đặc tả hành vi clean-room và
+ma trận tương thích. Các hành vi được gắn nhãn "baseline" trong ma trận chỉ được coi là kỳ vọng
+về hành vi.
 
-If UniKey source is ever reused or translated, record here **before** the change lands: repository
-URL, immutable commit, license text, affected files, and required notices.
+Nếu sau này mã nguồn UniKey được tái sử dụng hoặc chuyển dịch, phải ghi lại tại đây **trước khi**
+thay đổi được đưa vào: URL kho mã, commit bất biến, văn bản giấy phép, các tệp bị ảnh hưởng và
+các thông báo bắt buộc.
 
 ## EVKey
 
-No EVKey binary, resource, icon, string, decompiler output, pseudocode, class layout, or control
-flow is used. The reconstruction dossier under `restricted_evidence/` is excluded from Git and was
-not read by implementation or review agents. Raumakey uses its own CLSID, profile GUID, upgrade
-code, named-object prefix, registry root, icons, and strings.
+Không sử dụng bất kỳ tệp nhị phân, tài nguyên, biểu tượng, chuỗi, đầu ra của trình dịch ngược
+(decompiler), mã giả, bố cục lớp hay luồng điều khiển nào của EVKey. Hồ sơ tái dựng nằm dưới
+`restricted_evidence/` bị loại khỏi Git và không được các agent triển khai hay agent review đọc.
+Raumakey dùng CLSID, GUID profile, mã nâng cấp (upgrade code), tiền tố tên đối tượng
+(named-object prefix), gốc registry, biểu tượng và chuỗi của riêng mình.
 
-The optional `evkey-compat` Cargo feature implements the legacy shared-memory layout described in
-`docs/reference/evkey_clean_room_spec.md` §6 for interoperability; it is disabled by default.
+Cargo feature tùy chọn `evkey-compat` triển khai bố cục bộ nhớ chia sẻ cũ (legacy) được mô tả
+trong `docs/reference/evkey_clean_room_spec.md` §6 nhằm đảm bảo khả năng tương tác; feature này
+bị tắt theo mặc định.
 
-## Rust crate dependencies
+## Các crate Rust phụ thuộc
 
-Runtime and build dependencies are fetched from crates.io and locked in `Cargo.lock`.
-`cargo run -p xtask -- notices` regenerates the full list with license expressions, and
-`cargo run -p xtask -- audit` enforces `deny.toml`.
+Các phụ thuộc runtime và build được tải về từ crates.io và được khóa trong `Cargo.lock`.
+`cargo run -p xtask -- notices` sinh lại danh sách đầy đủ kèm biểu thức giấy phép, và
+`cargo run -p xtask -- audit` thực thi các quy tắc trong `deny.toml`.
 
-| Crate | License | Used by |
+| Crate | Giấy phép | Dùng cho |
 |---|---|---|
-| serde, serde_derive, serde_json | MIT OR Apache-2.0 | documents, IPC payloads |
-| toml | MIT OR Apache-2.0 | configuration files |
+| serde, serde_derive, serde_json | MIT OR Apache-2.0 | tài liệu, payload IPC |
+| toml | MIT OR Apache-2.0 | tệp cấu hình |
 | unicode-normalization | MIT OR Apache-2.0 | NFC/NFD |
-| sha2 | MIT OR Apache-2.0 | checksums |
-| crc32fast | MIT OR Apache-2.0 | IPC frame checksum |
-| windows, windows-core | MIT OR Apache-2.0 | Win32/COM/TSF bindings |
-| object | Apache-2.0 OR MIT | PE inspection in `xtask` (not shipped) |
-| proptest, tempfile | MIT OR Apache-2.0 | tests only (not shipped) |
+| sha2 | MIT OR Apache-2.0 | checksum |
+| crc32fast | MIT OR Apache-2.0 | checksum của frame IPC |
+| windows, windows-core | MIT OR Apache-2.0 | binding Win32/COM/TSF |
+| object | Apache-2.0 OR MIT | kiểm tra tệp PE trong `xtask` (không phân phối kèm) |
+| proptest, tempfile | MIT OR Apache-2.0 | chỉ dùng cho test (không phân phối kèm) |
 
-## Build tooling (not shipped)
+## Công cụ build (không phân phối kèm)
 
-- Rust toolchain (MIT OR Apache-2.0).
-- On Windows hosts without Visual Studio, the MSVC CRT and Windows SDK import libraries are
-  obtained with `xwin`; their use is governed by Microsoft's license terms, which the developer
-  accepts when downloading them. Release builds link the CRT statically (`+crt-static`, set by
-  `xtask`), so packages do not depend on the Visual C++ redistributable.
+- Toolchain Rust (MIT OR Apache-2.0).
+- Trên các host Windows không có Visual Studio, CRT của MSVC và các thư viện import của Windows
+  SDK được lấy bằng `xwin`; việc sử dụng chúng chịu sự điều chỉnh của các điều khoản giấy phép
+  của Microsoft, mà nhà phát triển chấp nhận khi tải chúng về. Các bản build release liên kết CRT
+  tĩnh (`+crt-static`, do `xtask` thiết lập), nên các package không phụ thuộc vào gói Visual C++
+  redistributable.
 
-## Verification oracles
+## Nguồn đối chiếu kiểm chứng (oracle)
 
-Charset tables in `raumakey-converter` were written from published charset standards (RFC 1456
-for VISCII/VIQR, TCVN 5712:1993, Windows-1258, VNI Windows). Independent codec implementations may
-be used as test oracles during development; no code or data files are copied from them.
+Các bảng dữ liệu bảng mã trong `raumakey-converter` được viết dựa trên các tiêu chuẩn bảng mã
+đã công bố (RFC 1456 cho VISCII/VIQR, TCVN 5712:1993, Windows-1258, VNI Windows). Các bản triển
+khai codec độc lập có thể được dùng làm oracle cho test trong quá trình phát triển; không có mã
+hay tệp dữ liệu nào được sao chép từ chúng.
