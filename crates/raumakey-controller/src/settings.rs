@@ -4,16 +4,32 @@
 //! lives beside it. [`Settings`] owns that configuration for the run mode and the tray:
 //!
 //! - **Where.** [`Settings::open`] resolves the data root with
-//!   [`DataRoot::resolve_with`](raumakey_config::DataRoot::resolve_with): the folder of
-//!   `raumakey.exe` when it can be written ([`Location::ExeDir`]), otherwise
-//!   `%LOCALAPPDATA%\Raumakey` ([`Location::LocalAppData`]). When neither can be used
-//!   ([`Location::Unavailable`]: no absolute executable folder and no local application data
-//!   folder), the settings live in memory: they start from the defaults, every change takes
-//!   effect, and none is saved ([`ConfigError::NotFound`]).
+//!   [`DataRoot::resolve_with`](raumakey_config::DataRoot::resolve_with)
+//!   ([`Location::ExeDir`] or [`Location::LocalAppData`]):
+//!   1. the folder of `raumakey.exe` when `raumakey.toml` exists there, even when the folder
+//!      cannot be written (it is then neither probed nor checked; saving fails, typically with
+//!      [`ConfigError::PermissionDenied`], and the caller reports that);
+//!   2. otherwise that folder when it is not protected and can be written;
+//!   3. otherwise `%LOCALAPPDATA%\Raumakey`, which is also used when the executable's folder is
+//!      unknown or not absolute (`current_exe` failed), without looking at it.
+//!
+//!   [`Settings::open_for_current_exe`] protects Program Files, Program Files (x86), the
+//!   Windows folder, and the user's temp folder ([`is_protected_dir`]), and probes with
+//!   [`is_writable_dir`]. So an elevated and a normal run of a copy in Program Files share one
+//!   file under `%LOCALAPPDATA%`, and a copy that Explorer runs from inside a ZIP (out of the
+//!   temp folder, which it cleans later) keeps nothing there. Trade-off: an elevated run reads
+//!   the configuration beside `raumakey.exe` like a normal run does, so for a copy in a folder
+//!   that the user's ordinary (medium-integrity) programs can write, such as Downloads, the
+//!   elevated controller reads a file that those programs can change (they could replace
+//!   `raumakey.exe` there as well). When no folder can be used ([`Location::Unavailable`]: no
+//!   usable executable folder and no local application data folder), the settings live in
+//!   memory: they start from the defaults, every change takes effect, and none is saved
+//!   ([`ConfigError::NotFound`]).
 //! - **First run.** When `raumakey.toml` does not exist, the defaults are committed at once, so
 //!   the file exists from then on ([`OpenReport::first_run`]; a failure to write it is
-//!   [`OpenReport::create_error`], and the controller runs on the defaults anyway). The second
-//!   run loads the file and writes nothing. `raumakey-macros.toml` and
+//!   [`OpenReport::create_error`], and the controller runs on the defaults anyway; when another
+//!   writer created the file meanwhile, that file is loaded instead). The second run loads the
+//!   file and writes nothing. `raumakey-macros.toml` and
 //!   `raumakey-app-rules.toml` are read when they exist and are never created or written here.
 //! - **Snapshots.** [`Settings::runtime_snapshot`] and [`Settings::macro_snapshot`] are what the
 //!   session core consumes (`ServiceCore::apply_runtime_snapshot` and `build_macro_table`):
@@ -28,9 +44,15 @@
 //!   it was loaded, the file is loaded again, the change is applied again on what it holds, and
 //!   the commit is retried (up to three times). A change takes effect even when it cannot be
 //!   saved; the error says why it was not.
-//! - **Hand edits.** [`Settings::poll`] (the tray calls it every two seconds) notices a file
-//!   that changed on disk, even without a new revision, loads it again, and returns the new
-//!   snapshots ([`Reloaded`]).
+//! - **Hand edits.** [`Settings::poll`] (called every two seconds) notices a file that changed
+//!   on disk, even without a new revision, loads it again, and returns the new snapshots
+//!   ([`Reloaded`]). A file whose last read failed in a way that may pass (another program
+//!   held it open, [`ConfigError::IoFailure`]; access denied for a moment,
+//!   [`ConfigError::PermissionDenied`]) is read again on every poll until it reads.
+//! - **Threads.** [`Settings`] is `Send` (and `Sync`): the controller owns it on a worker
+//!   thread. [`Settings::apply`], [`Settings::poll`], and [`Settings::recover`] do file I/O and
+//!   may wait up to two seconds for a store lock, so they do not belong on the tray's window
+//!   thread.
 //!
 //! # Damaged files
 //!
@@ -39,9 +61,10 @@
 //! file breaks while the controller runs (a hand edit saved half-way), the last good settings
 //! stay in effect. Changes take effect but are not saved: the store refuses to commit over a
 //! corrupt file or one of a newer schema version, and [`Settings::apply`] returns that error.
-//! Nothing is lost until the user decides: [`Settings::recover`] moves the damaged
-//! `raumakey.toml` aside (to `raumakey.toml.bak-<unix-ms>`) and writes the settings in effect in
-//! its place, and fixing the file by hand brings it back through [`Settings::poll`].
+//! Nothing is lost until the user decides: [`Settings::recover`] loads the file once more (and
+//! takes it when it reads now), else moves the damaged `raumakey.toml` aside (to
+//! `raumakey.toml.bak-<unix-ms>`) and writes the settings in effect in its place
+//! ([`Recovery`]); fixing the file by hand brings it back through [`Settings::poll`].
 //!
 //! # What is reported
 //!
@@ -54,7 +77,10 @@
 //! `macro`); the documents keep every element. Beyond [`MAX_KEYMAPS`] key maps, only the key
 //! map that the input method uses (if any) is carried, as it is the only one the engine reads.
 //! Compatibility rules that the session core would refuse make `raumakey-app-rules.toml`
-//! [`DocumentStatus::Unusable`], with the D13 defaults in effect.
+//! [`DocumentStatus::Unusable`], with the D13 defaults in effect. After a commit, the status
+//! of `raumakey.toml` is what a load of the written file reports: fields that took their
+//! defaults were written with them and are not reported any more. A commit writes the
+//! canonical encoding, so comments and the layout of a hand-edited file are not kept.
 //!
 //! Nothing here logs. The [`Debug`](fmt::Debug) output of [`Settings`] shows the location,
 //! paths, revisions, the macro count, and the status, never macro text.
@@ -74,8 +100,10 @@ use raumakey_macro::{EntryIssue, MacroStore};
 use raumakey_model::options::InputMethod;
 use raumakey_model::policy::CompatibilityConfig;
 
-/// How long a commit waits for a store lock. The tray commits on its own thread, so it does
-/// not wait the store's default of ten seconds.
+use crate::system::is_inside_folder;
+
+/// How long a commit waits for a store lock, shorter than the store's default of ten seconds
+/// so that a change from the tray is answered soon.
 const LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How often [`Settings::apply`] loads the file again after a conflict before it gives up.
@@ -223,6 +251,26 @@ impl fmt::Debug for Reloaded {
     }
 }
 
+/// What [`Settings::recover`] did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Recovery {
+    /// `raumakey.toml` was not unreadable: nothing was done.
+    NotNeeded,
+    /// `raumakey.toml` reads again (another program had held it, for example): its settings
+    /// are in effect, and nothing was moved.
+    Adopted,
+    /// The damaged file was moved aside and the settings in effect were to be written in its
+    /// place.
+    Replaced {
+        /// Where the damaged file was moved (`raumakey.toml.bak-<unix-ms>`); `None` when it
+        /// was gone already.
+        backup: Option<PathBuf>,
+        /// Whether the settings in effect were written as the new `raumakey.toml`. When not,
+        /// the file is missing and the next change tries again.
+        saved: Result<(), ConfigError>,
+    },
+}
+
 /// The stores of the data root.
 struct Stores {
     config: AtomicStore<ConfigDocument>,
@@ -231,8 +279,7 @@ struct Stores {
 }
 
 impl Stores {
-    fn new(root: &DataRoot) -> Self {
-        let replacer = replacer();
+    fn new(root: &DataRoot, replacer: Arc<dyn FileReplacer>) -> Self {
         Self {
             config: root
                 .store(Arc::clone(&replacer))
@@ -272,10 +319,84 @@ fn read<D: StoreDocument>(store: &AtomicStore<D>) -> Read<D> {
     }
 }
 
-/// Whether the file of `store` should be read again: it changed since the store last read or
-/// wrote it, or it cannot even be checked, unless the last read failed with that very error
-/// (so that a file that stays unreadable is not reported every two seconds).
+/// `raumakey.toml` as [`Settings::open`] finds it.
+struct Initial {
+    config: ConfigDocument,
+    config_read: DocumentStatus,
+    first_run: bool,
+    create_error: Option<ConfigError>,
+}
+
+impl Initial {
+    fn found(loaded: Loaded<ConfigDocument>) -> Self {
+        Self {
+            config: loaded.document,
+            config_read: DocumentStatus::Loaded {
+                issues: loaded.issues,
+            },
+            first_run: false,
+            create_error: None,
+        }
+    }
+
+    fn unreadable(error: ConfigError) -> Self {
+        Self {
+            config: ConfigDocument::defaults(),
+            config_read: DocumentStatus::Unreadable(error),
+            first_run: false,
+            create_error: None,
+        }
+    }
+}
+
+/// The first run: `raumakey.toml` was not there, so the defaults are written. When another
+/// writer created the file meanwhile (the commit reports a conflict), that file is loaded and
+/// reported instead, as on any later run.
+fn create_defaults(store: &AtomicStore<ConfigDocument>) -> Initial {
+    let mut config = ConfigDocument::defaults();
+    match store.commit(0, &config) {
+        Ok(revision) => {
+            config.revision = revision;
+            Initial {
+                config,
+                config_read: DocumentStatus::Loaded { issues: Vec::new() },
+                first_run: true,
+                create_error: None,
+            }
+        }
+        Err(error @ ConfigError::Conflict { .. }) => match read(store) {
+            Read::Found(loaded) => Initial::found(loaded),
+            Read::Failed(error) => Initial::unreadable(error),
+            Read::Missing => Initial {
+                config,
+                config_read: DocumentStatus::Missing,
+                first_run: true,
+                create_error: Some(error),
+            },
+        },
+        Err(error) => Initial {
+            config,
+            config_read: DocumentStatus::Missing,
+            first_run: true,
+            create_error: Some(error),
+        },
+    }
+}
+
+/// Whether the file of `store` should be read again: the last read failed in a way that may
+/// pass (another program held the file open, access was denied for a moment), or the file
+/// changed since the store last read or wrote it, or it cannot even be checked, unless the
+/// last read failed with that very error. A failed read leaves the store's record of the last
+/// good content in place, so after a passing failure the file looks unchanged and only reading
+/// it again ends the failure. A read that fails again the same way is not reported again
+/// ([`Settings::poll`] compares the status).
 fn needs_reading<D: StoreDocument>(store: &AtomicStore<D>, last: &DocumentStatus) -> bool {
+    if matches!(
+        last,
+        DocumentStatus::Unreadable(ConfigError::IoFailure | ConfigError::PermissionDenied)
+    ) {
+        return true;
+    }
     match store.poll_changed() {
         Ok(changed) => changed,
         Err(error) => *last != DocumentStatus::Unreadable(error),
@@ -315,9 +436,11 @@ impl fmt::Debug for Settings {
 
 impl Settings {
     /// Opens the configuration of a `raumakey.exe` in `exe_dir` (see the [module
-    /// documentation](self)): resolves the data root, asking `is_writable` whether `exe_dir`
-    /// can be written ([`is_writable_dir`] is the real probe), loads `raumakey.toml`, writes
-    /// the defaults when it does not exist, and loads `raumakey-macros.toml` and
+    /// documentation](self)): resolves the data root, asking `is_protected` whether Raumakey
+    /// keeps no configuration in `exe_dir` ([`is_protected_dir`] is the real check) and then
+    /// `is_writable` whether it can be written ([`is_writable_dir`] is the real probe), unless
+    /// `exe_dir` holds `raumakey.toml` already or is not absolute; loads `raumakey.toml`,
+    /// writes the defaults when it does not exist, and loads `raumakey-macros.toml` and
     /// `raumakey-app-rules.toml` when they exist.
     ///
     /// Never fails: whatever cannot be read leaves its defaults in effect and is reported.
@@ -325,8 +448,27 @@ impl Settings {
         exe_dir: &Path,
         local_app_data: Option<&Path>,
         is_writable: &dyn Fn(&Path) -> bool,
+        is_protected: &dyn Fn(&Path) -> bool,
     ) -> (Self, OpenReport) {
-        let Ok(root) = DataRoot::resolve_with(exe_dir, local_app_data, is_writable) else {
+        Self::open_with(
+            exe_dir,
+            local_app_data,
+            is_writable,
+            is_protected,
+            replacer(),
+        )
+    }
+
+    /// [`Settings::open`] with the stores' file replacer.
+    fn open_with(
+        exe_dir: &Path,
+        local_app_data: Option<&Path>,
+        is_writable: &dyn Fn(&Path) -> bool,
+        is_protected: &dyn Fn(&Path) -> bool,
+        replacer: Arc<dyn FileReplacer>,
+    ) -> (Self, OpenReport) {
+        let Ok(root) = DataRoot::resolve_with(exe_dir, local_app_data, is_writable, is_protected)
+        else {
             let settings = Self::in_memory();
             let report = OpenReport {
                 location: Location::Unavailable,
@@ -342,34 +484,16 @@ impl Settings {
         } else {
             Location::LocalAppData
         };
-        let stores = Stores::new(&root);
-        let mut first_run = false;
-        let mut create_error = None;
-        let (config, config_read) = match read(&stores.config) {
-            Read::Found(loaded) => (
-                loaded.document,
-                DocumentStatus::Loaded {
-                    issues: loaded.issues,
-                },
-            ),
-            Read::Missing => {
-                first_run = true;
-                let mut defaults = ConfigDocument::defaults();
-                match stores.config.commit(0, &defaults) {
-                    Ok(revision) => {
-                        defaults.revision = revision;
-                        (defaults, DocumentStatus::Loaded { issues: Vec::new() })
-                    }
-                    Err(error) => {
-                        create_error = Some(error);
-                        (defaults, DocumentStatus::Missing)
-                    }
-                }
-            }
-            Read::Failed(error) => (
-                ConfigDocument::defaults(),
-                DocumentStatus::Unreadable(error),
-            ),
+        let stores = Stores::new(&root, replacer);
+        let Initial {
+            config,
+            config_read,
+            first_run,
+            create_error,
+        } = match read(&stores.config) {
+            Read::Found(loaded) => Initial::found(loaded),
+            Read::Missing => create_defaults(&stores.config),
+            Read::Failed(error) => Initial::unreadable(error),
         };
         let (compatibility, app_rules_read) = match read(&stores.app_rules) {
             Read::Found(loaded) => (
@@ -413,15 +537,22 @@ impl Settings {
     }
 
     /// [`Settings::open`] for the running `raumakey.exe`: its folder
-    /// ([`std::env::current_exe`]), the local application data folder (`FOLDERID_LocalAppData`
-    /// on Windows, else `%LOCALAPPDATA%`), and the real write probe.
+    /// ([`std::env::current_exe`]; when that fails, the local application data folder is
+    /// used), the local application data folder (`FOLDERID_LocalAppData` on Windows, else
+    /// `%LOCALAPPDATA%`), the real protection check [`is_protected_dir`], and the real write
+    /// probe [`is_writable_dir`].
     pub fn open_for_current_exe() -> (Self, OpenReport) {
         let exe_dir = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(Path::to_path_buf))
             .unwrap_or_default();
         let local_app_data = local_app_data();
-        Self::open(&exe_dir, local_app_data.as_deref(), &is_writable_dir)
+        Self::open(
+            &exe_dir,
+            local_app_data.as_deref(),
+            &is_writable_dir,
+            &is_protected_dir,
+        )
     }
 
     /// Settings without a folder: the defaults, in memory.
@@ -503,11 +634,7 @@ impl Settings {
             };
             let error = match stores.config.commit(self.config.revision, &self.config) {
                 Ok(revision) => {
-                    self.config.revision = revision;
-                    if !matches!(self.config_read, DocumentStatus::Loaded { .. }) {
-                        self.config_read = DocumentStatus::Loaded { issues: Vec::new() };
-                    }
-                    self.rebuild();
+                    self.committed(revision);
                     return Ok(());
                 }
                 Err(error) => error,
@@ -628,28 +755,57 @@ impl Settings {
         })
     }
 
-    /// Recovers from a `raumakey.toml` that cannot be read ([`DocumentStatus::Unreadable`]):
-    /// moves it aside to `raumakey.toml.bak-<unix-ms>` and writes the settings in effect in
-    /// its place, as revision 1. Only an explicit choice of the user should call this.
+    /// Recovers from a `raumakey.toml` that cannot be read ([`DocumentStatus::Unreadable`]).
+    /// Only an explicit choice of the user should call this.
     ///
-    /// Returns the path of the backup, or `None` when the file was readable (nothing is done)
-    /// or was gone already.
-    pub fn recover(&mut self) -> Result<Option<PathBuf>, ConfigError> {
+    /// The file is loaded once more first: when it reads now (the failure has passed), its
+    /// settings take effect and nothing is moved ([`Recovery::Adopted`]). Otherwise it is
+    /// moved aside to `raumakey.toml.bak-<unix-ms>`, and the settings in effect are written in
+    /// its place as revision 1 ([`Recovery::Replaced`], which names the backup even when that
+    /// write fails). [`Recovery::NotNeeded`] when the file was not unreadable.
+    ///
+    /// Fails, with nothing changed, when the file cannot be moved aside.
+    pub fn recover(&mut self) -> Result<Recovery, ConfigError> {
         if !matches!(self.config_read, DocumentStatus::Unreadable(_)) {
-            return Ok(None);
+            return Ok(Recovery::NotNeeded);
         }
         let Some(stores) = self.stores.as_ref() else {
-            return Ok(None);
+            return Ok(Recovery::NotNeeded);
         };
-        let backup = stores.config.set_aside()?;
+        let backup = match read(&stores.config) {
+            Read::Found(loaded) => {
+                self.config = loaded.document;
+                self.config_read = DocumentStatus::Loaded {
+                    issues: loaded.issues,
+                };
+                self.rebuild();
+                return Ok(Recovery::Adopted);
+            }
+            Read::Missing => None,
+            Read::Failed(_) => stores.config.set_aside()?,
+        };
         self.config_read = DocumentStatus::Missing;
-        let committed = stores.config.commit(0, &self.config);
-        if let Ok(revision) = committed {
-            self.config.revision = revision;
-            self.config_read = DocumentStatus::Loaded { issues: Vec::new() };
-        }
+        let saved = match stores.config.commit(0, &self.config) {
+            Ok(revision) => {
+                self.committed(revision);
+                Ok(())
+            }
+            Err(error) => {
+                self.rebuild();
+                Err(error)
+            }
+        };
+        Ok(Recovery::Replaced { backup, saved })
+    }
+
+    /// `raumakey.toml` now holds [`Settings::document`] as `revision`: its status becomes what
+    /// a load of that file would report.
+    fn committed(&mut self, revision: u64) {
+        self.config.revision = revision;
+        self.config_read = DocumentStatus::Loaded {
+            issues: committed_issues(&self.config),
+        };
         self.rebuild();
-        committed.map(|_| backup)
     }
 
     /// Takes the entries of a loaded macro document into effect.
@@ -687,6 +843,18 @@ impl Settings {
             (other, _) => other.clone(),
         };
     }
+}
+
+/// The issues that a load of the file written for `document` reports: a commit writes the
+/// defaults of the fields that took them, so only what is reported on every load is left
+/// (entries set aside verbatim, a user method without its key map). The store writes exactly
+/// this encoding.
+fn committed_issues(document: &ConfigDocument) -> Vec<FieldIssue> {
+    document
+        .encode()
+        .and_then(|text| ConfigDocument::decode(&text))
+        .map(|loaded| loaded.issues)
+        .unwrap_or_default()
 }
 
 /// Stores `next` in `slot`; whether it differs from what was there.
@@ -777,6 +945,49 @@ fn defaults_with_mode(config: &ConfigDocument) -> RuntimeSnapshot {
     snapshot
 }
 
+/// Whether Raumakey keeps no configuration in `dir` even when it can be written: the
+/// protection check of [`Settings::open_for_current_exe`] (see the [module
+/// documentation](self)).
+///
+/// `dir` is protected when a file in it lies inside Program Files, Program Files (x86), or the
+/// Windows folder (`raumakey_windows::known_folder`), or inside the user's temp folder
+/// ([`std::env::temp_dir`]): Explorer runs an executable from inside a ZIP out of the temp
+/// folder and deletes it later. The check is lexical ([`is_inside_folder`]), on each path as
+/// given and in its canonical form (links and short names resolved), so that `C:\PROGRA~1` or
+/// a `\\?\` path still match. A folder that cannot be looked up protects nothing; a relative
+/// or empty `dir` is not protected (and is never used as the root). A 32-bit `raumakey.exe` on
+/// 64-bit Windows sees only Program Files (x86) as its Program Files.
+pub fn is_protected_dir(dir: &Path) -> bool {
+    let mut folders = Vec::new();
+    #[cfg(windows)]
+    {
+        use raumakey_windows::known_folder::{program_files, program_files_x86, windows_dir};
+        folders.extend(
+            [program_files(), program_files_x86(), windows_dir()]
+                .into_iter()
+                .flatten(),
+        );
+    }
+    folders.push(std::env::temp_dir());
+    let resolved: Vec<PathBuf> = folders.iter().filter_map(|f| canonical(f)).collect();
+    folders.extend(resolved);
+    [Some(dir.to_path_buf()), canonical(dir)]
+        .into_iter()
+        .flatten()
+        .any(|dir| {
+            let file = dir.join(ConfigDocument::FILE_NAME);
+            folders.iter().any(|folder| is_inside_folder(&file, folder))
+        })
+}
+
+/// `path` with links and short names resolved and without the `\\?\` prefix; `None` when it
+/// cannot be resolved or does not lie on a drive.
+fn canonical(path: &Path) -> Option<PathBuf> {
+    let resolved = std::fs::canonicalize(path).ok()?;
+    let plain = resolved.to_str()?.strip_prefix(r"\\?\")?;
+    (!plain.starts_with(r"UNC\")).then(|| PathBuf::from(plain))
+}
+
 /// The local application data folder of the user.
 #[cfg(windows)]
 fn local_app_data() -> Option<PathBuf> {
@@ -789,4 +1000,75 @@ fn local_app_data() -> Option<PathBuf> {
 #[cfg(not(windows))]
 fn local_app_data() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::io;
+
+    use raumakey_config::StdReplacer;
+
+    use super::*;
+
+    /// A replacer whose every swap fails, so that every commit fails after its checks.
+    struct FailingReplacer;
+
+    impl FileReplacer for FailingReplacer {
+        fn replace(&self, _replacement: &Path, _target: &Path) -> io::Result<()> {
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        }
+    }
+
+    /// The damaged file was moved aside, but the settings could not be written in its place:
+    /// the backup is still reported, so that the user can find the old file.
+    #[test]
+    fn recover_reports_the_backup_when_the_new_file_cannot_be_written() {
+        let exe = tempfile::tempdir().unwrap();
+        let config = exe.path().join("raumakey.toml");
+        fs::write(&config, "[[[ not a configuration").unwrap();
+        let (mut settings, _) = Settings::open_with(
+            exe.path(),
+            None,
+            &|_| true,
+            &|_| false,
+            Arc::new(FailingReplacer),
+        );
+        let Ok(Recovery::Replaced {
+            backup: Some(backup),
+            saved,
+        }) = settings.recover()
+        else {
+            panic!("not replaced");
+        };
+        assert_eq!(saved, Err(ConfigError::PermissionDenied));
+        assert_eq!(fs::read(&backup).unwrap(), b"[[[ not a configuration");
+        assert!(!config.exists());
+        assert_eq!(settings.status().config, DocumentStatus::Missing);
+    }
+
+    /// Another writer created `raumakey.toml` between the open's read (missing) and its
+    /// commit of the defaults: that file is loaded and reported, not a create error.
+    #[test]
+    fn a_configuration_created_meanwhile_is_loaded_instead_of_the_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: AtomicStore<ConfigDocument> =
+            AtomicStore::new(dir.path(), Arc::new(StdReplacer));
+        assert_eq!(store.load().unwrap_err(), ConfigError::NotFound);
+        let theirs = "version = 1\nrevision = 5\n[input]\nmethod = \"vni\"\n";
+        fs::write(dir.path().join("raumakey.toml"), theirs).unwrap();
+        let initial = create_defaults(&store);
+        assert_eq!(initial.create_error, None);
+        assert!(!initial.first_run);
+        assert_eq!(initial.config.revision, 5);
+        assert_eq!(initial.config.input.method, InputMethod::Vni);
+        assert_eq!(
+            initial.config_read,
+            DocumentStatus::Loaded { issues: Vec::new() }
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("raumakey.toml")).unwrap(),
+            theirs
+        );
+    }
 }

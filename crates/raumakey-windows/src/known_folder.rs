@@ -17,7 +17,8 @@ use windows::core::{GUID, PCWSTR};
 use crate::error::{E_FAIL, ResultExt, WinError, WinResult, win32};
 use crate::strings::read_pwstr;
 
-/// `%LOCALAPPDATA%` (`FOLDERID_LocalAppData`), the default data root parent (D9).
+/// `%LOCALAPPDATA%` (`FOLDERID_LocalAppData`), the parent of the fallback data root
+/// `%LOCALAPPDATA%\Raumakey`, used when the folder of `raumakey.exe` is not (D40).
 pub fn local_app_data() -> WinResult<PathBuf> {
     known_folder(&FOLDERID_LocalAppData, "SHGetKnownFolderPath(LocalAppData)")
 }

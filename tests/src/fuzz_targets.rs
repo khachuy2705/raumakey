@@ -86,8 +86,8 @@ pub fn malformed_utf16(data: &[u8]) {
     utf16::run(data);
 }
 
-/// `config_documents`: text decoded as each `raumakey-config` document (`config.toml`,
-/// `macros.toml`, `app_rules.toml`, `migration.json`).
+/// `config_documents`: text decoded as each `raumakey-config` document (`raumakey.toml`,
+/// `raumakey-macros.toml`, `raumakey-app-rules.toml`, `raumakey-migration.json`).
 ///
 /// Input: up to 64 KiB of bytes, decoded as UTF-8 with replacement characters.
 ///
@@ -97,15 +97,15 @@ pub fn malformed_utf16(data: &[u8]) {
 /// issues, and encodes to the same text (JSON floats may move by a few ULPs, and a TOML NaN
 /// never equals itself, so those compare as text); a decoded configuration yields valid engine
 /// options and key maps that the engine accepts (matrix #45); a decoded macro document builds a
-/// table or fails with a typed error; a decoded `app_rules.toml` never resolves the clipboard
-/// while it is disabled or in a secure field, and secure fields never get macros, nor
-/// Vietnamese in `Bypass` mode.
+/// table or fails with a typed error; a decoded `raumakey-app-rules.toml` never resolves the
+/// clipboard while it is disabled or in a secure field, and secure fields never get macros,
+/// nor Vietnamese in `Bypass` mode.
 pub fn config_documents(data: &[u8]) {
     config::run(data);
 }
 
 /// `config_concurrency`: commit schedules of several `AtomicStore` handles on one
-/// `config.toml` (plan §5, design §8, matrix #46, and the matrix pass criteria's "concurrent
+/// `raumakey.toml` (plan §5, design §8, matrix #46, and the matrix pass criteria's "concurrent
 /// config update").
 ///
 /// Input: the number of handles (1 to 4), then up to 12 operations: a load; a commit; a race of

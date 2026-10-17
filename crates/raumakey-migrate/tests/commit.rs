@@ -523,8 +523,9 @@ fn a_failing_completion_record_rolls_back_the_documents() {
     assert_eq!(record.revision, 2);
 }
 
-/// Another editor changes `macros.toml` after the migration committed it: verification fails,
-/// and the rollback restores what it can but never overwrites the other editor's change.
+/// Another editor changes `raumakey-macros.toml` after the migration committed it:
+/// verification fails, and the rollback restores what it can but never overwrites the other
+/// editor's change.
 #[test]
 fn a_concurrent_edit_fails_verification_and_is_never_overwritten() {
     let dir = tempfile::tempdir().unwrap();
@@ -822,7 +823,7 @@ fn imported_macros_get_identifiers_above_every_existing_one() {
 fn macro_identifier_exhaustion_is_reported_before_writing() {
     let dir = tempfile::tempdir().unwrap();
     let stores = Stores::open(dir.path());
-    // The largest identifier `macros.toml` can hold (a TOML integer).
+    // The largest identifier `raumakey-macros.toml` can hold (a TOML integer).
     let macros = MacroDocument {
         entries: vec![macro_entry(0x7FFF_FFFF_FFFF_FFFF, "max", "x")],
         ..MacroDocument::default()
@@ -850,7 +851,7 @@ fn the_record_and_report_hold_no_macro_text() {
     assert!(!format!("{current:?}").contains("được"));
 }
 
-/// The largest record parsing can produce still fits `migration.json`'s size limit.
+/// The largest record parsing can produce still fits `raumakey-migration.json`'s size limit.
 #[test]
 fn a_maximal_record_still_commits() {
     let mut registry = FakeRegistry::new();
@@ -884,13 +885,13 @@ fn a_maximal_record_still_commits() {
     );
 }
 
-/// A merge whose `macros.toml` would exceed the store's size limit fails before anything is
-/// written, including the migration record.
+/// A merge whose `raumakey-macros.toml` would exceed the store's size limit fails before
+/// anything is written, including the migration record.
 #[test]
 fn an_oversized_document_aborts_before_anything_is_written() {
     // The longest valid replacement (D30: 8,191 UTF-16 units, 16,381 UTF-8 bytes). Before D30
     // this used 4,096 emoji, which no longer fit one insert with a delimiter. 1,023 lines keep
-    // the legacy text under its 16 MiB limit while `macros.toml` exceeds the store's.
+    // the legacy text under its 16 MiB limit while `raumakey-macros.toml` exceeds the store's.
     const ENTRIES: usize = 1_023;
     let replacement = format!("{}a", "\u{1F600}".repeat(4095));
     let mut text = String::new();

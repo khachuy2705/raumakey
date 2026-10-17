@@ -135,7 +135,7 @@
 //! not allow Vietnamese either: every key of such a field passes through untouched and ends
 //! the word of its document, without reaching the engine, so nothing there is transformed,
 //! expanded, edited, or tracked. In `Restricted` mode (`secure_field_mode = "restricted"` in
-//! `app_rules.toml`) the engine transforms the keys of a secure field as usual, with macros
+//! `raumakey-app-rules.toml`) the engine transforms the keys of a secure field as usual, with macros
 //! off; the engine itself never expands a macro, word or token, for a secure-field key
 //! either. A rule that turns Vietnamese off for the host stays in force in both modes, and
 //! the field then passes its keys through as in `Bypass`. The clipboard transport is never

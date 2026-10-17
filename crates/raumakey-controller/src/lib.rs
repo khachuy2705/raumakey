@@ -32,7 +32,8 @@
 //! Not done yet in the run mode: the panel and its tabs, the IPC server hub and its
 //! snapshots (so the TIP does not follow the controller's mode yet), the worker thread, the
 //! hook thread (D24 is an open question, design §20.8 item 2), the fallback transport, and the
-//! configuration lifecycle (the mode is neither read from nor saved to `config.toml`).
+//! use of the configuration lifecycle: [`settings`] exists, but the run mode does not open it
+//! yet, so the mode is neither read from nor saved to `raumakey.toml`.
 //!
 //! [`run_process`] is the body of `main`: it parses the command line, attaches to the console
 //! of the caller for a subcommand (a GUI-subsystem process has none of its own), runs the

@@ -12,8 +12,8 @@
 //! the icon ([`ICON_VIETNAMESE`], "V"; [`ICON_ENGLISH`], "E"). The TIP does not follow it yet:
 //! once the IPC hub exists, the controller will publish the mode (`ModeChanged` and the
 //! runtime snapshot) and the TIP will follow it; until then each TIP keeps the mode of its own
-//! snapshot (defaults v1). The mode is not saved in `config.toml` either: that waits for the
-//! configuration lifecycle.
+//! snapshot (defaults v1). The mode is not saved in `raumakey.toml` either: the run mode does
+//! not use the configuration lifecycle (`crate::settings`) yet.
 //!
 //! # Messages
 //!
@@ -138,8 +138,8 @@ impl InputMode {
     }
 }
 
-/// The mode the controller starts in: that of the engine defaults v1, until the
-/// configuration lifecycle loads `config.toml`.
+/// The mode the controller starts in: that of the engine defaults v1, until the run mode
+/// takes it from `raumakey.toml` (`crate::settings::Settings::vietnamese_mode`).
 pub fn initial_mode() -> InputMode {
     InputMode::from_vietnamese(EngineOptions::defaults_v1().enabled)
 }

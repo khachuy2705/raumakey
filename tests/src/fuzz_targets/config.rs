@@ -16,7 +16,7 @@ use raumakey_policy::CompatibilityPolicy;
 
 /// Largest input in bytes.
 const MAX_BYTES: usize = 64 * 1024;
-/// Hosts resolved against a decoded `app_rules.toml`.
+/// Hosts resolved against a decoded `raumakey-app-rules.toml`.
 const MAX_POLICY_HOSTS: usize = 6;
 /// Largest distance, in units in the last place, between two readings of one JSON float:
 /// `serde_json` without its `float_roundtrip` feature may read a printed float one ULP off.

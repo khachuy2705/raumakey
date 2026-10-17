@@ -1,4 +1,4 @@
-//! Stable charset and option names (used by `config.toml` and the `convert` subcommand).
+//! Stable charset and option names (used by `raumakey.toml` and the `convert` subcommand).
 
 use raumakey_converter::{CaseTransform, Charset};
 

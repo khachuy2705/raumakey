@@ -37,8 +37,9 @@
 //! finish in time leaves the task unknown ([`EXIT_INCOMPLETE`](crate::cli::EXIT_INCOMPLETE)):
 //! `elevated-task` then keeps the shortcut.
 //!
-//! Raumakey never writes a `Run` registry value, so it has none to clean up. The chosen mode is
-//! not stored in `config.toml` yet: the configuration lifecycle comes with the controller.
+//! Raumakey never writes a `Run` registry value, so it has none to clean up. This command does
+//! not store the chosen mode in `raumakey.toml`; the tray records its choice there through
+//! [`crate::settings::Change::Startup`].
 //!
 //! # Manual checks (Windows, on a test machine)
 //!

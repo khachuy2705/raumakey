@@ -37,7 +37,7 @@ pub enum Status {
 pub struct ConfigRevision {
     /// Version of the engine defaults the options start from (`DEFAULTS_VERSION`, plan D4).
     pub defaults_version: u32,
-    /// Revision of the `config.toml` store the options were read from. `None` in-process: the
+    /// Revision of the `raumakey.toml` store the options were read from. `None` in-process: the
     /// options are defaults v1 plus the vector's overrides, and no store is read.
     pub store_revision: Option<u64>,
 }

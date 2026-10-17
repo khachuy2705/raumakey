@@ -729,8 +729,9 @@ fn concurrent_pollers_never_break_commits_or_see_partial_files() {
     assert!(temp_files(dir.path()).is_empty());
 }
 
-/// Matrix #45 end to end: loading a hand-edited `macros.toml` and committing it again keeps
-/// every macro, including entries that could not be decoded and keys this build does not know.
+/// Matrix #45 end to end: loading a hand-edited `raumakey-macros.toml` and committing it again
+/// keeps every macro, including entries that could not be decoded and keys this build does not
+/// know.
 #[test]
 fn a_routine_commit_never_erases_macros_this_build_cannot_read() {
     let dir = tempfile::tempdir().unwrap();

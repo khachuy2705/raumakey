@@ -11,7 +11,11 @@ use raumakey_config::{
     AtomicStore, ConfigDocument, ConfigError, FieldIssue, IssueReason, StartupMode, StdReplacer,
     StoreDocument, is_writable_dir,
 };
-use raumakey_controller::settings::{Change, DocumentStatus, Location, OpenReport, Settings};
+#[cfg(windows)]
+use raumakey_controller::settings::is_protected_dir;
+use raumakey_controller::settings::{
+    Change, DocumentStatus, Location, OpenReport, Recovery, Settings,
+};
 use raumakey_ipc::message::{MAX_HOTKEYS, MAX_KEYMAPS, MAX_NAMED_SETS, RuntimeSnapshot};
 use raumakey_macro::{EntryError, EntryIssue, MacroError, MacroTable};
 use raumakey_model::hotkey::{Hotkey, HotkeyConfig};
@@ -43,12 +47,12 @@ impl Folders {
 
     /// Opens with a writable executable folder.
     fn open(&self) -> (Settings, OpenReport) {
-        Settings::open(self.exe(), Some(self.local()), &|_| true)
+        Settings::open(self.exe(), Some(self.local()), &|_| true, &|_| false)
     }
 
     /// Opens with an executable folder that cannot be written.
     fn open_unwritable(&self) -> (Settings, OpenReport) {
-        Settings::open(self.exe(), Some(self.local()), &|_| false)
+        Settings::open(self.exe(), Some(self.local()), &|_| false, &|_| false)
     }
 
     fn config(&self) -> PathBuf {
@@ -150,8 +154,12 @@ fn the_first_run_writes_the_defaults_into_the_executable_folder() {
 #[test]
 fn the_real_write_probe_leaves_only_the_configuration_behind() {
     let folders = Folders::new();
-    let (_settings, report) =
-        Settings::open(folders.exe(), Some(folders.local()), &is_writable_dir);
+    let (_settings, report) = Settings::open(
+        folders.exe(),
+        Some(folders.local()),
+        &is_writable_dir,
+        &|_| false,
+    );
     assert_eq!(report.location, Location::ExeDir);
     assert!(report.first_run);
     assert_eq!(
@@ -255,11 +263,235 @@ fn an_unwritable_executable_folder_falls_back_to_local_app_data() {
     assert_eq!(report.status.config, loaded_clean());
 }
 
+/// The executable's folder is unknown (`current_exe` failed) or not absolute: the settings
+/// live under the local application data folder, and nothing is asked about the folder.
+#[test]
+fn an_unknown_executable_folder_uses_local_app_data() {
+    let local = tempfile::tempdir().unwrap();
+    let config = local.path().join("Raumakey").join("raumakey.toml");
+    for exe_dir in ["", "relative"] {
+        let (mut settings, report) = Settings::open(
+            Path::new(exe_dir),
+            Some(local.path()),
+            &|_| panic!("probed"),
+            &|_| panic!("asked whether protected"),
+        );
+        assert_eq!(report.location, Location::LocalAppData, "{exe_dir:?}");
+        assert_eq!(report.config_path.as_deref(), Some(config.as_path()));
+        assert_eq!(report.create_error, None);
+        settings.apply(Change::SpellCheck(false)).unwrap();
+        assert!(!stored(&config).input.spell_check);
+        settings.apply(Change::SpellCheck(true)).unwrap();
+    }
+}
+
+/// A `raumakey.toml` beside the executable is used even when the folder cannot be written.
+#[test]
+fn an_existing_configuration_beside_the_executable_is_used() {
+    let folders = Folders::new();
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 3\n[input]\nmethod = \"vni\"\n",
+    )
+    .unwrap();
+    let (settings, report) = Settings::open(
+        folders.exe(),
+        Some(folders.local()),
+        &|_| panic!("probed"),
+        &|_| panic!("asked whether protected"),
+    );
+    assert_eq!(report.location, Location::ExeDir);
+    assert!(!report.first_run);
+    assert_eq!(settings.document().input.method, InputMethod::Vni);
+    assert!(listing(folders.local()).is_empty());
+}
+
+/// A protected folder is never probed and holds nothing afterwards.
+#[test]
+fn a_protected_executable_folder_uses_local_app_data() {
+    let folders = Folders::new();
+    let (_, report) = Settings::open(
+        folders.exe(),
+        Some(folders.local()),
+        &|_| panic!("probed"),
+        &|_| true,
+    );
+    assert_eq!(report.location, Location::LocalAppData);
+    assert!(listing(folders.exe()).is_empty());
+    assert!(
+        folders
+            .local()
+            .join("Raumakey")
+            .join("raumakey.toml")
+            .is_file()
+    );
+}
+
+/// The protection check of `open_for_current_exe`: Program Files, Program Files (x86), the
+/// Windows folder, and the temp folder (Explorer runs an executable from inside a ZIP out of
+/// it), each also directly, and a temp folder also in its `\\?\` form.
+#[cfg(windows)]
+#[test]
+fn program_files_windows_and_temp_are_protected() {
+    use raumakey_windows::known_folder::{program_files, program_files_x86, windows_dir};
+    let folders = [
+        program_files().unwrap(),
+        program_files_x86().unwrap(),
+        windows_dir().unwrap(),
+        std::env::temp_dir(),
+    ];
+    for folder in folders {
+        assert!(is_protected_dir(&folder), "{folder:?}");
+        assert!(is_protected_dir(&folder.join("Raumakey")), "{folder:?}");
+    }
+    let extracted = tempfile::tempdir().unwrap();
+    assert!(is_protected_dir(extracted.path()));
+    let verbatim = fs::canonicalize(extracted.path()).unwrap();
+    assert!(
+        verbatim.to_string_lossy().starts_with(r"\\?\"),
+        "{verbatim:?}"
+    );
+    assert!(is_protected_dir(&verbatim));
+}
+
+#[cfg(windows)]
+#[test]
+fn other_folders_are_not_protected() {
+    let local = raumakey_windows::known_folder::local_app_data().unwrap();
+    assert!(!is_protected_dir(&local.join("Raumakey portable")));
+    assert!(!is_protected_dir(Path::new("C:\\Raumakey")));
+    assert!(!is_protected_dir(Path::new("relative")));
+    assert!(!is_protected_dir(Path::new("")));
+}
+
+/// The integration step owns `Settings` on a worker thread.
+#[test]
+fn settings_move_to_a_worker_thread() {
+    fn send_and_sync<T: Send + Sync>() {}
+    send_and_sync::<Settings>();
+    send_and_sync::<OpenReport>();
+    let folders = Folders::new();
+    let (mut settings, _) = folders.open();
+    let worker = std::thread::spawn(move || {
+        settings.apply(Change::ModernTone(true)).unwrap();
+        settings.poll();
+        settings
+    });
+    let settings = worker.join().unwrap();
+    assert!(settings.document().input.modern_tone);
+    assert!(stored(&folders.config()).input.modern_tone);
+}
+
+/// A commit writes the defaults of the fields that took them, so they are not reported any
+/// more; entries set aside verbatim still are, as a new load would report them.
+#[test]
+fn a_commit_refreshes_the_reported_issues() {
+    let folders = Folders::new();
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 1\n[input]\nmethod = \"klingon\"\n\
+         [[keymaps]]\nname = \"No id\"\nbindings = []\n",
+    )
+    .unwrap();
+    let (mut settings, report) = folders.open();
+    let DocumentStatus::Loaded { issues } = &report.status.config else {
+        panic!("{:?}", report.status.config);
+    };
+    assert!(issues.contains(&issue("input.method", IssueReason::InvalidValue)));
+    assert!(issues.len() > 1, "{issues:?}");
+    settings.apply(Change::SpellCheck(false)).unwrap();
+    let (_, reopened) = folders.open();
+    assert_eq!(settings.status().config, reopened.status.config);
+    let DocumentStatus::Loaded { issues } = &settings.status().config else {
+        panic!("{:?}", settings.status().config);
+    };
+    assert!(!issues.is_empty());
+    assert!(!issues.contains(&issue("input.method", IssueReason::InvalidValue)));
+}
+
+/// Opens `path` for reading without sharing it, as another program that locks the file does.
+#[cfg(windows)]
+fn lock(path: &Path) -> fs::File {
+    use std::os::windows::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(path)
+        .unwrap()
+}
+
+#[cfg(windows)]
+fn is_transient(status: &DocumentStatus) -> bool {
+    matches!(
+        status,
+        DocumentStatus::Unreadable(ConfigError::IoFailure | ConfigError::PermissionDenied)
+    )
+}
+
+/// A file that another program holds open without sharing during one poll is read again by
+/// the next polls, although it did not change.
+#[cfg(windows)]
+#[test]
+fn a_file_locked_during_a_poll_is_read_again_afterwards() {
+    let folders = Folders::new();
+    let (mut settings, _) = folders.open();
+    settings
+        .apply(Change::InputMethod(InputMethod::Vni))
+        .unwrap();
+    let handle = lock(&folders.config());
+    let reloaded = settings.poll().unwrap();
+    assert!(reloaded.runtime.is_none());
+    assert!(
+        is_transient(&settings.status().config),
+        "{:?}",
+        settings.status()
+    );
+    // The last good settings stay, and an unchanged failure is not reported again.
+    assert_eq!(
+        settings.runtime_snapshot().options.input_method,
+        InputMethod::Vni
+    );
+    assert!(settings.poll().is_none());
+    drop(handle);
+    let runtime = settings.poll().unwrap().runtime.unwrap();
+    assert_eq!(runtime.options.input_method, InputMethod::Vni);
+    assert_eq!(settings.status().config, loaded_clean());
+    assert!(settings.poll().is_none());
+}
+
+/// Recovery loads the file once more first: a file that reads again is taken as it is, not
+/// moved aside.
+#[cfg(windows)]
+#[test]
+fn recover_adopts_a_file_that_reads_again() {
+    let folders = Folders::new();
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 4\n[input]\nmethod = \"viqr\"\n",
+    )
+    .unwrap();
+    let handle = lock(&folders.config());
+    let (mut settings, report) = folders.open();
+    assert!(is_transient(&report.status.config), "{:?}", report.status);
+    assert_eq!(settings.document().input.method, InputMethod::Telex);
+    drop(handle);
+    assert_eq!(settings.recover(), Ok(Recovery::Adopted));
+    assert_eq!(settings.document().input.method, InputMethod::Viqr);
+    assert_eq!(settings.document().revision, 4);
+    assert_eq!(settings.status().config, loaded_clean());
+    let names = listing(folders.exe());
+    assert!(names.contains(&"raumakey.toml".to_owned()), "{names:?}");
+    assert!(
+        !names.iter().any(|name| name.contains(".bak-")),
+        "{names:?}"
+    );
+}
+
 /// Neither folder can be used: the controller still runs, on the defaults, and every change
 /// takes effect without being saved.
 #[test]
 fn without_a_usable_folder_the_settings_live_in_memory() {
-    let (mut settings, report) = Settings::open(Path::new("relative"), None, &|_| true);
+    let (mut settings, report) = Settings::open(Path::new("relative"), None, &|_| true, &|_| false);
     assert_eq!(report.location, Location::Unavailable);
     assert_eq!(report.config_path, None);
     assert!(report.first_run);
@@ -332,7 +564,13 @@ fn a_corrupt_file_runs_on_defaults_and_is_kept_until_recovered() {
     // An unchanged damaged file is not reported again.
     assert!(settings.poll().is_none());
 
-    let backup = settings.recover().unwrap().unwrap();
+    let Ok(Recovery::Replaced {
+        backup: Some(backup),
+        saved: Ok(()),
+    }) = settings.recover()
+    else {
+        panic!("not replaced");
+    };
     assert_eq!(backup.parent(), Some(folders.exe()));
     let name = backup.file_name().unwrap().to_string_lossy().into_owned();
     assert!(name.starts_with("raumakey.toml.bak-"), "{name}");
@@ -345,7 +583,7 @@ fn a_corrupt_file_runs_on_defaults_and_is_kept_until_recovered() {
     settings.apply(Change::SpellCheck(false)).unwrap();
     assert!(!stored(&folders.config()).input.spell_check);
     // Nothing is left to recover.
-    assert_eq!(settings.recover(), Ok(None));
+    assert_eq!(settings.recover(), Ok(Recovery::NotNeeded));
 }
 
 #[test]

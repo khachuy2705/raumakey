@@ -1,5 +1,6 @@
-//! `config_concurrency`: commit schedules of several `AtomicStore` handles on one `config.toml`
-//! (plan §5, design §8, matrix #46, and the matrix pass criteria's "concurrent config update").
+//! `config_concurrency`: commit schedules of several `AtomicStore` handles on one
+//! `raumakey.toml` (plan §5, design §8, matrix #46, and the matrix pass criteria's "concurrent
+//! config update").
 //!
 //! Each handle stands for another process or thread that writes the file. The target models
 //! the file (its revision and bytes) and what every handle last loaded or committed, and checks

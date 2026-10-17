@@ -20,10 +20,11 @@
 //!    [`start_error_text`]) after the mutex was given back, and the process exits with
 //!    [`EXIT_FAILED`].
 //!
-//! Not in this step (plan §14.5 step 5): the configuration lifecycle (the mode is not read
-//! from or saved to `config.toml`), the IPC server hub and its snapshots (the TIP does not
-//! follow the controller's mode yet), the worker thread, the hook thread (D24 is an open
-//! question, design §20.8 item 2), the fallback transport, and the panel with its tabs.
+//! Not in this step (plan §14.5 step 5): opening the configuration
+//! ([`crate::settings::Settings`] exists, but the run mode does not use it yet, so the mode is
+//! not read from or saved to `raumakey.toml`), the IPC server hub and its snapshots (the TIP
+//! does not follow the controller's mode yet), the worker thread, the hook thread (D24 is an
+//! open question, design §20.8 item 2), the fallback transport, and the panel with its tabs.
 
 use raumakey_windows::error::{WinError, WinErrorKind, WinResult};
 

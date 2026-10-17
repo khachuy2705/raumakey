@@ -1,7 +1,8 @@
 //! Raumakey versioned configuration documents and atomic file storage.
 //!
-//! The data root ([`DataRoot`], decision D40) is the folder of `raumakey.exe` when that folder
-//! can be written, otherwise `%LOCALAPPDATA%\Raumakey`. It holds `raumakey.toml`,
+//! The data root ([`DataRoot`], decision D40) is the folder of `raumakey.exe` when it holds
+//! `raumakey.toml` already, or when it can be written and the caller does not protect it;
+//! otherwise `%LOCALAPPDATA%\Raumakey` (see [`data_root`]). It holds `raumakey.toml`,
 //! `raumakey-macros.toml`, `raumakey-app-rules.toml`, `raumakey-migration.json`, the
 //! `<file>.lock` file of each store, and `raumakey-logs/`: names that say they belong to
 //! Raumakey, because the executable's folder usually holds the user's other files too. Each
@@ -49,7 +50,7 @@ pub use config::{
     BINDINGS_KEY, CaseTransform, ConfigDocument, ConversionSection, HOTKEYS_KEY, InputSection,
     MacroSection, StartupMode, SystemSection,
 };
-pub use data_root::{DataRoot, is_writable_dir};
+pub use data_root::{DataRoot, WRITE_PROBE_FILE, is_writable_dir};
 pub use diagnostics::DiagnosticsLog;
 pub use document::{FieldIssue, IssueReason, Loaded, StoreDocument};
 pub use entries::EntryExtras;

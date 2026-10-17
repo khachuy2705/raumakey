@@ -5,7 +5,7 @@ use raumakey_model::hotkey::{Hotkey, HotkeyConfig};
 use raumakey_model::keymap::{KeyAction, KeyBinding, KeyMap, Tone};
 use raumakey_model::options::{EngineOptions, InputMethod, Normalization};
 
-/// The `config.toml` example of plan §5.1, verbatim.
+/// The example of plan §5.1 for `raumakey.toml` (`config.toml` in the plan), verbatim.
 const PLAN_EXAMPLE: &str = r#"version = 1
 revision = 1
 [input]

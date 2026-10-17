@@ -4,7 +4,8 @@ use raumakey_model::policy::{
     AppRule, CompatibilityConfig, NamedSet, ProbeRecord, RuleAction, SecureFieldMode, Transport,
 };
 
-/// The `app_rules.toml` example of plan §5.1, verbatim.
+/// The example of plan §5.1 for `raumakey-app-rules.toml` (`app_rules.toml` in the plan),
+/// verbatim.
 const PLAN_EXAMPLE: &str = r#"version = 1
 revision = 1
 clipboard_enabled = false
