@@ -794,3 +794,55 @@ agent nào tắt tiến trình đó.
   chỉ khoảng 20 px ở 96 DPI (comment cũ ghi sai là một phần sáu); các mức phóng to khác và màn hình
   có DPI khác nhau cần kiểm tra thủ công. Đã sửa comment, dùng hằng `IDNO`/`IDCANCEL`, và ẩn seam
   test khỏi tài liệu.
+
+## Nháy đúp và loại trừ ứng dụng (D46, D47)
+
+Ngày 2026-10-18, chủ dự án yêu cầu thêm: nháy đúp vào biểu tượng ở khay thì mở bảng cấu hình; và
+loại trừ ứng dụng, ví dụ ô nhập trong RDP luôn gõ tiếng Anh, với danh sách nằm trong tệp cấu hình
+(thiết kế §22.6–22.7, kế hoạch D46–D47, task S6 và S7). Hai task chạy song song trong hai worktree,
+mỗi task được review độc lập rồi sửa theo review.
+
+### S6: nháy đúp và biểu tượng khi loại trừ
+
+- Đỏ: `WM_LBUTTONDOWN` giải mã thành `Other(513)`; `tick_count`, `double_click_time` chưa có; 6
+  test nháy đúp; test unit của watcher (`[]` thay vì `[0x1234, 0]`); các test tray đang chạy (START
+  giờ đọc cửa sổ foreground) và các test D47; test glue "biểu tượng theo ứng dụng ở trước" (không
+  có lời gọi `Update`).
+- Review: cần sửa, đã tái hiện bằng probe.
+  1. Giữ lâu cú nhấn thứ hai thì `NIN_SELECT` cuối không bị bỏ qua, nên chế độ vẫn bị đổi sau một
+     lần nháy đúp.
+  2. Một `WM_LBUTTONDBLCLK` tới muộn (Explorer bận) không trả lại chế độ.
+  3. Hai cú nháy chậm có lần nhấn đầu giữ lâu bị coi là nháy đúp.
+  4. Biểu tượng xét lớp của cửa sổ cấp cao nhất, còn hook xét lớp của cửa sổ có focus, nên với một
+     quy tắc theo `window_class` hai bên không khớp nhau.
+
+  Ngoài ra còn các lỗi nhỏ: chính sách được dựng lại ở mỗi lần đổi foreground; thời gian nháy đúp
+  chỉ đọc lúc khởi động.
+- Sửa: lấy các lần nhấn mà shell báo làm mốc. Khi shell đã báo một lần nhấn hay một lần nháy đúp,
+  hai `NIN_SELECT` không còn được coi là nháy đúp. `NIN_SELECT` thứ hai bị bỏ qua tính từ lúc thả
+  cú nhấn thứ hai. Một `WM_LBUTTONDBLCLK` muộn vẫn trả lại chế độ, trong một biên rộng. Tray xét lớp
+  của cửa sổ có focus như hook (`describe_window`, `GetGUIThreadInfo`), giữ một chính sách cho mỗi
+  snapshot, và đọc lại thời gian nháy đúp ở mỗi nhịp. Đỏ: 7 test tray (3 probe của review, tray
+  bận, nhịp quên cú nháy cũ, lớp của focus, cú nháy ngay sau nháy đúp); lỗi biên dịch của
+  `describe_window`, `ButtonUp`, `double_click_ms`.
+
+### S7: loại trừ ứng dụng
+
+- Cơ chế có sẵn được kiểm chứng: `CompatibilityPolicy::resolve` cho `vietnamese_allowed = false`,
+  lõi phiên đặt `enabled = mode && vietnamese_allowed` và `macros_enabled = macros &&
+  macro_allowed`, nên một loại trừ phải tắt cả gõ tắt; hook đọc tên exe của foreground và phím tắt
+  được phân loại trước chính sách.
+- Đỏ: 11 lỗi biên dịch rồi 7 test `config_document`; 8 test `settings`; 3 test gõ (`mstsc.exe`
+  biến đổi phím, gõ tắt mở rộng trong `msrdc.exe`, sau `apps = []` không gõ lại được); 1 test
+  `notice`. Phần chuẩn hoá tên: 4 test `config_document`, 1 proptest (giữ nguyên `mstsc`), 1 test
+  `settings` (đường dẫn bị báo sai thay vì thành quy tắc); bỏ dấu `"`: 1 test (`mstsc.exe"`).
+- Review: chấp thuận, kèm vài điểm nhỏ. Một tên chứa `İ` (viết thường thành hai ký tự) qua được
+  giới hạn 255 ký tự, không đọc lại được chính nó, và làm runtime bỏ mọi loại trừ, kể cả
+  `mstsc.exe`. Ngoài ra: tên có dấu chấm hay dấu cách ở cuối không bao giờ khớp; báo cáo khi vượt
+  4.096 quy tắc ghi sai tệp.
+- Sửa: `ExeName::new` kiểm tra giới hạn trên tên đã viết thường, nên mọi `ExeName` đọc lại được
+  chính nó (ba test IPC dựng tên `İ` × 200 được viết lại); runtime chỉ bỏ loại trừ nào lõi phiên từ
+  chối; bỏ dấu chấm và dấu cách ở cuối tên như Windows; một dòng thông báo chung cho các quy tắc vượt
+  giới hạn. Đỏ: test `settings` (cả danh sách bị bỏ), tệp quy tắc ứng dụng `Unusable`, test
+  `config` (không có issue), proptest của model và của config, test dấu chấm cuối, test báo cáo khi
+  tệp quy tắc không đọc được, 2 test `notice`.
