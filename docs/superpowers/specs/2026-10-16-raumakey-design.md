@@ -752,10 +752,15 @@ quyết định D43–D45, kế hoạch §17 ghi task và trạng thái.
 +-----------------------------------+  | [ ] Khởi động cùng Windows          |
                                        | [x] Mở bảng này khi Raumakey chạy   |
                                        +-------------------------------------+
-Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml (cạnh raumakey.exe)
 Mọi thay đổi có hiệu lực và được lưu ngay.
+Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml
+(cạnh raumakey.exe)
 [Mở file cấu hình]  [Mặc định]                                          [Đóng]
 ```
+
+  Đường dẫn nằm trong một nhãn riêng, rút gọn ở giữa khi quá dài, nên tên `raumakey.toml` luôn
+  hiện. Vị trí nằm trên dòng dưới; với `%LOCALAPPDATA%\Raumakey`, dòng này nói thêm lý do: thư mục
+  của `raumakey.exe` không ghi được hoặc là thư mục được bảo vệ.
 
 - **Mục và khoá tương ứng:**
 

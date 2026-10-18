@@ -185,7 +185,7 @@ Thư mục này không được đưa lên Git.
    Raumakey đọc lại tệp đó. Nếu thư mục không ghi được, hoặc nằm trong `C:\Program Files`, thư mục
    Windows hay thư mục tạm (ví dụ khi bạn chạy exe ngay trong tệp ZIP), cấu hình được lưu ở
    `%LOCALAPPDATA%\Raumakey\raumakey.toml`. Khi chạy, Raumakey mở **bảng cấu hình** (mục 5.3);
-   dòng cuối của bảng cho biết tệp cấu hình nằm ở đâu. Mục **Giới thiệu** trong menu cũng cho
+   phần cuối của bảng cho biết tệp cấu hình nằm ở đâu. Mục **Giới thiệu** trong menu cũng cho
    biết đường dẫn đó.
 5. Chỉ chạy được một Raumakey mỗi lúc. Bấm đúp `raumakey.exe` khi Raumakey đang chạy thì bảng cấu
    hình của bản đang chạy hiện ra, còn lần chạy mới tự thoát, giống UniKey.
@@ -375,7 +375,7 @@ như mô tả và báo lại.
 | 12 | Gõ `xin `, khoá máy, đổi Caps Lock ở màn hình khoá, mở lại, gõ `tieengs` | Cả từ cùng kiểu chữ ("TIẾNG" hoặc "tiếng"), không lẫn hoa thường |
 | 13 | Gõ `tie`, nhấn Alt một mình, rồi gõ `e` | Không có Backspace nào lọt vào menu của Notepad |
 | 14 | Gõ nhanh, nhấn chồng phím, giữ phím để lặp | Không mất chữ, không lặp chữ, không đảo thứ tự |
-| 15 | Chạy Raumakey lần đầu trong một thư mục trống | Bảng cấu hình hiện ra, có icon Raumakey trên thanh tiêu đề và thanh tác vụ; dòng cuối ghi đường dẫn của `raumakey.toml`; không có hộp thoại chào riêng |
+| 15 | Chạy Raumakey lần đầu trong một thư mục trống | Bảng cấu hình hiện ra, có icon Raumakey trên thanh tiêu đề và thanh tác vụ; phần cuối của bảng ghi đường dẫn của `raumakey.toml` và vì sao nó nằm ở đó; không có hộp thoại chào riêng |
 | 16 | Trong bảng, đổi kiểu gõ sang VNI, bỏ chọn "Kiểm tra chính tả" | Gõ `tie61ng` trong Notepad ra "tiếng" ngay; mở `raumakey.toml` thấy `method = "vni"` và `spell_check = false`; menu khay cũng đổi theo |
 | 17 | Để bảng mở, nhấn Ctrl+Shift, rồi chọn VIQR trong menu khay | Ô "Gõ tiếng Việt" và ô kiểu gõ trong bảng đổi theo ngay |
 | 18 | Bấm đúp `raumakey.exe` lần nữa khi Raumakey đang chạy (cả khi bảng đã đóng và khi bảng đang bị cửa sổ khác che) | Bảng cấu hình của bản đang chạy hiện lên trước; không có biểu tượng thứ hai |
@@ -442,7 +442,7 @@ phần còn lại của dự án.
 | Gõ ra chữ bị lặp hoặc lộn xộn | Một bộ gõ khác (UniKey, EVKey, bàn phím tiếng Việt của Windows) đang chạy cùng; tắt nó đi. |
 | Ctrl+Shift chuyển bàn phím Windows thay vì đổi V/E | Windows đang dùng Ctrl+Shift để đổi layout. Đổi ở **Settings > Time & language > Typing > Advanced keyboard settings > Input language hot keys**. |
 | Không gõ được tiếng Việt trong một ứng dụng chạy quyền quản trị | Chạy `raumakey.exe` bằng **Run as administrator**. |
-| Cấu hình không được lưu cạnh exe | Thư mục không ghi được, hoặc nằm trong Program Files, thư mục Windows hay thư mục tạm; xem đường dẫn ở dòng cuối của bảng cấu hình hoặc trong mục **Giới thiệu** (thường là `%LOCALAPPDATA%\Raumakey`). Muốn giữ cấu hình cạnh exe thì chép exe sang một thư mục bình thường, ví dụ `D:\Tools\Raumakey`. |
+| Cấu hình không được lưu cạnh exe | Thư mục không ghi được, hoặc nằm trong Program Files, thư mục Windows hay thư mục tạm; xem đường dẫn ở phần cuối của bảng cấu hình hoặc trong mục **Giới thiệu** (thường là `%LOCALAPPDATA%\Raumakey`). Muốn giữ cấu hình cạnh exe thì chép exe sang một thư mục bình thường, ví dụ `D:\Tools\Raumakey`. |
 | Sửa `raumakey.toml` xong không thấy tác dụng | Kiểm tra lỗi cú pháp TOML; giá trị không hợp lệ được thay bằng mặc định. |
 | Build lỗi `LNK1181: cannot open input file 'kernel32.lib'` | Thiếu Windows SDK (cách A) hoặc sai đường dẫn `-Lnative`/`LIB` (cách B). Kiểm tra lại tên thư mục phiên bản MSVC và SDK. |
 | `cargo xtask package` báo thiếu artifact | Chạy `cargo xtask cross --release` trước. Cách A cần thêm thành phần MSVC ARM64. |

@@ -660,3 +660,108 @@ worktree riêng, được một reviewer độc lập review, sửa theo review,
   cửa sổ đang hiện, tức là hộp thoại, nên lần smoke test trước đó chỉ đóng hộp thoại; đây là cách
   `taskkill` hoạt động, không phải lỗi của Raumakey.
 - Bằng chứng của bản sửa đổi `4278a32` nằm ở kế hoạch §16.2.
+
+## Bảng cấu hình và danh sách gõ tắt (D43–D45)
+
+Ngày 2026-10-18, chủ dự án yêu cầu một hộp thoại để chọn cấu hình thay vì chỉ sửa tệp, kèm ảnh
+chụp giao diện EVKey để minh hoạ. Ảnh chỉ được dùng để hiểu nhu cầu; bố cục, câu chữ và icon do
+Raumakey tự thiết kế (thiết kế §22, kế hoạch §15 D43–D45 và §17). Mỗi task được làm trong một Git
+worktree riêng, được một reviewer độc lập review, sửa theo review, rồi merge. Trong suốt đợt này,
+bản `raumakey.exe` của chủ dự án đang chạy trên máy phát triển và giữ mutex single-instance, nên
+test `tests/binary.rs::a_second_start_exits_at_once_with_0_and_says_nothing` không chạy được; không
+agent nào tắt tiến trình đó.
+
+### S1: khối dựng hộp thoại (`raumakey-windows`)
+
+- Đỏ: E0432 cho `dialog_template`, `dialog_box`, `names::message_name`,
+  `window::is_broadcastable`, `register_message`, `register_user_message`,
+  `post_to_top_level_windows`, `allow_any_foreground`, `icon::icon_size_for_window`.
+- Lần chạy thật cho thấy Windows **cho phép** mọi tiến trình post `WM_NOTIFY`. Một `WM_NOTIFY` giả
+  mạo với con trỏ hỏng làm sập tiến trình test (`0xC000041D`). Thủ tục hộp thoại giờ chép `NMHDR`
+  bằng `ReadProcessMemory` và chỉ chuyển tiếp khi nó chỉ đúng một control con của hộp thoại.
+- Review: cần sửa. Không có lỗi an toàn bộ nhớ.
+  1. Một `WM_DESTROY` giả mạo biến hộp thoại thành "zombie": vẫn hiện nhưng không đóng được, và
+     `dismiss()` không còn tác dụng.
+  2. Template nhận chữ bắt đầu bằng U+FFFF, khiến Windows đọc nó như một ordinal và đọc lố bộ đệm.
+  3. Nạp 20.000 dòng vào list view mất khoảng 3 giây (bản release).
+
+  Ngoài ra còn các lỗi nhỏ: thông điệp dành riêng (đóng, đưa lên trước) nhận từ bất kỳ tiến trình
+  nào; test đòi tuyệt đối không có notification nào; một test thật sự đổi quyền foreground của
+  desktop; chỉ số lớn bị cắt khi chọn mục.
+- Sửa: chỉ coi `WM_DESTROY` là thật khi hộp thoại đã ẩn, và giữ handle tới khi
+  `DialogBoxIndirectParamW` trả về; cookie ngẫu nhiên cho từng hộp thoại trong `wParam` của thông
+  điệp dành riêng; `build()` từ chối chữ bắt đầu bằng U+FFFF và cỡ font 0x7FFF; `i32::try_from`
+  cho chỉ số; giữ kết quả khi `Drop` của handler panic. Đỏ: 3 test `WM_DESTROY` giả mạo (handle
+  vẫn được công bố, `dismiss` hết giờ, hộp thoại cha không đóng), 2 test template (`build` trả về
+  `Ok`), test cookie (hộp thoại bị đóng bởi thông điệp giả), test chỉ số lớn, test kết quả khi
+  `Drop` panic. Vấn đề tốc độ của list view được chuyển cho S3b.
+- Còn lại: một `WM_NCDESTROY` giả mạo vẫn đi vào xử lý mặc định của dialog manager, cùng loại với
+  giới hạn mà `raumakey_windows::window` đã ghi cho cửa sổ thường.
+
+### S2: bảng cấu hình (`raumakey-controller`)
+
+- Đỏ: 12 × E0599 (các `Change` mới); 2 test `with_change` fail với nhánh rỗng; 3 × E0609
+  (`SettingsState::show_panel_on_start`); 25 × E0061 (`start_notice` vẫn nhận một tham số); E0432
+  (`panel`); 70 lỗi biên dịch của test `tray`; E0407 và E0560/E0609 của test `run`; E0599
+  `Dialog::move_to`; 4 × E0407 của test `desktop`; phần nối danh sách gõ tắt: 11 lỗi của `tray`,
+  5 lỗi của `desktop`.
+- Quyết định khác với brief: lần mở bảng được đánh số (`OpenPanel { serial }`,
+  `PanelClosed(serial)`), để một lần đóng tới muộn không làm tray ngừng cập nhật bảng mới; mục "Kiểu
+  gõ riêng" hiện khi phương thức đang dùng là kiểu riêng hoặc snapshot mang key map của
+  `user_keymap`; `Change::Startup` gửi từ bảng không làm gì, chỉ `PanelRequest::Startup` mới đổi
+  shortcut.
+- Review: cần sửa.
+  1. Dòng cuối của bảng cắt mất tên tệp khi cấu hình nằm ở `%LOCALAPPDATA%`: `SS_PATHELLIPSIS` giữ
+     phần sau dấu `\` cuối cùng, và đó là `\Raumakey)` trong ghi chú vị trí.
+  2. Hai mục của danh sách kiểm tra thủ công mô tả sai kết quả của `taskkill` không có `/F`.
+
+  Ngoài ra còn các lỗi nhỏ: phím mũi tên đi từ một ô chọn vào danh sách kiểu gõ và đổi kiểu gõ;
+  mở lại bảng đúng lúc nó đang đóng thì không có gì hiện ra; câu hỏi "Mặc định" chưa nhắc mục "Mở
+  bảng này khi Raumakey chạy".
+- Sửa: nhãn đường dẫn chỉ chứa đường dẫn, còn vị trí (kèm lý do dùng `%LOCALAPPDATA%`) có nhãn
+  riêng; mỗi nhóm `WS_GROUP` chỉ gồm một loại control; một bảng hay hộp thoại danh sách đang đóng
+  được coi là đã đóng khi mở lại; câu hỏi "Mặc định" đủ các mục được giữ; khi bảng không mở được
+  lúc khởi động, nội dung chào hiện trong một hộp thông báo; danh sách kiểm tra thủ công nói đúng
+  việc `taskkill` làm. Đỏ: 3 × E0432 và 8 × E0599; sau khi thêm khung, 8 test `panel`, 1 test
+  `notice` và 4 test `desktop` fail (phím mũi tên từ ô 100 ra `[-1, 101]`; lần đóng tới muộn báo
+  `PanelClosed(2)` thay vì `PanelClosed(1)`; hộp thoại danh sách mới không hiện trong 10 giây; nhãn
+  vị trí thiếu); chỉ sửa nhóm thì dòng cuối vẫn hiện `…\raumakey.toml (trong...\Raumakey)`.
+- Sau khi merge, test `the_real_macro_list_editor_opens_once_reports_saves_and_closes` fail một lần.
+  Chạy song song sáu bản của bộ test `desktop` thì 17/24 lượt fail. Nguyên nhân: handle của một
+  hộp thoại tách luồng vẫn được công bố tới khi `DialogBoxIndirectParamW` trả về, lâu hơn khi máy
+  bận, và `PostMessageW` tới cửa sổ đã huỷ đó vẫn có thể thành công (đo được: `IsWindow` sai mà
+  `PostMessageW` đúng), nên lần mở lại tưởng hộp thoại cũ còn sống. Sửa: `post`, `dismiss` và
+  `bring_to_front` kiểm tra `IsWindow` trước. Sau khi sửa: 0/24 lượt fail. Không dựng được trạng
+  thái này một cách xác định trong một test đơn lẻ, nên lần chạy song song là bằng chứng đỏ.
+
+### S3a: mô hình danh sách gõ tắt (`macro_list`)
+
+- Đỏ: E0432 (`macro_list`); 5 test giữ id, khoá lạ và hết id fail; 6 × E0599 (`overwrite`);
+  E0432 cho các hàm câu chữ; một unit test cho thấy lần lưu thử lại sau một lần ghi đè thất bại
+  đã ghi đè một lần sửa tay.
+- Review: cần sửa, 1 lỗi đáng kể. Lần lưu đầu âm thầm làm mất những gì bộ giải mã đã bỏ qua hoặc
+  đặt lại: `[macro]` viết thành một bảng đơn (danh sách mở ra rỗng rồi lần lưu xoá mục đó), một phần
+  tử không phải bảng, hay `enabled = "no"`. Ngoài ra còn các lỗi nhỏ: sửa một mục mà hook không dùng
+  (trùng id, hoặc trùng từ gõ tắt với mục có id nhỏ hơn); lỗi vượt giới hạn 16 MiB báo như lỗi
+  đọc/ghi; vài câu chữ.
+- Sửa: `lossy_issues()` cùng `accept_loss()`, và lần lưu bị từ chối (`SaveError::Lossy`) cho tới khi
+  người dùng đồng ý; `Row::status()` (đang dùng, đang tắt, không dùng); `put` sửa đúng mục mà hook
+  dùng; mục sửa có id trùng được cấp id mới; `SaveError::TooLarge` trước khi commit. Đỏ: E0599 cho
+  `lossy_issues`, `accept_loss`, `SaveError::Lossy`, `SaveError::TooLarge`, `Row::status`; 2 test
+  hành vi (trạng thái, mục được sửa); test giới hạn kích thước nhận `IoFailure`; 2 test câu chữ.
+
+### S3b: hộp thoại danh sách gõ tắt (`macro_dialog`)
+
+- List view ảo (`LVS_OWNERDATA`) được trả lời ngay trong thủ tục hộp thoại, nên 20.000 dòng mở và
+  cập nhật gần như tức thì; tệp được đọc và ghi trên luồng của hộp thoại.
+- Review: cần sửa, 1 lỗi đã tái hiện dưới Common Controls 6. Gõ một chữ cái vào danh sách chọn
+  dòng 0 và ghi đè nội dung đang gõ dở trong hai ô nhập, vì `LVN_ODFINDITEMW` không được trả lời.
+  Ngoài ra còn các lỗi nhỏ: `WriteProcessMemory` ghi được cả vào trang `PAGE_EXECUTE_READ`; vòng
+  văn bản cho mượn dùng chung giữa các list; test đọc con trỏ đã cho mượn; đọc ô dài bị panic dưới
+  Common Controls 6.
+- Sửa: trả lời `LVN_ODFINDITEMW` bằng tìm theo tiền tố, không phân biệt hoa thường, có quay vòng,
+  đọc chuỗi tìm qua bản chép có giới hạn; chỉ ghi vào vùng nhớ đã commit có quyền đọc-ghi
+  (`VirtualQuery`); mỗi list một vòng văn bản; test chạy dưới Common Controls 6 bằng activation
+  context. Đỏ: test gõ chữ (chọn 0, cần 2), yêu cầu tìm giả mạo (trả 0, cần 2), test trong
+  controller (chọn 0, cần 2), test trang không ghi được (`pszText` bị đổi), test vòng văn bản
+  riêng, test ô dài (panic khi cắt slice).
