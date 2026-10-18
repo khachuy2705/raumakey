@@ -24,9 +24,12 @@
 //! window that owns the notification icon, message-only windows, the message loop, posting
 //! from other threads, letting the shell's messages through UIPI when elevated, registered
 //! messages of the user and their broadcast, and passing on the right to take the
-//! foreground), [`shell`] (the notification icon), [`menu`], [`icon`], [`dialog`],
-//! [`dialog_template`] and [`dialog_box`] (the settings panel and the macro list: modal dialog
-//! boxes from in-memory templates, run on a thread of their own and driven by a handler),
+//! foreground), [`shell`] (the notification icon and its callbacks, the double-click among
+//! them), [`input`] (the clock and the user's double-click time), [`foreground`] (the
+//! application in front and the watcher that reports each change of it), [`menu`], [`icon`],
+//! [`dialog`], [`dialog_template`] and [`dialog_box`] (the settings panel and the macro list:
+//! modal dialog boxes from in-memory templates, run on a thread of their own and driven by a
+//! handler),
 //! [`word_wrap`] (Vietnamese texts of labels, check boxes, and message boxes wrapped at spaces
 //! with the real fonts, since Windows' own word wrap cuts Vietnamese words), `single_instance`,
 //! and `module` (the module that links this crate and its path). The TIP's

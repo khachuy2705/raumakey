@@ -5,7 +5,8 @@
 //! kernel objects, registry keys under `HKCU\Software\Raumakey\Tests-<pid>-<n>`, process-local
 //! windows that are never shown (created on a fresh thread and destroyed before it ends; nothing
 //! is broadcast), `WH_CBT` hooks of such a thread or of a test dialog's thread only (they see
-//! only that thread's windows),
+//! only that thread's windows), out-of-context WinEvent hooks of the foreground window, which
+//! only observe (installed and removed on a test thread without waiting for an event),
 //! dialog boxes without a taskbar button (`WS_EX_NOACTIVATE`) that are moved far off-screen
 //! before Windows shows them (some under an activation context of Common Controls 6 made from a
 //! temporary manifest, active on the test's own threads only), whose controls may paint

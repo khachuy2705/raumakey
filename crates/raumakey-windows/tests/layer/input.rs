@@ -287,6 +287,23 @@ fn the_tick_of_the_last_input_is_read() {
     assert!(second.wrapping_sub(first) < u32::MAX / 2);
 }
 
+/// The clock and the setting the tray tells a double-click on its icon by (D46).
+#[cfg(windows)]
+#[test]
+fn the_tick_count_and_the_double_click_time_are_read() {
+    use raumakey_windows::input::{double_click_time, tick_count};
+
+    // A second read is never older than the first, and the clock moves.
+    let first = tick_count();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let second = tick_count();
+    let elapsed = second.wrapping_sub(first);
+    assert!((30..60_000).contains(&elapsed), "{elapsed}");
+    // Windows keeps it between 1 ms and 5 s (500 ms unless the user changed it).
+    let time = double_click_time();
+    assert!((1..=5_000).contains(&time), "{time}");
+}
+
 #[cfg(windows)]
 mod extra_info {
     use raumakey_windows::input::{current_message_is_raumakey_injected, message_extra_info};

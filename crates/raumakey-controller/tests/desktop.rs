@@ -50,18 +50,22 @@ use raumakey_controller::panel::{
 };
 use raumakey_controller::settings::{Change, DocumentStatus, Location, Status};
 use raumakey_controller::tray::{
-    Event, IconState, InputMode, LOOP_EXIT_CODE, POLL_INTERVAL_MS, RegisteredMessages, START,
-    TRAY_CALLBACK, TRAY_ICON_ID, Tray, TrayCommand, TrayStart, WAKE,
+    Event, FOREGROUND, ForegroundApp, IconState, InputMode, LOOP_EXIT_CODE, POLL_INTERVAL_MS,
+    RegisteredMessages, START, TRAY_CALLBACK, TRAY_ICON_ID, Tray, TrayCommand, TrayStart, WAKE,
 };
 use raumakey_controller::worker::{Answer, Outcome, PollReport, WorkerCommand};
 use raumakey_ipc::message::RuntimeSnapshot;
+use raumakey_model::host::ExeName;
 use raumakey_model::options::InputMethod;
+use raumakey_model::policy::{AppRule, RuleAction};
 use raumakey_windows::dialog_box::notifications::{BN_CLICKED, CBN_SELCHANGE};
 use raumakey_windows::dialog_template::{IDCANCEL, styles};
 use raumakey_windows::icon::{IconKind, icon_size};
 use raumakey_windows::menu::MenuItem;
 use raumakey_windows::module::Module;
-use raumakey_windows::shell::{NIN_SELECT, WM_CONTEXTMENU, taskbar_created_message};
+use raumakey_windows::shell::{
+    NIN_SELECT, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, taskbar_created_message,
+};
 use raumakey_windows::window::{
     Window, WindowClass, post_quit, register_user_message, run_message_loop,
 };
@@ -123,11 +127,15 @@ enum Call {
 
 type Log = Rc<RefCell<Vec<Call>>>;
 
+/// The windows whose application the glue read (`None`: the one in front), in order.
+type Reads = Rc<RefCell<Vec<Option<isize>>>>;
+
 /// Records every call; the menu returns the queued choices in turn (then "dismissed") and runs
 /// `during_menu` with its owner window while it is "open". Notices stay "open" and never
 /// block; a queued "yes" is answered into the inbox as `Event::Answered`, as the box's thread
 /// does. The first panel opened sends the queued panel events into the inbox, as the panel's
-/// thread does.
+/// thread does. Reads of the application in front answer the queued applications in turn
+/// (then "unknown") and are recorded apart from the calls.
 struct FakeShell {
     log: Log,
     choices: VecDeque<Option<u16>>,
@@ -135,6 +143,8 @@ struct FakeShell {
     inbox: Option<mpsc::Sender<Event>>,
     during_menu: Option<Box<dyn FnMut(HWND)>>,
     panel_events: Vec<Event>,
+    foreground: VecDeque<Option<ForegroundApp>>,
+    reads: Reads,
 }
 
 impl FakeShell {
@@ -146,7 +156,17 @@ impl FakeShell {
             inbox: None,
             during_menu: None,
             panel_events: Vec::new(),
+            foreground: VecDeque::new(),
+            reads: Reads::default(),
         }
+    }
+
+    /// Answers the next reads of the application in front with `apps`, and records the reads
+    /// in `reads`.
+    fn reading_foreground(mut self, apps: Vec<Option<ForegroundApp>>, reads: &Reads) -> Self {
+        self.foreground = apps.into();
+        self.reads = Rc::clone(reads);
+        self
     }
 
     /// The first panel opened sends `events` into `inbox`.
@@ -248,6 +268,11 @@ impl TrayShell for FakeShell {
 
     fn close_macro_list(&mut self) {
         self.log.borrow_mut().push(Call::CloseMacroList);
+    }
+
+    fn foreground_app(&mut self, window: Option<isize>) -> Option<ForegroundApp> {
+        self.reads.borrow_mut().push(window);
+        self.foreground.pop_front().flatten()
     }
 }
 
@@ -421,7 +446,7 @@ fn tray(mode: InputMode) -> Tray {
 }
 
 fn icon(mode: InputMode, method: InputMethod) -> IconState {
-    IconState { mode, method }
+    IconState::new(mode, method)
 }
 
 /// The calls of an exit, in order: the hook stops, open notices, the panel, and the macro list
@@ -497,7 +522,7 @@ fn run_loop_with_watchdog() -> i32 {
 /// The menu of a running tray in `mode`.
 fn menu_of(mode: InputMode) -> Vec<MenuItem<'static>> {
     let mut tray = tray(mode);
-    tray.on_message(START.id(), 0, 0);
+    tray.on_message_at(START.id(), 0, 0, 0);
     tray.menu()
 }
 
@@ -532,6 +557,91 @@ fn start_shows_the_icon_a_click_switches_it_and_exit_from_the_menu_ends_the_loop
         );
         drop(window);
         assert_eq!(log.take(), [], "nothing is removed twice");
+    });
+}
+
+/// The glue hands the tray the clock with the icon's messages: a click and a double-click
+/// right after it open the panel and leave the mode as it was; the select of the second click
+/// is swallowed (D46).
+#[test]
+fn a_double_click_on_the_icon_opens_the_panel_and_keeps_the_mode() {
+    on_fresh_thread(|| {
+        let log = Log::default();
+        let (services, _feed) = FakeServices::new(&log);
+        // A double-click time no busy test machine can overrun.
+        let tray = tray(Vietnamese).with_double_click_ms(60_000);
+        let window = window_for(
+            "test-tray-double-click",
+            tray,
+            FakeShell::new(&log),
+            services,
+            NO_TICKS,
+        );
+        post_icon(&window, WM_LBUTTONDOWN, 0, 0);
+        post_icon(&window, NIN_SELECT, 0, 0);
+        post_icon(&window, WM_LBUTTONDBLCLK, 0, 0);
+        post_icon(&window, NIN_SELECT, 0, 0);
+        post(&window, WM_CLOSE, 0, 0);
+        assert_eq!(run_loop_with_watchdog(), LOOP_EXIT_CODE);
+        let mut expected = vec![
+            Call::Show(icon(Vietnamese, InputMethod::Telex)),
+            Call::Update(icon(English, InputMethod::Telex)),
+            Call::HookMode(false),
+            Call::Send(1, WorkerCommand::Apply(Change::VietnameseMode(false))),
+            Call::Update(icon(Vietnamese, InputMethod::Telex)),
+            Call::HookMode(true),
+            Call::Send(2, WorkerCommand::Apply(Change::VietnameseMode(true))),
+            Call::OpenPanel(1, Box::new(panel_state(Vietnamese))),
+        ];
+        expected.extend(exit_calls());
+        assert_eq!(log.take(), expected);
+    });
+}
+
+/// At the start and at each message of the foreground watcher the glue reads the application
+/// in front (the window the message names) and hands it to the tray: an excluded one shows E
+/// and its name, the next one the mode again (D47).
+#[test]
+fn the_icon_follows_the_application_in_front() {
+    on_fresh_thread(|| {
+        let log = Log::default();
+        let reads = Reads::default();
+        let mstsc = ExeName::new("mstsc.exe").unwrap();
+        let apps = vec![
+            Some(ForegroundApp {
+                exe: mstsc.clone(),
+                window_class: Some("TscShellContainerClass".to_owned()),
+            }),
+            Some(ForegroundApp {
+                exe: ExeName::new("notepad.exe").unwrap(),
+                window_class: Some("Notepad".to_owned()),
+            }),
+        ];
+        let shell = FakeShell::new(&log).reading_foreground(apps, &reads);
+        let (services, _feed) = FakeServices::new(&log);
+        let mut start = start(Vietnamese);
+        start.runtime.compatibility.rules.push(AppRule {
+            exe: mstsc.clone(),
+            window_class: None,
+            action: RuleAction {
+                vietnamese: Some(false),
+                macros: Some(false),
+                ..RuleAction::default()
+            },
+        });
+        let tray = Tray::new(start, messages());
+        let window = window_for("test-tray-foreground", tray, shell, services, NO_TICKS);
+        post(&window, FOREGROUND.id(), 0x1234, 0);
+        post(&window, WM_CLOSE, 0, 0);
+        assert_eq!(run_loop_with_watchdog(), LOOP_EXIT_CODE);
+        let mut expected = vec![
+            Call::Show(icon(Vietnamese, InputMethod::Telex)),
+            Call::Update(IconState::excluded(mstsc, InputMethod::Telex)),
+            Call::Update(icon(Vietnamese, InputMethod::Telex)),
+        ];
+        expected.extend(exit_calls());
+        assert_eq!(log.take(), expected);
+        assert_eq!(*reads.borrow(), [None, Some(0x1234)]);
     });
 }
 
@@ -838,7 +948,7 @@ fn an_icon_that_could_not_be_added_is_added_at_the_next_tick() {
         let state = icon(Vietnamese, InputMethod::Telex);
         assert_eq!(
             area_log.take(),
-            [AreaCall::Add(state), AreaCall::Add(state)],
+            [AreaCall::Add(state.clone()), AreaCall::Add(state)],
             "added at START (refused), added again at the first tick, then left alone"
         );
     });
@@ -884,7 +994,7 @@ fn an_icon_whose_change_failed_is_added_again_at_the_next_tick() {
             area_log.take(),
             [
                 AreaCall::Add(icon(Vietnamese, InputMethod::Telex)),
-                AreaCall::Modify(english),
+                AreaCall::Modify(english.clone()),
                 AreaCall::Add(english),
             ]
         );

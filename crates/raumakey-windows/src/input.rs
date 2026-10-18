@@ -9,6 +9,11 @@
 //! the TIP, whose key event sinks run while a message is retrieved, reads it with
 //! [`message_extra_info`] (`GetMessageExtraInfo`, Windows only) and bypasses its own keys with
 //! [`current_message_is_raumakey_injected`].
+//!
+//! The clock and the settings of input are read here too (Windows only): the tick of the
+//! last input ([`last_input_tick`]), the system clock in milliseconds ([`tick_count`]), and
+//! the user's double-click time ([`double_click_time`]), by which the controller tells a
+//! double-click on its notification icon from two clicks.
 
 use core::fmt;
 
@@ -285,6 +290,24 @@ pub fn last_input_tick() -> crate::error::WinResult<u32> {
     } else {
         Err(crate::error::WinError::last("GetLastInputInfo"))
     }
+}
+
+/// Milliseconds since the system started (`GetTickCount`), the base of [`last_input_tick`]
+/// and of the time stamps of hook events. It wraps around after 49.7 days, so two ticks are
+/// compared by their difference (`later.wrapping_sub(earlier)`).
+#[cfg(windows)]
+pub fn tick_count() -> u32 {
+    // SAFETY: no preconditions; reads the system clock.
+    unsafe { windows::Win32::System::SystemInformation::GetTickCount() }
+}
+
+/// The double-click time of the user's mouse settings (`GetDoubleClickTime`), in
+/// milliseconds: the longest time between the clicks of a double-click. Windows keeps it
+/// between 1 and 5000 (500 unless the user changed it).
+#[cfg(windows)]
+pub fn double_click_time() -> u32 {
+    // SAFETY: no preconditions; reads a setting of the session.
+    unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() }
 }
 
 /// What [`send`] injected.

@@ -4,6 +4,7 @@
 //! the hotkey's mode changes from the hook observer, and the worker's answers. Pure: these
 //! tests run on every host.
 
+use std::cell::Cell;
 use std::path::PathBuf;
 
 use raumakey_config::{ConfigError, StartupMode};
@@ -14,18 +15,21 @@ use raumakey_controller::notice::{
 use raumakey_controller::panel::{PanelRequest, PanelState};
 use raumakey_controller::settings::{Change, DocumentStatus, Location, Recovery, Settings, Status};
 use raumakey_controller::tray::{
-    Effect, Event, ICON_APP, IconState, InputMode, LOOP_EXIT_CODE, MENU_ABOUT, MENU_EXIT,
-    MENU_MACROS, MENU_MODERN_TONE, MENU_OPEN_CONFIG, MENU_PANEL, MENU_SPELL_CHECK, MENU_STARTUP,
-    MENU_TELEX, MENU_VIETNAMESE_MODE, MENU_VIQR, MENU_VNI, POLL_INTERVAL_MS, POLL_TIMER,
-    RegisteredMessages, Reply, SHOW_PANEL_COMPONENT, START, TOOLTIP_ENGLISH, TRAY_CALLBACK,
-    TRAY_ICON_ID, Tray, TrayCommand, TrayStart, WAKE, coalesce, with_change,
+    Effect, Event, FOREGROUND, ForegroundApp, ICON_APP, IconState, InputMode, LOOP_EXIT_CODE,
+    MENU_ABOUT, MENU_EXIT, MENU_MACROS, MENU_MODERN_TONE, MENU_OPEN_CONFIG, MENU_PANEL,
+    MENU_SPELL_CHECK, MENU_STARTUP, MENU_TELEX, MENU_VIETNAMESE_MODE, MENU_VIQR, MENU_VNI,
+    POLL_INTERVAL_MS, POLL_TIMER, RegisteredMessages, Reply, SHOW_PANEL_COMPONENT, START,
+    TOOLTIP_ENGLISH, TRAY_CALLBACK, TRAY_ICON_ID, Tray, TrayCommand, TrayStart, WAKE, coalesce,
+    with_change,
 };
 use raumakey_controller::worker::{
     Answer, OpenError, Outcome, PollReport, Saved, SettingsState, ShortcutSync, StartupError,
     WorkerCommand,
 };
 use raumakey_ipc::message::RuntimeSnapshot;
+use raumakey_model::host::ExeName;
 use raumakey_model::options::InputMethod;
+use raumakey_model::policy::{AppRule, RuleAction};
 use raumakey_resources::{ICON_ENGLISH, ICON_VIETNAMESE};
 use raumakey_windows::error::{E_ACCESSDENIED, WinError};
 use raumakey_windows::menu::MenuItem;
@@ -147,8 +151,25 @@ fn tick() -> Message {
     (WM_TIMER, POLL_TIMER, 0)
 }
 
-fn send(tray: &mut Tray, (message, wparam, lparam): Message) -> Reply {
-    tray.on_message(message, wparam, lparam)
+thread_local! {
+    /// The clock of [`send`], in milliseconds.
+    static CLOCK: Cell<u32> = const { Cell::new(0) };
+}
+
+/// `message`, a minute after the message sent before it: no two messages sent this way make
+/// a double-click. The tests of the double-click give the time themselves ([`send_at`]).
+fn send(tray: &mut Tray, message: Message) -> Reply {
+    let now = CLOCK.with(|clock| {
+        let now = clock.get().wrapping_add(60_000);
+        clock.set(now);
+        now
+    });
+    send_at(tray, message, now)
+}
+
+/// `message`, handled at `now_ms`.
+fn send_at(tray: &mut Tray, (message, wparam, lparam): Message, now_ms: u32) -> Reply {
+    tray.on_message_at(message, wparam, lparam, now_ms)
 }
 
 fn answered(effects: Vec<Effect>) -> Reply {
@@ -167,7 +188,7 @@ fn default() -> Reply {
 }
 
 fn icon(mode: InputMode, method: InputMethod) -> IconState {
-    IconState { mode, method }
+    IconState::new(mode, method)
 }
 
 fn worker(seq: u64, command: WorkerCommand) -> Effect {
@@ -182,14 +203,20 @@ fn choose(tray: &mut Tray, command: TrayCommand) -> Vec<Effect> {
     tray.menu_choice(Some(command.id()))
 }
 
+/// The effects of [`START`] for an icon showing `shown`: the icon is added, then the
+/// application in the foreground is read (D47).
+fn started(shown: IconState) -> Vec<Effect> {
+    vec![Effect::ShowIcon(shown), Effect::ReadForeground(None)]
+}
+
 /// A tray whose message loop runs: [`START`] added its icon.
 fn running_with(start: TrayStart) -> Tray {
     let mode = InputMode::from_vietnamese(start.runtime.vietnamese_mode);
     let method = start.runtime.options.input_method;
     let mut tray = Tray::new(start, messages());
     assert_eq!(
-        tray.on_message(START.id(), 0, 0),
-        answered(vec![Effect::ShowIcon(icon(mode, method))])
+        send(&mut tray, (START.id(), 0, 0)),
+        answered(started(icon(mode, method)))
     );
     tray
 }
@@ -464,14 +491,15 @@ fn start_adds_the_icon_in_the_saved_mode_then_shows_the_start_notices_once() {
     let mut tray = Tray::new(settings, messages());
     assert_eq!(tray.mode(), English);
     assert_eq!(
-        tray.on_message(START.id(), 0, 0),
+        send(&mut tray, (START.id(), 0, 0)),
         answered(vec![
             Effect::ShowIcon(icon(English, InputMethod::Vni)),
+            Effect::ReadForeground(None),
             Effect::Notify(notice),
         ])
     );
     // Another start (anyone may post one) adds nothing.
-    assert_eq!(tray.on_message(START.id(), 0, 0), answered(Vec::new()));
+    assert_eq!(send(&mut tray, (START.id(), 0, 0)), answered(Vec::new()));
 }
 
 /// A damaged file at the start: "yes" moves it aside through the worker.
@@ -595,7 +623,6 @@ fn other_notifications_and_other_icons_change_nothing() {
         WM_MOUSEMOVE,
         WM_LBUTTONDOWN,
         WM_LBUTTONUP,
-        WM_LBUTTONDBLCLK,
         WM_RBUTTONUP,
         NIN_POPUPOPEN,
     ] {
@@ -605,7 +632,7 @@ fn other_notifications_and_other_icons_change_nothing() {
             "{code:#x}"
         );
     }
-    for code in [NIN_SELECT, NIN_KEYSELECT, WM_CONTEXTMENU] {
+    for code in [NIN_SELECT, NIN_KEYSELECT, WM_CONTEXTMENU, WM_LBUTTONDBLCLK] {
         assert_eq!(
             send(&mut tray, callback(code, TRAY_ICON_ID + 1, 1, 2)),
             answered(Vec::new()),
@@ -636,8 +663,8 @@ fn before_the_start_the_icon_does_not_exist_and_nothing_acts() {
     assert_eq!(tray.answered_yes(Question::Recover), []);
     assert_eq!(tray.mode(), Vietnamese);
     assert_eq!(
-        tray.on_message(START.id(), 0, 0),
-        answered(vec![Effect::ShowIcon(icon(Vietnamese, InputMethod::Telex))])
+        send(&mut tray, (START.id(), 0, 0)),
+        answered(started(icon(Vietnamese, InputMethod::Telex)))
     );
     assert!(tray.is_running());
 }
@@ -653,6 +680,605 @@ fn matrix_58_taskbar_created_adds_the_icon_again_without_changing_the_mode() {
         );
         assert_eq!(tray.mode(), English);
     }
+}
+
+// --- The double-click (D46) -----------------------------------------------------------------
+
+/// The notification `code` of the tray icon (the anchor does not matter).
+fn icon_event(code: u32) -> Message {
+    callback(code, TRAY_ICON_ID, 30, 40)
+}
+
+/// The left button is pressed on the icon.
+fn press() -> Message {
+    icon_event(WM_LBUTTONDOWN)
+}
+
+/// The left button is released.
+fn release() -> Message {
+    icon_event(WM_LBUTTONUP)
+}
+
+/// The second press of a double-click.
+fn double_click() -> Message {
+    icon_event(WM_LBUTTONDBLCLK)
+}
+
+/// The effects of a switch to `mode` (Telex) whose save is command `seq`.
+fn switched(mode: InputMode, seq: u64) -> Vec<Effect> {
+    let vietnamese = mode.is_vietnamese();
+    vec![
+        Effect::UpdateIcon(icon(mode, InputMethod::Telex)),
+        Effect::HookMode(vietnamese),
+        worker(
+            seq,
+            WorkerCommand::Apply(Change::VietnameseMode(vietnamese)),
+        ),
+    ]
+}
+
+/// `effects` followed by `more`.
+fn then(mut effects: Vec<Effect>, more: Vec<Effect>) -> Vec<Effect> {
+    effects.extend(more);
+    effects
+}
+
+/// A press, a release, and the `NIN_SELECT` of a click: the mode switches at once, at the
+/// select (an input method must switch before the user types; nothing waits for a second
+/// click).
+#[test]
+fn a_click_switches_at_its_select_without_waiting() {
+    let mut tray = running(Vietnamese);
+    assert_eq!(send_at(&mut tray, press(), 1_000), answered(Vec::new()));
+    assert_eq!(send_at(&mut tray, release(), 1_080), answered(Vec::new()));
+    assert_eq!(
+        send_at(&mut tray, click(), 1_090),
+        answered(switched(English, 1))
+    );
+    assert_eq!(tray.mode(), English);
+}
+
+/// The shell reports a double-click as press, release, select, double-click, release,
+/// select: the first click switched the mode, the double-click switches it back (through the
+/// way of every mode change: icon, hook, file) and opens the panel as the menu does, and the
+/// select of the second click is swallowed.
+#[test]
+fn a_double_click_opens_the_panel_and_keeps_the_mode() {
+    let mut tray = running(Vietnamese);
+    let state = tray.panel_state();
+    send_at(&mut tray, press(), 1_000);
+    send_at(&mut tray, release(), 1_080);
+    assert_eq!(
+        send_at(&mut tray, click(), 1_090),
+        answered(switched(English, 1))
+    );
+    assert_eq!(
+        send_at(&mut tray, double_click(), 1_250),
+        answered(then(
+            switched(Vietnamese, 2),
+            vec![open_panel(1, state.clone())]
+        ))
+    );
+    assert_eq!(send_at(&mut tray, release(), 1_330), answered(Vec::new()));
+    assert_eq!(send_at(&mut tray, click(), 1_340), answered(Vec::new()));
+    assert_eq!(tray.mode(), Vietnamese);
+    assert!(tray.runtime().vietnamese_mode);
+    assert_eq!(tray.panel_state(), state);
+
+    // From English likewise, and a double-click while the panel is open brings it to the
+    // front (a new opening).
+    let mut tray = running(English);
+    send_at(&mut tray, click(), 10_000);
+    let effects = send_at(&mut tray, double_click(), 10_200).effects;
+    assert_eq!(effects[..3], switched(English, 2)[..]);
+    assert!(matches!(effects[3], Effect::OpenPanel { serial: 1, .. }));
+    assert_eq!(tray.mode(), English);
+    send_at(&mut tray, click(), 10_300);
+    send_at(&mut tray, click(), 20_000);
+    let effects = send_at(&mut tray, double_click(), 20_100).effects;
+    assert!(matches!(
+        effects.last(),
+        Some(Effect::OpenPanel { serial: 2, .. })
+    ));
+    assert_eq!(tray.mode(), English);
+}
+
+/// When the shell sends no select after the double-click, nothing is swallowed: a click that
+/// follows, even within the double-click time, switches the mode, and so does one after it.
+#[test]
+fn without_a_second_select_the_next_click_still_switches() {
+    let mut tray = running(Vietnamese);
+    send_at(&mut tray, press(), 1_000);
+    send_at(&mut tray, release(), 1_080);
+    send_at(&mut tray, click(), 1_090);
+    send_at(&mut tray, double_click(), 1_250);
+    send_at(&mut tray, release(), 1_330);
+    assert_eq!(tray.mode(), Vietnamese);
+    // Within the double-click time of the double-click: its press shows it is a new click
+    // (the open panel follows it).
+    assert_eq!(send_at(&mut tray, press(), 1_400), answered(Vec::new()));
+    let effects = send_at(&mut tray, click(), 1_450).effects;
+    assert_eq!(
+        effects,
+        then(switched(English, 3), vec![refresh(tray.panel_state())])
+    );
+
+    // After the double-click time, a select alone is a click too.
+    let mut tray = running(Vietnamese);
+    send_at(&mut tray, click(), 1_090);
+    send_at(&mut tray, double_click(), 1_250);
+    let effects = send_at(&mut tray, click(), 1_751).effects;
+    assert_eq!(
+        effects,
+        then(switched(English, 3), vec![refresh(tray.panel_state())])
+    );
+}
+
+/// A shell that reports no double-click: a second select within the double-click time of the
+/// first makes the double-click; one after it is a click of its own.
+#[test]
+fn two_selects_within_the_double_click_time_make_a_double_click() {
+    let mut tray = running(Vietnamese);
+    let state = tray.panel_state();
+    assert_eq!(
+        send_at(&mut tray, click(), 1_000),
+        answered(switched(English, 1))
+    );
+    assert_eq!(
+        send_at(&mut tray, click(), 1_500),
+        answered(then(switched(Vietnamese, 2), vec![open_panel(1, state)]))
+    );
+    assert_eq!(tray.mode(), Vietnamese);
+    // The double-click took both clicks: the next one is a click (the open panel follows it).
+    let effects = send_at(&mut tray, click(), 1_600).effects;
+    assert_eq!(
+        effects,
+        then(switched(English, 3), vec![refresh(tray.panel_state())])
+    );
+
+    // With presses between them, likewise.
+    let mut tray = running(English);
+    send_at(&mut tray, press(), 5_000);
+    send_at(&mut tray, click(), 5_090);
+    send_at(&mut tray, press(), 5_200);
+    let effects = send_at(&mut tray, click(), 5_290).effects;
+    assert!(matches!(effects.last(), Some(Effect::OpenPanel { .. })));
+    assert_eq!(tray.mode(), English);
+}
+
+#[test]
+fn two_selects_further_apart_switch_twice() {
+    let mut tray = running(Vietnamese);
+    send_at(&mut tray, click(), 1_000);
+    assert_eq!(
+        send_at(&mut tray, click(), 1_501),
+        answered(switched(Vietnamese, 2))
+    );
+    // The user's double-click time counts, to the millisecond.
+    let mut tray = running_with(start(Vietnamese)).with_double_click_ms(300);
+    send_at(&mut tray, click(), 1_000);
+    assert_eq!(
+        send_at(&mut tray, click(), 1_301),
+        answered(switched(Vietnamese, 2))
+    );
+    let mut tray = running_with(start(Vietnamese)).with_double_click_ms(300);
+    send_at(&mut tray, click(), 1_000);
+    let effects = send_at(&mut tray, click(), 1_300).effects;
+    assert!(matches!(effects.last(), Some(Effect::OpenPanel { .. })));
+}
+
+/// The clock wraps around after 49.7 days: times are compared by their difference.
+#[test]
+fn the_double_click_time_is_measured_across_the_wrap_of_the_clock() {
+    let mut tray = running(Vietnamese);
+    send_at(&mut tray, click(), u32::MAX - 99);
+    let effects = send_at(&mut tray, click(), 200).effects;
+    assert!(matches!(effects.last(), Some(Effect::OpenPanel { .. })));
+    assert_eq!(tray.mode(), Vietnamese);
+
+    let mut tray = running(Vietnamese);
+    send_at(&mut tray, click(), u32::MAX - 300);
+    send_at(&mut tray, double_click(), u32::MAX - 10);
+    assert_eq!(send_at(&mut tray, click(), 50), answered(Vec::new()));
+    assert_eq!(tray.mode(), Vietnamese);
+
+    // A clock that went back is far apart, never a double-click.
+    let mut tray = running(Vietnamese);
+    send_at(&mut tray, click(), 1_000);
+    assert_eq!(
+        send_at(&mut tray, click(), 900),
+        answered(switched(Vietnamese, 2))
+    );
+}
+
+/// The double-click restores the mode from before its first click only when that click was
+/// within the double-click time, and only when the mode is not back already (the hotkey).
+#[test]
+fn a_double_click_restores_only_a_mode_its_first_click_changed() {
+    let mut tray = running(Vietnamese);
+    send_at(&mut tray, click(), 1_000);
+    tray.on_event(Event::Hotkey(true));
+    assert_eq!(tray.mode(), Vietnamese);
+    let effects = send_at(&mut tray, double_click(), 1_200).effects;
+    assert!(
+        matches!(effects[..], [Effect::OpenPanel { serial: 1, .. }]),
+        "{effects:?}"
+    );
+    assert_eq!(tray.mode(), Vietnamese);
+
+    // A double-click without a click shortly before opens the panel and changes nothing.
+    let mut tray = running(Vietnamese);
+    send_at(&mut tray, click(), 1_000);
+    let effects = send_at(&mut tray, double_click(), 3_000).effects;
+    assert!(
+        matches!(effects[..], [Effect::OpenPanel { serial: 1, .. }]),
+        "{effects:?}"
+    );
+    assert_eq!(tray.mode(), English);
+}
+
+/// The keyboard selects the icon one switch at a time; it never makes a double-click, and a
+/// right click in between ends a double-click too.
+#[test]
+fn the_keyboard_and_the_menu_never_make_a_double_click() {
+    let key_select = || icon_event(NIN_KEYSELECT);
+    let mut tray = running(Vietnamese);
+    assert_eq!(
+        send_at(&mut tray, key_select(), 1_000),
+        answered(switched(English, 1))
+    );
+    assert_eq!(
+        send_at(&mut tray, key_select(), 1_100),
+        answered(switched(Vietnamese, 2))
+    );
+    assert_eq!(
+        send_at(&mut tray, click(), 1_200),
+        answered(switched(English, 3))
+    );
+    assert_eq!(
+        send_at(&mut tray, key_select(), 1_300),
+        answered(switched(Vietnamese, 4))
+    );
+    assert_eq!(
+        send_at(&mut tray, click(), 1_400),
+        answered(switched(English, 5))
+    );
+    send_at(
+        &mut tray,
+        callback(WM_CONTEXTMENU, TRAY_ICON_ID, 1, 2),
+        1_500,
+    );
+    assert_eq!(
+        send_at(&mut tray, click(), 1_600),
+        answered(switched(Vietnamese, 6))
+    );
+}
+
+#[test]
+fn a_double_click_before_the_start_or_after_the_exit_does_nothing() {
+    let mut tray = Tray::new(start(Vietnamese), messages());
+    for (message, at) in [(click(), 1_000), (double_click(), 1_100), (click(), 1_200)] {
+        assert_eq!(send_at(&mut tray, message, at), answered(Vec::new()));
+    }
+    let mut tray = running(Vietnamese);
+    send_at(&mut tray, click(), 1_000);
+    choose(&mut tray, TrayCommand::Exit);
+    for (message, at) in [(double_click(), 1_100), (click(), 1_200)] {
+        assert_eq!(send_at(&mut tray, message, at), answered(Vec::new()));
+    }
+    assert_eq!(tray.mode(), English);
+}
+
+// --- The excluded application in front (D47) ----------------------------------------------
+
+/// The tooltip while Remote Desktop Connection is in front.
+const MSTSC_TOOLTIP: &str = "Raumakey: đang gõ tiếng Anh trong mstsc.exe (ứng dụng loại trừ)";
+
+fn exe(name: &str) -> ExeName {
+    ExeName::new(name).unwrap()
+}
+
+/// The application `name` in front, its window class unknown.
+fn app(name: &str) -> Option<ForegroundApp> {
+    Some(ForegroundApp {
+        exe: exe(name),
+        window_class: None,
+    })
+}
+
+/// The application `name` in front with a window of `class`.
+fn app_in(name: &str, class: &str) -> Option<ForegroundApp> {
+    Some(ForegroundApp {
+        exe: exe(name),
+        window_class: Some(class.to_owned()),
+    })
+}
+
+/// A rule for `name` (narrowed to `class`) that allows Vietnamese or not.
+fn rule(name: &str, class: Option<&str>, vietnamese: bool) -> AppRule {
+    AppRule {
+        exe: exe(name),
+        window_class: class.map(str::to_owned),
+        action: RuleAction {
+            vietnamese: Some(vietnamese),
+            macros: Some(vietnamese),
+            ..RuleAction::default()
+        },
+    }
+}
+
+/// The runtime snapshot of `mode` with the rule that `[exclusions]` makes for `mstsc.exe`
+/// first among the compatibility rules.
+fn excluding_mstsc(mode: InputMode) -> RuntimeSnapshot {
+    let mut runtime = runtime(mode);
+    runtime
+        .compatibility
+        .rules
+        .insert(0, rule("mstsc.exe", None, false));
+    runtime
+}
+
+/// A running tray in `mode` whose rules exclude `mstsc.exe`.
+fn running_excluding_mstsc(mode: InputMode) -> Tray {
+    let mut start = start(mode);
+    start.runtime = excluding_mstsc(mode);
+    running_with(start)
+}
+
+/// The icon while `name` is in front (Telex in effect).
+fn excluded_icon(name: &str) -> IconState {
+    IconState::excluded(exe(name), InputMethod::Telex)
+}
+
+#[test]
+fn the_tooltip_of_an_excluded_application_names_it() {
+    let shown = excluded_icon("mstsc.exe");
+    assert_eq!(shown.tooltip(), MSTSC_TOOLTIP);
+    assert_eq!(shown.mode, English);
+    assert_eq!(shown.icon_id(), English.icon_id());
+    assert_eq!(
+        IconState::excluded(exe("mstsc.exe"), InputMethod::Vni).tooltip(),
+        MSTSC_TOOLTIP,
+        "the method is not named"
+    );
+    // The shell keeps 127 units: a long name loses characters in its middle, never the start,
+    // its end, or the words around it, and a character outside the BMP is never split.
+    let before = "Raumakey: đang gõ tiếng Anh trong ";
+    let after = " (ứng dụng loại trừ)";
+    for name in [
+        format!("{}.exe", "a".repeat(251)),
+        format!("{}.exe", "đ".repeat(120)),
+        format!("{}x.exe", "😀".repeat(100)),
+    ] {
+        let tooltip = IconState::excluded(exe(&name), InputMethod::Telex).tooltip();
+        assert!(
+            tooltip.encode_utf16().count() < TOOLTIP_CAPACITY,
+            "{tooltip}"
+        );
+        assert!(tooltip.starts_with(before), "{tooltip}");
+        assert!(tooltip.ends_with(&format!(".exe{after}")), "{tooltip}");
+        let shown = &tooltip[before.len()..tooltip.len() - after.len()];
+        let (head, tail) = shown.split_once('\u{2026}').unwrap();
+        assert!(name.starts_with(head) && name.ends_with(tail), "{shown}");
+        assert!(head.encode_utf16().count() >= 30, "{shown}");
+        assert!(
+            tooltip.encode_utf16().count() >= TOOLTIP_CAPACITY - 3,
+            "{tooltip}"
+        );
+    }
+    // A name that fits is shown whole.
+    let fits = format!("{}.exe", "b".repeat(69));
+    let tooltip = IconState::excluded(exe(&fits), InputMethod::Telex).tooltip();
+    assert_eq!(tooltip, format!("{before}{fits}{after}"));
+    assert_eq!(tooltip.encode_utf16().count(), TOOLTIP_CAPACITY - 1);
+}
+
+/// The foreground watcher's message has the glue read the window it names.
+#[test]
+fn the_message_of_the_foreground_watcher_reads_the_window_it_names() {
+    let mut tray = Tray::new(start(Vietnamese), messages());
+    assert_eq!(
+        send(&mut tray, (FOREGROUND.id(), 0x1234, 0)),
+        answered(Vec::new()),
+        "before the start"
+    );
+    assert_eq!(tray.on_foreground(app("mstsc.exe")), []);
+    let mut tray = running(Vietnamese);
+    assert_eq!(
+        send(&mut tray, (FOREGROUND.id(), 0x1234, 0)),
+        answered(vec![Effect::ReadForeground(Some(0x1234))])
+    );
+    choose(&mut tray, TrayCommand::Exit);
+    assert_eq!(
+        send(&mut tray, (FOREGROUND.id(), 0x1234, 0)),
+        answered(Vec::new())
+    );
+    assert_eq!(tray.on_foreground(app("mstsc.exe")), []);
+}
+
+/// Remote Desktop Connection in front: E, and the tooltip names it; the mode in effect (the
+/// file, the menu, the panel, the hook) does not change, and it shows again once another
+/// application is in front.
+#[test]
+fn an_excluded_application_in_front_shows_e_and_names_it() {
+    let mut tray = running_excluding_mstsc(Vietnamese);
+    let panel = tray.panel_state();
+    assert_eq!(
+        tray.on_foreground(app("mstsc.exe")),
+        [Effect::UpdateIcon(excluded_icon("mstsc.exe"))]
+    );
+    assert_eq!(tray.icon(), excluded_icon("mstsc.exe"));
+    assert_eq!(tray.mode(), Vietnamese);
+    assert!(checked(&tray, TrayCommand::VietnameseMode));
+    assert_eq!(tray.panel_state(), panel);
+    // The same application again changes nothing.
+    assert_eq!(tray.on_foreground(app("mstsc.exe")), []);
+    assert_eq!(
+        tray.on_foreground(app("notepad.exe")),
+        [Effect::UpdateIcon(icon(Vietnamese, InputMethod::Telex))]
+    );
+    assert_eq!(tray.on_foreground(app("notepad.exe")), []);
+    // In English mode the tooltip still says why.
+    let mut tray = running_excluding_mstsc(English);
+    assert_eq!(
+        tray.on_foreground(app("mstsc.exe")),
+        [Effect::UpdateIcon(excluded_icon("mstsc.exe"))]
+    );
+    assert_eq!(
+        tray.on_foreground(app("explorer.exe")),
+        [Effect::UpdateIcon(icon(English, InputMethod::Telex))]
+    );
+}
+
+/// The hotkey still switches the mode in effect while an excluded application is in front:
+/// it is saved and the hook gets it, the icon stays E, and the new mode shows once the
+/// application leaves.
+#[test]
+fn the_hotkey_while_excluded_switches_the_mode_in_effect_and_the_icon_stays_e() {
+    let mut tray = running_excluding_mstsc(Vietnamese);
+    tray.on_foreground(app("mstsc.exe"));
+    assert_eq!(
+        tray.on_event(Event::Hotkey(false)),
+        [
+            Effect::HookMode(false),
+            worker(1, WorkerCommand::Apply(Change::VietnameseMode(false))),
+        ]
+    );
+    assert_eq!(tray.mode(), English);
+    assert!(!checked(&tray, TrayCommand::VietnameseMode));
+    assert_eq!(tray.icon(), excluded_icon("mstsc.exe"));
+    // A select that arrives while it is still in front acts on the mode in effect too.
+    assert_eq!(
+        send(&mut tray, click()),
+        answered(vec![
+            Effect::HookMode(true),
+            worker(2, WorkerCommand::Apply(Change::VietnameseMode(true))),
+        ])
+    );
+    assert_eq!(
+        tray.on_foreground(app("notepad.exe")),
+        [Effect::UpdateIcon(icon(Vietnamese, InputMethod::Telex))]
+    );
+}
+
+/// A click on the icon brings the taskbar (Explorer) to the front first: the icon shows the
+/// mode in effect, the click switches it as always, and Remote Desktop Connection shows E
+/// again when it comes back.
+#[test]
+fn a_click_acts_on_the_mode_in_effect_after_the_taskbar_came_to_the_front() {
+    let mut tray = running_excluding_mstsc(Vietnamese);
+    tray.on_foreground(app("mstsc.exe"));
+    assert_eq!(
+        tray.on_foreground(app_in("explorer.exe", "Shell_TrayWnd")),
+        [Effect::UpdateIcon(icon(Vietnamese, InputMethod::Telex))]
+    );
+    assert_eq!(send(&mut tray, click()), answered(switched(English, 1)));
+    assert_eq!(
+        tray.on_foreground(app("mstsc.exe")),
+        [Effect::UpdateIcon(excluded_icon("mstsc.exe"))]
+    );
+    assert_eq!(
+        tray.on_foreground(app("notepad.exe")),
+        [Effect::UpdateIcon(icon(English, InputMethod::Telex))]
+    );
+}
+
+/// A new runtime snapshot (a hand edit of `[exclusions]`, through the worker) applies to the
+/// application in front at once.
+#[test]
+fn a_new_snapshot_applies_to_the_application_in_front_at_once() {
+    let mut tray = running_excluding_mstsc(Vietnamese);
+    tray.on_foreground(app("mstsc.exe"));
+    let without = runtime(Vietnamese);
+    assert_eq!(
+        tray.on_event(answer(
+            0,
+            polled(clean()),
+            Some(state(without.clone(), StartupMode::None))
+        )),
+        [
+            Effect::UpdateIcon(icon(Vietnamese, InputMethod::Telex)),
+            hook_runtime(without),
+        ]
+    );
+    let with = excluding_mstsc(Vietnamese);
+    assert_eq!(
+        tray.on_event(answer(
+            0,
+            polled(clean()),
+            Some(state(with.clone(), StartupMode::None))
+        )),
+        [
+            Effect::UpdateIcon(excluded_icon("mstsc.exe")),
+            hook_runtime(with),
+        ]
+    );
+    // A snapshot that excludes another application.
+    let mut other = runtime(Vietnamese);
+    other.compatibility.rules = vec![rule("vmconnect.exe", None, false)];
+    tray.on_event(answer(
+        0,
+        polled(clean()),
+        Some(state(other, StartupMode::None)),
+    ));
+    assert_eq!(tray.icon(), icon(Vietnamese, InputMethod::Telex));
+    assert_eq!(
+        tray.on_foreground(app("vmconnect.exe")),
+        [Effect::UpdateIcon(excluded_icon("vmconnect.exe"))]
+    );
+}
+
+/// Only a rule that forbids Vietnamese excludes; an application that cannot be read is not
+/// excluded; a rule narrowed to a window class needs that class.
+#[test]
+fn only_a_known_application_whose_rules_forbid_vietnamese_is_excluded() {
+    let mut tray = running_excluding_mstsc(Vietnamese);
+    tray.on_foreground(app("mstsc.exe"));
+    assert_eq!(
+        tray.on_foreground(None),
+        [Effect::UpdateIcon(icon(Vietnamese, InputMethod::Telex))]
+    );
+    assert_eq!(tray.on_foreground(None), []);
+
+    let mut start = start(Vietnamese);
+    start.runtime.compatibility.rules = vec![
+        rule("rdcman.exe", Some("WindowsForms10.Window.8.app.0.1"), false),
+        rule("code.exe", None, true),
+    ];
+    let mut tray = running_with(start);
+    assert_eq!(tray.on_foreground(app("code.exe")), []);
+    assert_eq!(tray.on_foreground(app("rdcman.exe")), []);
+    assert_eq!(tray.on_foreground(app_in("rdcman.exe", "Other")), []);
+    assert_eq!(
+        tray.on_foreground(app_in("rdcman.exe", "windowsforms10.window.8.app.0.1")),
+        [Effect::UpdateIcon(excluded_icon("rdcman.exe"))]
+    );
+}
+
+/// The icon added again (`TaskbarCreated`, the tick) shows the excluded application, and the
+/// open panel does not change.
+#[test]
+fn the_icon_added_again_shows_the_excluded_application_and_the_panel_stays() {
+    let mut start = start(Vietnamese);
+    start.runtime = excluding_mstsc(Vietnamese);
+    start.show_panel = true;
+    let mut tray = Tray::new(start, messages());
+    send(&mut tray, (START.id(), 0, 0));
+    assert_eq!(
+        tray.on_foreground(app("mstsc.exe")),
+        [Effect::UpdateIcon(excluded_icon("mstsc.exe"))]
+    );
+    assert_eq!(
+        send(&mut tray, taskbar_created()),
+        answered(vec![Effect::ShowIcon(excluded_icon("mstsc.exe"))])
+    );
+    assert_eq!(
+        send(&mut tray, tick()).effects[..2],
+        [
+            Effect::EnsureIcon(excluded_icon("mstsc.exe")),
+            Effect::ReadForeground(None),
+        ]
+    );
 }
 
 // --- Menu choices ------------------------------------------------------------------------
@@ -971,14 +1597,14 @@ fn close_and_the_end_of_the_session_exit_like_the_menu() {
     }
     // Before the start too; the start then adds no icon.
     let mut tray = Tray::new(start(Vietnamese), messages());
-    assert_eq!(tray.on_message(WM_CLOSE, 0, 0), answered(exit_effects()));
-    assert_eq!(tray.on_message(START.id(), 0, 0), answered(Vec::new()));
+    assert_eq!(send(&mut tray, (WM_CLOSE, 0, 0)), answered(exit_effects()));
+    assert_eq!(send(&mut tray, (START.id(), 0, 0)), answered(Vec::new()));
 }
 
 #[test]
 fn a_cancelled_end_of_the_session_changes_nothing() {
     let mut tray = running(Vietnamese);
-    assert_eq!(tray.on_message(WM_ENDSESSION, 0, 0), default());
+    assert_eq!(send(&mut tray, (WM_ENDSESSION, 0, 0)), default());
     assert!(tray.ends_loop_when_dropped());
 }
 
@@ -1011,34 +1637,47 @@ fn the_hotkey_changes_the_icon_and_is_saved() {
 // --- The poll timer ------------------------------------------------------------------------
 
 /// Every two seconds the timer asks the worker to poll; while a poll is on its way, ticks ask
-/// nothing more, so a slow disk never piles them up.
+/// nothing more, so a slow disk never piles them up. Each tick reads the application in front
+/// again too, in case a message of the foreground watcher was lost (D47).
 #[test]
 fn the_timer_asks_the_worker_to_poll_once_at_a_time() {
     assert_eq!(POLL_INTERVAL_MS, 2_000);
     assert_ne!(POLL_TIMER, 0);
     let mut tray = running(Vietnamese);
     let shown = Effect::EnsureIcon(icon(Vietnamese, InputMethod::Telex));
+    let read = Effect::ReadForeground(None);
     assert_eq!(
         send(&mut tray, tick()),
-        answered(vec![shown.clone(), worker(1, WorkerCommand::Poll)])
+        answered(vec![
+            shown.clone(),
+            read.clone(),
+            worker(1, WorkerCommand::Poll)
+        ])
     );
-    assert_eq!(send(&mut tray, tick()), answered(vec![shown.clone()]));
+    assert_eq!(
+        send(&mut tray, tick()),
+        answered(vec![shown.clone(), read.clone()])
+    );
     assert_eq!(
         tray.on_event(answer(1, Outcome::Polled(PollReport::default()), None)),
         []
     );
     assert_eq!(
         send(&mut tray, tick()),
-        answered(vec![shown.clone(), worker(2, WorkerCommand::Poll)])
+        answered(vec![
+            shown.clone(),
+            read.clone(),
+            worker(2, WorkerCommand::Poll)
+        ])
     );
     // A command that panicked frees the poll as well.
     assert_eq!(tray.on_event(answer(2, Outcome::Failed, None)), []);
     assert_eq!(
         send(&mut tray, tick()),
-        answered(vec![shown, worker(3, WorkerCommand::Poll)])
+        answered(vec![shown, read, worker(3, WorkerCommand::Poll)])
     );
     // Another timer of the window is not the poll timer.
-    assert_eq!(tray.on_message(WM_TIMER, POLL_TIMER + 1, 0), default());
+    assert_eq!(send(&mut tray, (WM_TIMER, POLL_TIMER + 1, 0)), default());
 }
 
 /// Every tick makes sure the icon is shown: an icon that could not be added (no taskbar yet)
@@ -1059,7 +1698,7 @@ fn every_tick_makes_sure_the_icon_is_shown() {
 #[test]
 fn wake_is_answered_without_effect() {
     let mut tray = running(Vietnamese);
-    assert_eq!(tray.on_message(WAKE.id(), 0, 0), answered(Vec::new()));
+    assert_eq!(send(&mut tray, (WAKE.id(), 0, 0)), answered(Vec::new()));
 }
 
 // --- Answers of the worker -----------------------------------------------------------------
@@ -1545,9 +2184,10 @@ fn the_start_opens_the_panel_when_it_is_to_show_at_start() {
     let state = tray.panel_state();
     assert!(state.show_on_start);
     assert_eq!(
-        tray.on_message(START.id(), 0, 0),
+        send(&mut tray, (START.id(), 0, 0)),
         answered(vec![
             Effect::ShowIcon(icon(Vietnamese, InputMethod::Telex)),
+            Effect::ReadForeground(None),
             open_panel(1, state),
             Effect::Notify(notice),
         ])
@@ -1587,8 +2227,8 @@ fn the_show_panel_request_acts_only_while_the_tray_runs() {
     let mut tray = Tray::new(start(Vietnamese), messages());
     assert_eq!(send(&mut tray, (SHOW_PANEL, 0, 0)), answered(Vec::new()));
     assert_eq!(
-        tray.on_message(START.id(), 0, 0),
-        answered(vec![Effect::ShowIcon(icon(Vietnamese, InputMethod::Telex))])
+        send(&mut tray, (START.id(), 0, 0)),
+        answered(started(icon(Vietnamese, InputMethod::Telex)))
     );
     choose(&mut tray, TrayCommand::Exit);
     assert_eq!(send(&mut tray, (SHOW_PANEL, 0, 0)), answered(Vec::new()));
@@ -1712,9 +2352,9 @@ fn the_panel_at_start_is_saved_without_the_hook() {
 fn running_with_panel_at_start(start: TrayStart) -> Tray {
     assert!(start.show_panel);
     let mut tray = Tray::new(start, messages());
-    let effects = tray.on_message(START.id(), 0, 0).effects;
+    let effects = send(&mut tray, (START.id(), 0, 0)).effects;
     assert!(
-        matches!(effects[1], Effect::OpenPanel { serial: 1, .. }),
+        matches!(effects[2], Effect::OpenPanel { serial: 1, .. }),
         "{effects:?}"
     );
     tray
@@ -2024,14 +2664,14 @@ fn a_save_of_the_macro_list_makes_the_worker_poll_at_once() {
     );
     assert_eq!(
         send(&mut tray, tick()),
-        answered(vec![Effect::EnsureIcon(icon(
-            Vietnamese,
-            InputMethod::Telex
-        ))])
+        answered(vec![
+            Effect::EnsureIcon(icon(Vietnamese, InputMethod::Telex)),
+            Effect::ReadForeground(None),
+        ])
     );
     assert_eq!(tray.on_event(answer(1, no_reload(), None)), []);
     assert_eq!(
-        send(&mut tray, tick()).effects[1],
+        send(&mut tray, tick()).effects[2],
         worker(2, WorkerCommand::Poll)
     );
 }
@@ -2081,7 +2721,7 @@ fn a_save_during_a_poll_polls_again_once_it_answered() {
 fn the_macro_list_editor_is_closed_at_the_exit() {
     let mut tray = Tray::new(start(Vietnamese), messages());
     assert_eq!(tray.on_event(Event::MacrosSaved), []);
-    tray.on_message(START.id(), 0, 0);
+    send(&mut tray, (START.id(), 0, 0));
     let effects = choose(&mut tray, TrayCommand::Exit);
     let panel = effects.iter().position(|e| *e == Effect::ClosePanel);
     let editor = effects.iter().position(|e| *e == Effect::CloseMacroList);
@@ -2106,7 +2746,8 @@ fn the_private_messages_are_postable() {
     assert_eq!(TRAY_CALLBACK.id(), WM_APP + 1);
     assert_eq!(START.id(), WM_APP + 2);
     assert_eq!(WAKE.id(), WM_APP + 3);
-    for message in [TRAY_CALLBACK, START, WAKE] {
+    assert_eq!(FOREGROUND.id(), WM_APP + 4);
+    for message in [TRAY_CALLBACK, START, WAKE, FOREGROUND] {
         assert!(is_postable(message.id()));
     }
     assert_eq!(TRAY_ICON_ID, 1);
@@ -2120,12 +2761,12 @@ fn other_messages_get_the_default_processing() {
         WM_CREATE,
         WM_QUERYENDSESSION,
         WM_APP,
-        WM_APP + 4,
+        WM_APP + 5,
         0xC000,
         TASKBAR_CREATED + 1,
         SHOW_PANEL + 1,
     ] {
-        assert_eq!(tray.on_message(message, 1, 2), default(), "{message:#x}");
+        assert_eq!(send(&mut tray, (message, 1, 2)), default(), "{message:#x}");
     }
     assert_eq!(tray.mode(), Vietnamese);
 }
@@ -2146,12 +2787,12 @@ fn only_a_registered_message_number_is_taken_for_taskbar_created_or_show_panel()
             },
         ] {
             let mut tray = Tray::new(start(Vietnamese), messages);
-            tray.on_message(START.id(), 0, 0);
+            send(&mut tray, (START.id(), 0, 0));
             let expected = match number {
                 WM_CLOSE => answered(exit_effects()),
                 _ => default(),
             };
-            assert_eq!(tray.on_message(number, 0, 0), expected, "{messages:?}");
+            assert_eq!(send(&mut tray, (number, 0, 0)), expected, "{messages:?}");
             assert_eq!(tray.shell_messages(), [TRAY_CALLBACK.id()], "{messages:?}");
         }
     }

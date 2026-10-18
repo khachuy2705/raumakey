@@ -1,10 +1,11 @@
-//! The controller's notification-area icon as a pure state machine (plan §10.2, D42–D45;
+//! The controller's notification-area icon as a pure state machine (plan §10.2, D42–D47;
 //! design §21.5, §22; matrix #58): the settings that the icon, the menu, and the settings panel
 //! show, the icon and tooltip, the tray menu, and what to do with each message of the hidden
-//! window, each menu choice, each mode change of the hotkey, each request of the panel, and
-//! each answer of the settings worker. The Windows glue in `crate::desktop` passes them in and
-//! carries out the [`Effect`]s on the real notification icon, popup menu, message boxes,
-//! settings panel, typing hook, and worker thread; everything here is tested on every host.
+//! window, each menu choice, each mode change of the hotkey, each request of the panel, each
+//! answer of the settings worker, and each application that comes to the foreground. The
+//! Windows glue in `crate::desktop` passes them in and carries out the [`Effect`]s on the real
+//! notification icon, popup menu, message boxes, settings panel, typing hook, and worker
+//! thread; everything here is tested on every host.
 //!
 //! # Settings
 //!
@@ -31,12 +32,13 @@
 //! **From the temporary folder** (an exe run from inside a ZIP, [`TrayStart::temporary_exe`])
 //! "Khởi động cùng Windows" makes no shortcut and asks the user to extract Raumakey first.
 //!
-//! **Every runtime snapshot handed to the hook carries the mode the icon shows.** Applying a
-//! runtime snapshot sets the hook's mode to the one it carries, so the tray is the only one
-//! that hands runtime snapshots to the hook. When the hotkey changed the mode in the hook
-//! ([`Event::Hotkey`], from the hook observer), the tray takes the mode over, saves it, and
-//! hands it back to the hook ([`Effect::HookMode`]): a snapshot handed to the hook before the
-//! tray learned of the hotkey (with the mode shown then) is undone by it.
+//! **Every runtime snapshot handed to the hook carries the mode in effect** (the one the icon
+//! shows, unless an excluded application is in front). Applying a runtime snapshot sets the
+//! hook's mode to the one it carries, so the tray is the only one that hands runtime
+//! snapshots to the hook. When the hotkey changed the mode in the hook ([`Event::Hotkey`],
+//! from the hook observer), the tray takes the mode over, saves it, and hands it back to the
+//! hook ([`Effect::HookMode`]): a snapshot handed to the hook before the tray learned of the
+//! hotkey (with the mode in effect then) is undone by it.
 //!
 //! **Answers of the worker.** Each command is numbered ([`Effect::Worker`] `seq`). An answer
 //! that carries the settings in effect ([`Answer::state`]) is taken over only when it answers
@@ -55,12 +57,16 @@
 //!
 //! | Message | While running | Answer |
 //! |---|---|---|
-//! | [`START`] (posted once when the message loop starts) | adds the icon ([`Effect::ShowIcon`]), opens the panel when it opens at start ([`Effect::OpenPanel`]), then shows the start notices | 0 |
-//! | [`TRAY_CALLBACK`] `NIN_SELECT` (click), `NIN_KEYSELECT` (keyboard) | switches the mode | 0 |
+//! | [`START`] (posted once when the message loop starts) | adds the icon ([`Effect::ShowIcon`]), reads the application in front ([`Effect::ReadForeground`]), opens the panel when it opens at start ([`Effect::OpenPanel`]), then shows the start notices | 0 |
+//! | [`TRAY_CALLBACK`] `NIN_SELECT` (click) | switches the mode at once, or completes a double-click (see [the icon](#the-icon-d42-d46-d47)) | 0 |
+//! | [`TRAY_CALLBACK`] `WM_LBUTTONDBLCLK` (double-click) | switches back the mode its first click switched, and opens the panel or brings it to the front ([`Effect::OpenPanel`]) | 0 |
+//! | [`TRAY_CALLBACK`] `WM_LBUTTONDOWN` (a press) | nothing: a click begins | 0 |
+//! | [`TRAY_CALLBACK`] `NIN_KEYSELECT` (Space or Enter on the selected icon) | switches the mode | 0 |
 //! | [`TRAY_CALLBACK`] `WM_CONTEXTMENU` (right click, Shift+F10, menu key) | opens the menu at the anchor ([`Effect::OpenMenu`]) | 0 |
 //! | [`TRAY_CALLBACK`], other notifications or another icon id | nothing | 0 |
-//! | `WM_TIMER` of [`POLL_TIMER`] (every [`POLL_INTERVAL_MS`]) | makes sure the icon is shown ([`Effect::EnsureIcon`]: an add or a change that failed is tried again), and asks the worker to poll unless a poll is on its way | 0 |
+//! | `WM_TIMER` of [`POLL_TIMER`] (every [`POLL_INTERVAL_MS`]) | makes sure the icon is shown ([`Effect::EnsureIcon`]: an add or a change that failed is tried again), reads the application in front again ([`Effect::ReadForeground`]), and asks the worker to poll unless a poll is on its way | 0 |
 //! | [`WAKE`] (the worker, the hook observer, a message box, the panel, or the macro list editor left something in the inbox) | nothing: the glue drains the inbox ([`Tray::on_event`]) | 0 |
+//! | [`FOREGROUND`] (the foreground watcher; `wParam`: the window that came to the front) | reads the application of that window ([`Effect::ReadForeground`]) | 0 |
 //! | `TaskbarCreated` (Explorer restarted) | adds the icon again with the current state (matrix #58) | 0 |
 //! | `Raumakey.<sidhash>.show-panel` ([`SHOW_PANEL_COMPONENT`], a second start, D45) | opens the panel or brings it to the front ([`Effect::OpenPanel`]) | 0 |
 //! | `WM_CLOSE`; `WM_ENDSESSION` with a non-zero `wParam` (the session ends) | exits | 0 |
@@ -83,12 +89,71 @@
 //! still exit. After an exit every message, choice, and event is answered without effect, so
 //! a message still queued behind it (such as a `TaskbarCreated`) cannot bring the icon back.
 //!
+//! The glue hands every message over with a clock in milliseconds ([`Tray::on_message_at`]:
+//! `GetTickCount`, which wraps around after 49.7 days, so times are compared by their
+//! difference); only the icon's messages use it.
+//!
+//! # The icon (D42, D46, D47)
+//!
+//! The image shows the mode in effect, V or E, and the tooltip names it with the input method
+//! ([`IconState`]); while an excluded application is in front, the image shows E and the
+//! tooltip names the application ([`TOOLTIP_EXCLUDED_BEFORE`], its executable,
+//! [`TOOLTIP_EXCLUDED_AFTER`]; a long name loses characters in its middle, so the tooltip
+//! keeps within the shell's 127 units).
+//!
+//! **Click and double-click (D46).** A click switches the mode at once, at its `NIN_SELECT`:
+//! an input method must switch before the user types, so nothing waits for a second click.
+//! The tray remembers when the click came and the mode before it. A double-click opens the
+//! panel as "Bảng cấu hình…" does and leaves the mode as it was before its first click: that
+//! mode comes back the way of every mode change (the icon, [`Effect::HookMode`], the worker;
+//! nothing when it is back already, after the hotkey), then [`Effect::OpenPanel`] follows. The
+//! shell reports a double-click as press, release, select, `WM_LBUTTONDBLCLK`, release, and,
+//! depending on the version of Windows, a second select:
+//!
+//! - `WM_LBUTTONDBLCLK` is the double-click. The mode is restored when the remembered click
+//!   came within the double-click time before it ([`Tray::with_double_click_ms`]: the user's
+//!   `GetDoubleClickTime`, [`DEFAULT_DOUBLE_CLICK_MS`] until the glue sets it); the panel opens
+//!   in any case.
+//! - A select within the double-click time after a `WM_LBUTTONDBLCLK` is its second click and
+//!   is swallowed, once, unless a press (`WM_LBUTTONDOWN`) came between them: a click that
+//!   follows is never lost, whatever the shell sends.
+//! - For a shell that sends no `WM_LBUTTONDBLCLK`, a select within the double-click time of
+//!   the remembered click is the double-click.
+//!
+//! A double-click takes both its clicks: the click after it is a click again. A selection with
+//! the keyboard (`NIN_KEYSELECT`) switches the mode once; it and the menu end a double-click
+//! that a click may have begun.
+//!
+//! **Excluded applications (D47).** `raumakey.toml` lists applications in which Raumakey types
+//! English only (`[exclusions]`: Remote Desktop Connection and the like). The settings put one
+//! rule per application, with Vietnamese and macros off, at the head of the compatibility
+//! rules of the runtime snapshot, and the typing hook types English there. The tray shows it.
+//! The glue reads the application in front ([`ForegroundApp`]: the executable of the window's
+//! process and the window's class) for [`Effect::ReadForeground`]: at [`START`], whenever the
+//! foreground watcher reports another window ([`FOREGROUND`]), and at every tick of the poll
+//! timer, since a message posted while the menu's modal loop runs is lost
+//! (`raumakey_windows::window`); it passes the result to [`Tray::on_foreground`]. The
+//! application is excluded when the compatibility rules of the runtime snapshot in effect
+//! forbid Vietnamese in it (`raumakey_policy::CompatibilityPolicy`, for its executable and
+//! class, never as a password field); this is worked out again only when the application in
+//! front or the rules change. An application that cannot be read (no window, one that is gone,
+//! a process that cannot be queried) is not excluded.
+//!
+//! While an excluded application is in front, only the icon changes: the mode in effect, the
+//! menu's check, the panel, and the hook's mode stay. The hotkey, a click, the menu, and the
+//! panel switch the mode in effect (saved, handed to the hook) while the icon stays E, and
+//! the icon shows the new mode once the application leaves. A click on the icon brings the
+//! taskbar to the front first, so the icon shows the mode in effect when the click acts. New
+//! rules taken over from the worker (a hand edit of `[exclusions]`) apply to the application
+//! in front at once.
+//!
 //! # Settings panel (D43, D45)
 //!
 //! The panel ([`crate::panel`]) runs on a thread of its own; the tray is the only source of its
-//! data ([`Tray::panel_state`]). It opens from "Bảng cấu hình…", from the request of a second
-//! start, and at [`START`] when `[system] show_panel_on_start` is set; while it is open, each of
-//! these shows the state in effect in it and brings it to the front. Every opening is numbered
+//! data ([`Tray::panel_state`]). It opens from "Bảng cấu hình…", from a double-click on the
+//! icon (D46), from the request of a second start, and at [`START`] when `[system]
+//! show_panel_on_start` is set; while it is open, each of these shows the state in effect in it
+//! and brings it to the front. Every opening is numbered
 //! ([`Effect::OpenPanel`] `serial`), and only the close of the latest one
 //! ([`Event::PanelClosed`]) counts, so the close of a panel that was replaced meanwhile does
 //! not stop the refreshes of the new one.
@@ -141,16 +206,20 @@
 //! Strings shown to the user are new Raumakey strings in Vietnamese (plan §10.2,
 //! `crate::notice`, `crate::panel`). Nothing here holds keystrokes, document text, or macro
 //! text; `Debug` of the tray shows its mode, method, startup mode, whether the panel is open,
-//! and counters.
+//! whether an excluded application is in front, and counters.
 
 use core::fmt;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use raumakey_config::{ConfigError, StartupMode};
 use raumakey_ipc::message::RuntimeSnapshot;
+use raumakey_model::host::{ExeName, HostContext, SessionId};
 use raumakey_model::options::{EngineOptions, InputMethod};
+use raumakey_policy::CompatibilityPolicy;
 use raumakey_windows::menu::MenuItem;
-use raumakey_windows::shell::{NotifyIconEvent, decode_notify_icon_message};
+use raumakey_windows::shell::{NotifyIconEvent, TOOLTIP_CAPACITY, decode_notify_icon_message};
 use raumakey_windows::window::{
     AppMessage, REGISTERED_MESSAGE_FIRST, REGISTERED_MESSAGE_LAST, WM_CLOSE, WM_ENDSESSION,
     WM_TIMER,
@@ -180,6 +249,10 @@ pub const START: AppMessage = app_message(2);
 /// Posted to the hidden window by the settings worker and the hook observer after they left
 /// an [`Event`] in the tray's inbox (`WM_APP + 3`).
 pub const WAKE: AppMessage = app_message(3);
+/// Posted to the hidden window by the foreground watcher
+/// (`raumakey_windows::foreground::ForegroundWatcher`) when another window came to the
+/// foreground; `wParam` is that window's handle value (`WM_APP + 4`).
+pub const FOREGROUND: AppMessage = app_message(4);
 /// Id of the window timer that asks the worker to poll the configuration files.
 pub const POLL_TIMER: usize = 1;
 /// Interval of [`POLL_TIMER`]: a hand edit is picked up within about two seconds (D40).
@@ -190,6 +263,9 @@ pub const LOOP_EXIT_CODE: i32 = 0;
 /// posts to every top-level window to have the running controller show its settings panel
 /// (D45; `raumakey_windows::window::register_user_message`).
 pub const SHOW_PANEL_COMPONENT: &str = "show-panel";
+/// The double-click time of a tray made by [`Tray::new`], in milliseconds: the default of
+/// Windows. The glue gives the tray the user's own ([`Tray::with_double_click_ms`]).
+pub const DEFAULT_DOUBLE_CLICK_MS: u32 = 500;
 
 /// Tooltip of the icon in English mode: "Raumakey: typing English".
 pub const TOOLTIP_ENGLISH: &str = "Raumakey: đang gõ tiếng Anh";
@@ -201,6 +277,12 @@ pub const TOOLTIP_VNI: &str = "Raumakey: đang gõ tiếng Việt (VNI)";
 pub const TOOLTIP_VIQR: &str = "Raumakey: đang gõ tiếng Việt (VIQR)";
 /// Tooltip in Vietnamese mode with a user-defined key map ("own input method").
 pub const TOOLTIP_USER_DEFINED: &str = "Raumakey: đang gõ tiếng Việt (kiểu gõ riêng)";
+/// Tooltip while an excluded application is in front (D47), before its name: "Raumakey:
+/// typing English in ".
+pub const TOOLTIP_EXCLUDED_BEFORE: &str = "Raumakey: đang gõ tiếng Anh trong ";
+/// Tooltip while an excluded application is in front, after its name: " (excluded
+/// application)".
+pub const TOOLTIP_EXCLUDED_AFTER: &str = " (ứng dụng loại trừ)";
 
 /// Opens the settings panel: "Settings panel…" (with an ellipsis character).
 pub const MENU_PANEL: &str = "Bảng cấu hình\u{2026}";
@@ -276,31 +358,109 @@ impl InputMode {
     }
 }
 
-/// What the icon shows: its image (the mode) and its tooltip (the mode and the method).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// What the icon shows: its image (the mode) and its tooltip (the mode and the method, or the
+/// excluded application in front).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct IconState {
-    /// The mode: the V or E image.
+    /// The mode of the image: V or E (always E while `excluded`).
     pub mode: InputMode,
     /// The input method in effect, named by the tooltip in Vietnamese mode.
     pub method: InputMethod,
+    /// The excluded application in the foreground (D47), named by the tooltip.
+    pub excluded: Option<ExeName>,
 }
 
 impl IconState {
+    /// The icon of `mode` with `method` in effect.
+    pub const fn new(mode: InputMode, method: InputMethod) -> Self {
+        Self {
+            mode,
+            method,
+            excluded: None,
+        }
+    }
+
+    /// The icon while the excluded application `exe` is in front, `method` in effect: E.
+    pub const fn excluded(exe: ExeName, method: InputMethod) -> Self {
+        Self {
+            mode: InputMode::English,
+            method,
+            excluded: Some(exe),
+        }
+    }
+
     /// The icon group of the image.
-    pub const fn icon_id(self) -> u16 {
+    pub const fn icon_id(&self) -> u16 {
         self.mode.icon_id()
     }
 
-    /// The tooltip.
-    pub const fn tooltip(self) -> &'static str {
-        match (self.mode, self.method) {
+    /// The tooltip. With an excluded application in front, [`TOOLTIP_EXCLUDED_BEFORE`], its
+    /// name, and [`TOOLTIP_EXCLUDED_AFTER`], within the shell's 127 units: a name too long
+    /// for them loses characters in its middle (an ellipsis takes their place).
+    pub fn tooltip(&self) -> Cow<'static, str> {
+        if let Some(exe) = &self.excluded {
+            let room = TOOLTIP_UNITS
+                - TOOLTIP_EXCLUDED_BEFORE.encode_utf16().count()
+                - TOOLTIP_EXCLUDED_AFTER.encode_utf16().count();
+            let name = shortened(exe.as_str(), room);
+            return Cow::Owned(format!(
+                "{TOOLTIP_EXCLUDED_BEFORE}{name}{TOOLTIP_EXCLUDED_AFTER}"
+            ));
+        }
+        Cow::Borrowed(match (self.mode, self.method) {
             (InputMode::English, _) => TOOLTIP_ENGLISH,
             (InputMode::Vietnamese, InputMethod::Telex) => TOOLTIP_TELEX,
             (InputMode::Vietnamese, InputMethod::Vni) => TOOLTIP_VNI,
             (InputMode::Vietnamese, InputMethod::Viqr) => TOOLTIP_VIQR,
             (InputMode::Vietnamese, InputMethod::UserDefined) => TOOLTIP_USER_DEFINED,
-        }
+        })
     }
+}
+
+/// The UTF-16 units a tooltip may hold (`raumakey_windows::shell::TOOLTIP_CAPACITY` without
+/// its NUL).
+const TOOLTIP_UNITS: usize = TOOLTIP_CAPACITY - 1;
+
+/// `text` within `units` UTF-16 units: whole when it fits, else its start and its end around
+/// an ellipsis, never splitting a character.
+fn shortened(text: &str, units: usize) -> Cow<'_, str> {
+    if text.encode_utf16().count() <= units {
+        return Cow::Borrowed(text);
+    }
+    let room = units.saturating_sub(1);
+    let tail_room = room / 2;
+    let head_room = room - tail_room;
+    let mut head = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        if used + c.len_utf16() > head_room {
+            break;
+        }
+        used += c.len_utf16();
+        head.push(c);
+    }
+    let mut tail = Vec::new();
+    let mut used = 0;
+    for c in text.chars().rev() {
+        if used + c.len_utf16() > tail_room {
+            break;
+        }
+        used += c.len_utf16();
+        tail.push(c);
+    }
+    head.push('\u{2026}');
+    head.extend(tail.into_iter().rev());
+    Cow::Owned(head)
+}
+
+/// The application of the window in the foreground, as the glue read it
+/// ([`Effect::ReadForeground`]): what tells whether it is excluded (D47).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ForegroundApp {
+    /// The lowercase executable basename of its process.
+    pub exe: ExeName,
+    /// The class of the window, when it could be read.
+    pub window_class: Option<String>,
 }
 
 /// The commands of the tray menu.
@@ -560,7 +720,7 @@ pub enum Effect {
     /// Hand the mode to the typing hook (`TypingUpdate::Mode`; true: Vietnamese).
     HookMode(bool),
     /// Hand this runtime snapshot to the typing hook (`TypingUpdate::Runtime`); it carries the
-    /// mode the icon shows.
+    /// mode in effect.
     HookRuntime(Box<RuntimeSnapshot>),
     /// Send `command`, numbered `seq`, to the settings worker.
     Worker {
@@ -572,6 +732,10 @@ pub enum Effect {
     /// Make sure the icon is shown with this state: add it again when it is not shown, or
     /// when its last change failed (every tick of the poll timer).
     EnsureIcon(IconState),
+    /// Read the application of window `window` (`None`: of the window in the foreground now)
+    /// and pass it to [`Tray::on_foreground`]; an application that cannot be read (no window,
+    /// one that is gone, a process that cannot be queried) is passed as `None`.
+    ReadForeground(Option<isize>),
     /// Open the settings panel showing `state`; when a panel is open, show `state` in it and
     /// bring it to the front instead. The panel open afterwards carries `serial` (a new number
     /// for every opening): its [`Event::PanelClosed`] names it, so the close of a panel that
@@ -677,6 +841,28 @@ pub struct Tray {
     save_error: Option<ConfigError>,
     /// `raumakey.exe` runs from the temporary folder: no shortcut is made to it.
     temporary_exe: bool,
+    /// The longest time between the clicks of a double-click, in milliseconds.
+    double_click_ms: u32,
+    /// The last click on the icon that switched the mode, which a second click may make the
+    /// first of a double-click.
+    click: Option<Click>,
+    /// The time of the last double-click notification, while the shell may still follow it
+    /// with the `NIN_SELECT` of its second click.
+    double_clicked: Option<u32>,
+    /// The application in the foreground, as the glue last read it (`None`: unknown).
+    foreground: Option<ForegroundApp>,
+    /// That application, when the compatibility rules in effect exclude it (D47): the icon
+    /// shows E and names it.
+    excluded: Option<ExeName>,
+}
+
+/// A click on the icon that switched the mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Click {
+    /// When it arrived (the glue's clock, milliseconds).
+    at: u32,
+    /// The mode before it, which a double-click restores.
+    before: InputMode,
 }
 
 impl fmt::Debug for Tray {
@@ -690,6 +876,7 @@ impl fmt::Debug for Tray {
             .field("show_panel_on_start", &self.show_panel_on_start)
             .field("panel_open", &self.panel.is_some())
             .field("panel_serial", &self.panel_serial)
+            .field("excluded", &self.excluded.is_some())
             .field("phase", &self.phase)
             .field("sent", &self.sent)
             .field("polling", &self.polling)
@@ -719,20 +906,66 @@ impl Tray {
             poll_again: false,
             save_error: None,
             temporary_exe: start.temporary_exe,
+            double_click_ms: DEFAULT_DOUBLE_CLICK_MS,
+            click: None,
+            double_clicked: None,
+            foreground: None,
+            excluded: None,
         }
     }
 
-    /// The mode the icon shows.
+    /// The same tray with the user's double-click time (`GetDoubleClickTime`, through
+    /// `raumakey_windows::input::double_click_time`), in milliseconds.
+    #[must_use]
+    pub fn with_double_click_ms(mut self, double_click_ms: u32) -> Self {
+        self.double_click_ms = double_click_ms;
+        self
+    }
+
+    /// The mode in effect: saved, checked in the menu and the panel, and handed to the hook.
+    /// The icon shows it, or E while an excluded application is in front ([`Tray::icon`]).
     pub fn mode(&self) -> InputMode {
         InputMode::from_vietnamese(self.runtime.vietnamese_mode)
     }
 
-    /// What the icon shows.
+    /// What the icon shows: the mode in effect, or E while an excluded application is in
+    /// front.
     pub fn icon(&self) -> IconState {
-        IconState {
-            mode: self.mode(),
-            method: self.runtime.options.input_method,
+        let method = self.runtime.options.input_method;
+        match &self.excluded {
+            Some(exe) => IconState::excluded(exe.clone(), method),
+            None => IconState::new(self.mode(), method),
         }
+    }
+
+    /// The application in the foreground is now `app` (`None`: unknown), as the glue read it
+    /// for [`Effect::ReadForeground`]: the icon shows whether the rules in effect exclude it
+    /// (see the [module documentation](self)). Only while the tray runs.
+    pub fn on_foreground(&mut self, app: Option<ForegroundApp>) -> Vec<Effect> {
+        if !self.is_running() || self.foreground == app {
+            return Vec::new();
+        }
+        let before = self.icon();
+        self.foreground = app;
+        self.excluded = self.exclusion();
+        let mut effects = Vec::new();
+        if self.icon() != before {
+            effects.push(Effect::UpdateIcon(self.icon()));
+        }
+        self.follow_panel(&mut effects, false);
+        effects
+    }
+
+    /// The application in the foreground when the compatibility rules of the runtime snapshot
+    /// in effect forbid Vietnamese in it, as the hook resolves them for a window of its
+    /// executable and class (an unknown class matches no rule narrowed to one; a password
+    /// field, which the icon does not follow, plays no part).
+    fn exclusion(&self) -> Option<ExeName> {
+        let app = self.foreground.as_ref()?;
+        let mut host = HostContext::new(SessionId::default(), app.exe.clone());
+        host.window_class.clone_from(&app.window_class);
+        let policy = CompatibilityPolicy::new(Arc::new(self.runtime.compatibility.clone()));
+        (!policy.resolve(&host).vietnamese_allowed).then(|| app.exe.clone())
     }
 
     /// The runtime snapshot in effect, as the hook last got it from the tray.
@@ -808,23 +1041,39 @@ impl Tray {
         self.is_running()
     }
 
-    /// The answer to window message `message` with its parameters (see the [module
-    /// documentation](self)).
-    pub fn on_message(&mut self, message: u32, wparam: usize, lparam: isize) -> Reply {
-        let mut reply = self.message(message, wparam, lparam);
+    /// The answer to window message `message` with its parameters, handled at `now_ms` (see
+    /// the [module documentation](self)). `now_ms` is a clock in milliseconds that wraps
+    /// around (`GetTickCount`, through `raumakey_windows::input::tick_count`); only the icon's
+    /// messages use it, to tell a double-click from two clicks.
+    pub fn on_message_at(
+        &mut self,
+        message: u32,
+        wparam: usize,
+        lparam: isize,
+        now_ms: u32,
+    ) -> Reply {
+        let mut reply = self.message(message, wparam, lparam, now_ms);
         self.follow_panel(&mut reply.effects, false);
         reply
     }
 
-    fn message(&mut self, message: u32, wparam: usize, lparam: isize) -> Reply {
+    fn message(&mut self, message: u32, wparam: usize, lparam: isize, now_ms: u32) -> Reply {
         if message == START.id() {
             return Reply::handled(self.start());
         }
         if message == TRAY_CALLBACK.id() {
-            return Reply::handled(self.icon_message(wparam, lparam));
+            return Reply::handled(self.icon_message(wparam, lparam, now_ms));
         }
         if message == WAKE.id() {
             return Reply::handled(Vec::new());
+        }
+        if message == FOREGROUND.id() {
+            let effects = if self.is_running() {
+                vec![Effect::ReadForeground(Some(wparam as isize))]
+            } else {
+                Vec::new()
+            };
+            return Reply::handled(effects);
         }
         if self.taskbar_created == Some(message) {
             let effects = if self.is_running() {
@@ -1024,7 +1273,9 @@ impl Tray {
             return Vec::new();
         }
         self.phase = Phase::Running;
-        let mut effects = vec![Effect::ShowIcon(self.icon())];
+        // The application in front is read once the icon exists, so a change it makes to the
+        // icon follows the add.
+        let mut effects = vec![Effect::ShowIcon(self.icon()), Effect::ReadForeground(None)];
         if self.show_panel_on_start {
             effects.extend(self.open_panel());
         }
@@ -1032,27 +1283,91 @@ impl Tray {
         effects
     }
 
-    fn icon_message(&mut self, wparam: usize, lparam: isize) -> Vec<Effect> {
+    fn icon_message(&mut self, wparam: usize, lparam: isize, now_ms: u32) -> Vec<Effect> {
         let message = decode_notify_icon_message(wparam, lparam);
         if !self.is_running() || message.icon_id != TRAY_ICON_ID {
             return Vec::new();
         }
         match message.event {
-            NotifyIconEvent::Select | NotifyIconEvent::KeySelect => {
+            NotifyIconEvent::Select => self.select(now_ms),
+            NotifyIconEvent::DoubleClick => self.double_click(now_ms),
+            NotifyIconEvent::ButtonDown => {
+                // A new click: its select is never the second one of a double-click.
+                self.double_clicked = None;
+                Vec::new()
+            }
+            NotifyIconEvent::KeySelect => {
+                self.click = None;
                 self.set_mode(self.mode().toggled())
             }
-            NotifyIconEvent::ContextMenu { x, y } => vec![Effect::OpenMenu { x, y }],
+            NotifyIconEvent::ContextMenu { x, y } => {
+                self.click = None;
+                vec![Effect::OpenMenu { x, y }]
+            }
             NotifyIconEvent::Other(_) => Vec::new(),
         }
     }
 
-    /// A tick of the poll timer: the icon must be shown, and the worker polls unless a poll
-    /// is on its way.
+    /// Whether `now_ms` is within the double-click time after `then_ms` (the clock wraps
+    /// around; a clock that went back is far apart).
+    fn within_double_click(&self, then_ms: u32, now_ms: u32) -> bool {
+        now_ms.wrapping_sub(then_ms) <= self.double_click_ms
+    }
+
+    /// The select of a click at `now_ms`: swallowed when it is the second click of a
+    /// double-click that was reported already, the double-click itself when it follows a
+    /// click within the double-click time (a shell that reports no double-click), and
+    /// otherwise a switch of the mode, at once.
+    fn select(&mut self, now_ms: u32) -> Vec<Effect> {
+        if let Some(at) = self.double_clicked.take()
+            && self.within_double_click(at, now_ms)
+        {
+            return Vec::new();
+        }
+        if let Some(click) = self.click.take()
+            && self.within_double_click(click.at, now_ms)
+        {
+            return self.panel_after(Some(click));
+        }
+        let before = self.mode();
+        self.click = Some(Click { at: now_ms, before });
+        self.set_mode(before.toggled())
+    }
+
+    /// The double-click notification at `now_ms`: the panel, after the mode from before its
+    /// first click. A select that follows it within the double-click time, before a new
+    /// press, belongs to it.
+    fn double_click(&mut self, now_ms: u32) -> Vec<Effect> {
+        self.double_clicked = Some(now_ms);
+        let click = self
+            .click
+            .take()
+            .filter(|click| self.within_double_click(click.at, now_ms));
+        self.panel_after(click)
+    }
+
+    /// Opens the panel for a double-click whose first click was `click`: the mode it changed
+    /// is changed back first (nothing when the mode is back already).
+    fn panel_after(&mut self, click: Option<Click>) -> Vec<Effect> {
+        let mut effects = match click {
+            Some(click) if click.before != self.mode() => self.set_mode(click.before),
+            Some(_) | None => Vec::new(),
+        };
+        effects.extend(self.open_panel());
+        effects
+    }
+
+    /// A tick of the poll timer: the icon must be shown, the application in front is read
+    /// again (a [`FOREGROUND`] may have been lost), and the worker polls unless a poll is on
+    /// its way.
     fn tick(&mut self) -> Vec<Effect> {
         if !self.is_running() {
             return Vec::new();
         }
-        let mut effects = vec![Effect::EnsureIcon(self.icon())];
+        let mut effects = vec![
+            Effect::EnsureIcon(self.icon()),
+            Effect::ReadForeground(None),
+        ];
         if self.polling.is_none() {
             effects.push(self.command(WorkerCommand::Poll));
         }
@@ -1240,13 +1555,18 @@ impl Tray {
         effects
     }
 
-    /// Takes over the settings in effect that the worker answered.
+    /// Takes over the settings in effect that the worker answered; new compatibility rules
+    /// apply to the application in front at once.
     fn adopt(&mut self, state: SettingsState) -> Vec<Effect> {
         let before = self.icon();
         let changed = !same_for_hook(&self.runtime, &state.runtime);
+        let rules_changed = self.runtime.compatibility != state.runtime.compatibility;
         self.runtime = state.runtime;
         self.startup = state.startup;
         self.show_panel_on_start = state.show_panel_on_start;
+        if rules_changed {
+            self.excluded = self.exclusion();
+        }
         let mut effects = Vec::new();
         if self.icon() != before {
             effects.push(Effect::UpdateIcon(self.icon()));

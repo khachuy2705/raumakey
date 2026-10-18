@@ -1,7 +1,7 @@
 //! The run mode on Windows: the [`Desktop`] of [`crate::run`] and the glue that carries out
 //! the [`Effect`]s of the tray state machine ([`crate::tray`]) on the real notification icon,
 //! popup menu, message boxes, settings panel, typing hook, and settings worker (plan §10.2,
-//! D38–D45; design §21, §22; matrix #58).
+//! D38–D47; design §21, §22; matrix #58).
 //!
 //! This module is thin: every decision is made in `crate::run`, `crate::tray`,
 //! `crate::panel`, `crate::worker`, and `crate::notice`, which are tested on every host, and
@@ -18,10 +18,14 @@
 //!   ignoring failures.
 //! - [`run_tray`] loads the V and E icons from `raumakey.exe` itself at the small icon size
 //!   ([`ModeIcons`]), registers `TaskbarCreated` and the show-panel request (a registration
-//!   that fails leaves the tray without that message), starts the settings worker thread
-//!   ([`WorkerThread`], which now owns the settings), registers the window class, creates the
-//!   tray window ([`create_tray_window`]), and runs the message loop on the calling thread.
-//!   The window is destroyed after the loop has ended.
+//!   that fails leaves the tray without that message), gives the tray the user's double-click
+//!   time (`raumakey_windows::input::double_click_time`, D46), starts the settings worker
+//!   thread ([`WorkerThread`], which now owns the settings), registers the window class,
+//!   creates the tray window ([`create_tray_window`]), installs the foreground watcher on the
+//!   calling thread (`raumakey_windows::foreground::ForegroundWatcher`, D47: it posts
+//!   [`FOREGROUND`] to the tray window; without it, the icon follows the application in front
+//!   at the ticks of the poll timer only), and runs the message loop on the calling thread.
+//!   The watcher is removed and the window destroyed after the loop has ended.
 //! - [`create_tray_window`] creates a hidden top-level window: a message-only window would
 //!   never receive the `TaskbarCreated` broadcast or the show-panel request. When the
 //!   controller runs elevated (the elevated logon task, or "Run as administrator"), it lets
@@ -30,14 +34,18 @@
 //!   Interface Privilege Isolation (`ChangeWindowMessageFilterEx`, through
 //!   `Window::allow_message_from_lower_integrity`). It starts the poll timer ([`POLL_TIMER`],
 //!   every [`POLL_INTERVAL_MS`]) and posts [`START`].
-//! - [`TrayWindow`] is the window's handler: it passes each message to [`Tray::on_message`],
-//!   carries out the effects on a [`TrayShell`] (icon, menu, notices, panel) and on
-//!   [`TrayServices`] (hook and worker), and then drains the inbox ([`Tray::on_event`]), the
-//!   hotkey changes coalesced ([`coalesce`]). At each tick of the poll timer it first checks
-//!   the typing hook ([`TrayServices::keep_typing_alive`]), which Windows may have removed
-//!   silently, and makes sure the icon is shown. [`ShellTray`] (over a [`NotifyArea`],
-//!   [`WinNotifyArea`] for real) and [`WinServices`] are the real ones; tests use fakes on a
-//!   real window, message loop, and timer.
+//! - [`TrayWindow`] is the window's handler: it passes each message to [`Tray::on_message_at`]
+//!   with the clock (`raumakey_windows::input::tick_count`, by which the tray tells a
+//!   double-click from two clicks), carries out the effects on a [`TrayShell`] (icon, menu,
+//!   notices, panel, and the application in front) and on [`TrayServices`] (hook and worker),
+//!   and then drains the inbox ([`Tray::on_event`]), the hotkey changes coalesced
+//!   ([`coalesce`]). For [`Effect::ReadForeground`] it reads the application of the window
+//!   ([`TrayShell::foreground_app`]: the executable basename of its process and its class,
+//!   never its title or path) and hands it to [`Tray::on_foreground`]. At each tick of the
+//!   poll timer it first checks the typing hook ([`TrayServices::keep_typing_alive`]), which
+//!   Windows may have removed silently, and makes sure the icon is shown. [`ShellTray`] (over
+//!   a [`NotifyArea`], [`WinNotifyArea`] for real) and [`WinServices`] are the real ones;
+//!   tests use fakes on a real window, message loop, and timer.
 //! - [`ShellTray`] shows one settings panel at a time (`crate::panel`): a dialog box without
 //!   owner on a thread of its own (`raumakey_windows::dialog_box::spawn_dialog`), with the app
 //!   icon of `raumakey.exe` ([`ICON_APP`]). The tray's thread and the panel share the state to
@@ -78,7 +86,7 @@
 //!
 //! | Thread | Owns | Talks to the tray by |
 //! |---|---|---|
-//! | main (tray) | the window, the icon, the menu, the [`Tray`] | — |
+//! | main (tray) | the window, the icon, the menu, the [`Tray`], the foreground watcher (an out-of-context WinEvent hook: the system calls it on this thread while the thread waits for messages, and it only posts [`FOREGROUND`]) | — |
 //! | hook (`raumakey_windows::hooks`) | `WH_KEYBOARD_LL`, `WH_MOUSE_LL`, the session core | the observer: [`Event::Hotkey`] into the inbox, then [`WAKE`] |
 //! | settings worker ([`crate::worker`]) | `Settings`, the files, the shortcut, Notepad | [`Event::Worker`] answers into the inbox, then [`WAKE`] |
 //! | one per notice (`raumakey_windows::dialog::spawn_message_box`) | a message box without owner | a "yes" as [`Event::Answered`] into the inbox, then [`WAKE`] |
@@ -88,7 +96,9 @@
 //! The tray thread sends the worker numbered commands (`WorkerThread::send`) and hands the
 //! hook modes and runtime snapshots (`TypingHook::update`); the worker hands the hook macro
 //! snapshots. The window handler does no file, network, or engine work: `Settings::apply`,
-//! `poll`, and `recover` may wait up to two seconds for a store lock. The observer runs
+//! `poll`, and `recover` may wait up to two seconds for a store lock. Reading the application
+//! in front (a few window-manager reads and a query of the process's image name) takes no
+//! lock and waits for nothing. The observer runs
 //! inside the hook callback and only sends into a channel and posts a message. The tray thread
 //! never waits for the panel or the editor.
 //!
@@ -130,7 +140,10 @@
 //! The glue tests (`tests/desktop.rs`) run a real hidden window, message loop, and timer with
 //! a fake shell and fake services. They also read back that the tray window is top-level and
 //! that the window of an elevated controller lets the messages of other processes through,
-//! and they run the real panel and the real macro list editor through [`ShellTray`] in its
+//! that a double-click on the icon opens the panel and keeps the mode, and that the glue reads
+//! the application in front at the start and at each [`FOREGROUND`] (the fake shell answers;
+//! the tests install no foreground watcher and post [`FOREGROUND`] themselves), and they run
+//! the real panel and the real macro list editor through [`ShellTray`] in its
 //! test variant ([`ShellTray::with_off_screen_dialogs`]: off every monitor, never activated
 //! or brought to the front, the editor's questions answered "no" without a box), driven with
 //! `SendMessageW`. Nothing is broadcast in tests. A successful build and these tests are no
@@ -147,9 +160,11 @@
 //! 1. **First run:** the V icon is in the notification area with the tooltip "Raumakey: đang
 //!    gõ tiếng Việt (Telex)", the settings panel opens (no welcome box; see 20), and
 //!    `raumakey.toml` exists beside the exe. Notepad: `tieengs vieetj` types "tiếng việt".
-//! 2. **Icon:** click it: E, tooltip "Raumakey: đang gõ tiếng Anh", `aa` stays `aa`; click
-//!    again: V. Select it with the keyboard (Win+B, arrows) and press Space or Enter. Tap
-//!    Ctrl+Shift: the icon follows the hotkey each time.
+//! 2. **Icon:** click it: E at once, tooltip "Raumakey: đang gõ tiếng Anh", `aa` typed right
+//!    after the click stays `aa`; a second later click again: V. Select it with the keyboard
+//!    (Win+B, arrows) and press Space or Enter, twice quickly: it switches twice. Tap
+//!    Ctrl+Shift: the icon follows the hotkey each time. (A double-click opens the panel, see
+//!    34.)
 //! 3. **Menu:** right-click: "Bảng cấu hình…", a separator, then the items of D42 in order,
 //!    with separators; "Gõ tiếng Việt (Ctrl+Shift)" checked in V mode, exactly one of
 //!    Telex/VNI/VIQR checked. Choose VNI: the
@@ -289,6 +304,31 @@
 //!     `taskkill /IM raumakey.exe` without `/F` is no exit: it sends `WM_CLOSE` only to the
 //!     visible windows (plan §16.2), so with unsaved rows (and no box open) the editor asks
 //!     its discard question, as its close box would, and the controller keeps running.
+//!
+//! The icon (D46, D47):
+//!
+//! 34. **Double-click:** in V, double-click the icon: the panel opens (or the open one comes
+//!     to the front), the icon is V again at once, the panel shows "Gõ tiếng Việt" checked, and
+//!     `raumakey.toml` still has `enabled = true` (reload it in Notepad); likewise in E. Set
+//!     the double-click speed (Control Panel, Mouse) to its slowest, then to its fastest, and
+//!     start Raumakey again each time (it reads the speed at its start): a double-click still
+//!     opens the panel and keeps the mode, and two clicks just slower than it switch twice.
+//!     Right after a double-click, a click switches again.
+//! 35. **Remote Desktop Connection:** with the default `[exclusions]`, start `mstsc.exe` and
+//!     bring it to the front: the icon shows E at once, with the tooltip "Raumakey: đang gõ
+//!     tiếng Anh trong mstsc.exe (ứng dụng loại trừ)"; typing `tieengs` in its computer-name
+//!     box stays `tieengs`; the menu and the panel still show V. Tap Ctrl+Shift: the icon
+//!     stays E and the menu's check follows; tap it again. Alt+Tab to Notepad: V at once, and
+//!     Vietnamese typing works there. Bring `mstsc.exe` to the front again, then click the
+//!     icon: the taskbar comes to the front, the icon shows V, the click switches to E (saved),
+//!     and Notepad shows E. With the menu open, switch to `mstsc.exe` and back (Alt+Tab): the
+//!     icon is right within about 2 s. Start `mstsc.exe` from an elevated prompt while Raumakey
+//!     runs without elevation: E, or, when its process cannot be queried, the mode in effect.
+//!     Lock the session and unlock it with `mstsc.exe` in front: E.
+//! 36. **Hand edit of `[exclusions]`:** open `raumakey.toml` with "Mở file cấu hình", add
+//!     `"notepad.exe"` to `apps`, and save, Notepad staying in front: within about 2 s the
+//!     icon shows E with "trong notepad.exe", and typing in Notepad stays English. Remove it
+//!     and save: within about 2 s V again, and Vietnamese typing works in Notepad.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -304,7 +344,12 @@ use raumakey_windows::dialog::{
 };
 use raumakey_windows::dialog_box::{DetachedDialog, Dialog, DialogHandler, spawn_dialog};
 use raumakey_windows::error::{E_UNEXPECTED, WinError, WinResult};
+use raumakey_windows::foreground::{
+    ForegroundWatcher, foreground_window, process_image_basename, window_class_name,
+    window_process_id,
+};
 use raumakey_windows::icon::{Icon, IconKind, IconSize, icon_size};
+use raumakey_windows::input::{double_click_time, tick_count};
 use raumakey_windows::menu::{MenuItem, PopupMenu};
 use raumakey_windows::module::Module;
 use raumakey_windows::names::CONTROLLER_INSTANCE;
@@ -330,9 +375,9 @@ use crate::run::{Desktop, Opened, ShortcutState, TypingStartError, shortcut_stat
 use crate::settings::{Settings, is_temporary_path};
 use crate::system::{shortcut_spec, startup_shortcut_path};
 use crate::tray::{
-    Effect, Event, ICON_APP, IconState, InputMode, LOOP_EXIT_CODE, POLL_INTERVAL_MS, POLL_TIMER,
-    RegisteredMessages, SHOW_PANEL_COMPONENT, START, TRAY_CALLBACK, TRAY_ICON_ID, Tray, TrayStart,
-    WAKE, coalesce,
+    Effect, Event, FOREGROUND, ForegroundApp, ICON_APP, IconState, InputMode, LOOP_EXIT_CODE,
+    POLL_INTERVAL_MS, POLL_TIMER, RegisteredMessages, SHOW_PANEL_COMPONENT, START, TRAY_CALLBACK,
+    TRAY_ICON_ID, Tray, TrayStart, WAKE, coalesce,
 };
 use crate::typing::{Mailbox, TypingError, TypingHook, TypingUpdate};
 use crate::worker::{SettingsWorker, WorkerCommand, WorkerPorts, WorkerThread};
@@ -546,7 +591,8 @@ pub fn run_tray(parts: TrayParts) -> WinResult<i32> {
             taskbar_created: taskbar_created_message().unwrap_or(0),
             show_panel: register_user_message(SHOW_PANEL_COMPONENT).unwrap_or(0),
         },
-    );
+    )
+    .with_double_click_ms(double_click_time());
     let class = WindowClass::register(WINDOW_CLASS_LABEL)?;
     let temporary_exe = is_temporary_path(&exe);
     let ports = WinWorkerPorts {
@@ -577,7 +623,12 @@ pub fn run_tray(parts: TrayParts) -> WinResult<i32> {
         POLL_INTERVAL_MS,
     )?;
     let _ = target.set(window.handle());
+    // On this thread, before the loop handles START (which reads the application in front),
+    // so no change is missed. Without it the icon follows the application in front at the
+    // ticks of the poll timer only.
+    let watcher = ForegroundWatcher::install(window.handle(), FOREGROUND).ok();
     let code = run_message_loop();
+    drop(watcher);
     drop(window);
     code
 }
@@ -665,6 +716,11 @@ pub trait TrayShell {
 
     /// Closes the open macro list editor, if any, without waiting and without saving.
     fn close_macro_list(&mut self);
+
+    /// The application of window `window` (`None`: of the window in the foreground now): the
+    /// executable of its process and its class; `None` when there is no such window, it is
+    /// gone, or its process cannot be queried.
+    fn foreground_app(&mut self, window: Option<isize>) -> Option<ForegroundApp>;
 }
 
 /// The notification icon as the shell sees it; [`WinNotifyArea`] is the real one.
@@ -747,6 +803,11 @@ impl<S: TrayShell, V: TrayServices> TrayWindow<S, V> {
                 }
                 Effect::Notify(notice) => self.shell.notify(notice),
                 Effect::EnsureIcon(icon) => self.shell.ensure(owner, icon),
+                Effect::ReadForeground(window) => {
+                    let app = self.shell.foreground_app(window);
+                    let next = self.tray.on_foreground(app);
+                    self.run(owner, next);
+                }
                 Effect::HookMode(vietnamese) => self.services.hook_mode(vietnamese),
                 Effect::HookRuntime(runtime) => self.services.hook_runtime(*runtime),
                 Effect::Worker { seq, command } => self.services.send(seq, command),
@@ -801,7 +862,9 @@ impl<S: TrayShell, V: TrayServices> WindowHandler for TrayWindow<S, V> {
         if message == WM_TIMER && wparam.0 == POLL_TIMER && self.tray.is_running() {
             self.services.keep_typing_alive();
         }
-        let reply = self.tray.on_message(message, wparam.0, lparam.0);
+        let reply = self
+            .tray
+            .on_message_at(message, wparam.0, lparam.0, tick_count());
         if reply.result.is_some() {
             self.run(hwnd, reply.effects);
             self.drain(hwnd);
@@ -967,7 +1030,7 @@ impl NotifyArea for WinNotifyArea {
                 // again would fail); after an Explorer restart the change fails and the icon
                 // is added again with the current state.
                 let changed = notify.set_icon(self.icons.icon(icon.mode)).is_ok()
-                    & notify.set_tooltip(icon.tooltip()).is_ok();
+                    & notify.set_tooltip(&icon.tooltip()).is_ok();
                 changed || notify.readd().is_ok()
             }
             None => {
@@ -976,7 +1039,7 @@ impl NotifyArea for WinNotifyArea {
                     u32::from(TRAY_ICON_ID),
                     TRAY_CALLBACK.id(),
                     self.icons.icon(icon.mode),
-                    icon.tooltip(),
+                    &icon.tooltip(),
                 )
                 .ok();
                 self.notify.is_some()
@@ -989,7 +1052,7 @@ impl NotifyArea for WinNotifyArea {
             return false;
         };
         notify.set_icon(self.icons.icon(icon.mode)).is_ok()
-            & notify.set_tooltip(icon.tooltip()).is_ok()
+            & notify.set_tooltip(&icon.tooltip()).is_ok()
     }
 
     fn delete(&mut self) {
@@ -1452,6 +1515,25 @@ impl<A: NotifyArea> TrayShell for ShellTray<A> {
             open.dialog.dismiss();
         }
     }
+
+    fn foreground_app(&mut self, window: Option<isize>) -> Option<ForegroundApp> {
+        read_foreground_app(window)
+    }
+}
+
+/// The application of window `window` (`None`: of the window in the foreground now): the
+/// executable basename of its process (`None` when the window is gone or its process cannot
+/// be queried) and its class. Neither the title nor the path is read.
+fn read_foreground_app(window: Option<isize>) -> Option<ForegroundApp> {
+    let hwnd = match window {
+        Some(hwnd) => hwnd,
+        None => foreground_window()?.hwnd,
+    };
+    let exe = process_image_basename(window_process_id(hwnd)?).ok()?;
+    Some(ForegroundApp {
+        exe,
+        window_class: window_class_name(hwnd),
+    })
 }
 
 /// The macro list editor opened last.

@@ -3,7 +3,7 @@
 
 use raumakey_windows::shell::{
     NIN_KEYSELECT, NIN_SELECT, NINF_KEY, NotifyIconEvent, NotifyIconMessage, WM_CONTEXTMENU,
-    decode_notify_icon_message, tooltip_units,
+    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, decode_notify_icon_message, tooltip_units,
 };
 
 /// `wParam` of a version-4 callback: the anchor point, x in the low word and y in the high
@@ -28,6 +28,28 @@ fn the_notification_codes_are_those_of_the_windows_sdk() {
     assert_eq!(NINF_KEY, 0x0001);
     assert_eq!(NIN_KEYSELECT, NIN_SELECT | NINF_KEY);
     assert_eq!(WM_CONTEXTMENU, 0x007B);
+    assert_eq!(WM_LBUTTONDOWN, 0x0201);
+    assert_eq!(WM_LBUTTONDBLCLK, 0x0203);
+}
+
+/// Version-4 callbacks carry the mouse messages in the low word of `lParam` too: the press
+/// of the left button and the second press of a double-click (D46).
+#[test]
+fn a_press_and_a_double_click_of_the_left_button_are_decoded() {
+    assert_eq!(
+        decoded(anchor(10, 20), notification(WM_LBUTTONDOWN, 1)),
+        NotifyIconMessage {
+            icon_id: 1,
+            event: NotifyIconEvent::ButtonDown
+        }
+    );
+    assert_eq!(
+        decoded(anchor(-3, 4), notification(WM_LBUTTONDBLCLK, 7)),
+        NotifyIconMessage {
+            icon_id: 7,
+            event: NotifyIconEvent::DoubleClick
+        }
+    );
 }
 
 #[test]
@@ -89,9 +111,9 @@ fn bits_above_the_two_words_are_ignored() {
 
 #[test]
 fn other_notifications_keep_their_code_and_every_icon_id_is_decoded() {
-    // WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONUP, WM_LBUTTONDBLCLK, and
+    // WM_MOUSEMOVE, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_RBUTTONDBLCLK, and
     // NIN_POPUPOPEN.
-    for code in [0x0200_u16, 0x0201, 0x0202, 0x0205, 0x0203, 0x0406] {
+    for code in [0x0200_u16, 0x0202, 0x0204, 0x0205, 0x0206, 0x0406] {
         assert_eq!(
             decoded(anchor(1, 2), notification(u32::from(code), 9)),
             NotifyIconMessage {
@@ -166,6 +188,14 @@ mod win {
         assert_eq!(
             raumakey_windows::shell::WM_CONTEXTMENU,
             WindowsAndMessaging::WM_CONTEXTMENU
+        );
+        assert_eq!(
+            raumakey_windows::shell::WM_LBUTTONDOWN,
+            WindowsAndMessaging::WM_LBUTTONDOWN
+        );
+        assert_eq!(
+            raumakey_windows::shell::WM_LBUTTONDBLCLK,
+            WindowsAndMessaging::WM_LBUTTONDBLCLK
         );
     }
 
