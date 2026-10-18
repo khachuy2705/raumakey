@@ -25,10 +25,10 @@
 //!
 //! Every answer carries the number of its command ([`Answer::seq`]) and the settings in effect
 //! afterwards ([`SettingsState`]: the runtime snapshot, with the mode the worker last saved,
-//! and the startup mode). The tray takes them over only from the answer to the last command
-//! it sent (`crate::tray`): an older answer does not know of a change still on its way, and
-//! the answer to the last command, whatever it was, brings everything the worker has, such
-//! as a reload answered before it.
+//! the startup mode, and whether the settings panel opens at start). The tray takes them over
+//! only from the answer to the last command it sent (`crate::tray`): an older answer does not
+//! know of a change still on its way, and the answer to the last command, whatever it was,
+//! brings everything the worker has, such as a reload answered before it.
 //!
 //! The macro snapshot of a reload goes to the typing hook from the worker thread
 //! ([`WorkerPorts::post_macros`]): the hook's mailbox builds the macro table on the posting
@@ -85,6 +85,8 @@ pub struct SettingsState {
     pub runtime: RuntimeSnapshot,
     /// `[system] startup` in effect.
     pub startup: StartupMode,
+    /// `[system] show_panel_on_start` in effect.
+    pub show_panel_on_start: bool,
 }
 
 /// Whether a change that worked wrote `raumakey.toml`.
@@ -309,9 +311,11 @@ impl<P: WorkerPorts> SettingsWorker<P> {
     }
 
     fn state(&self) -> SettingsState {
+        let system = &self.settings.document().system;
         SettingsState {
             runtime: self.settings.runtime_snapshot().clone(),
-            startup: self.settings.document().system.startup,
+            startup: system.startup,
+            show_panel_on_start: system.show_panel_on_start,
         }
     }
 

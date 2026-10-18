@@ -1,5 +1,5 @@
-//! The run mode: `raumakey.exe` without arguments (plan §10.2, D38–D42; design §21). This is
-//! what the user starts by double-clicking the portable `raumakey.exe`, and what the
+//! The run mode: `raumakey.exe` without arguments (plan §10.2, D38–D45; design §21, §22). This
+//! is what the user starts by double-clicking the portable `raumakey.exe`, and what the
 //! Startup-folder shortcut and the elevated logon task start.
 //!
 //! [`run_controller`] is the whole sequence, over the [`Desktop`] port so that it is tested
@@ -7,10 +7,13 @@
 //!
 //! 1. **Single instance.** The controller takes its named mutex
 //!    (`Local\Raumakey.<sidhash>.controller`: one controller per user and session). When
-//!    another controller holds it, this start ends at once with exit code 0, says nothing,
-//!    opens no file, and does not signal the first instance. A mutex that this process may not
-//!    open (access denied: an elevated controller of the same user holds it) counts as held by
-//!    another controller as well.
+//!    another controller holds it, this start asks that controller to show its settings panel
+//!    ([`Desktop::signal_running_instance`], D45: it may come to the front, and the registered
+//!    message `Raumakey.<sidhash>.show-panel` goes to every top-level window), then ends at
+//!    once with exit code 0 whatever the request did; it says nothing and opens no file. A
+//!    mutex that this process may not open (access denied: an elevated controller of the same
+//!    user holds it, which lets the request through UIPI) counts as held by another controller
+//!    as well.
 //! 2. **Settings.** [`Desktop::open_settings`] opens the configuration beside `raumakey.exe`
 //!    or in `%LOCALAPPDATA%\Raumakey` (`crate::settings`, D40); on the first run it writes
 //!    `raumakey.toml` with the defaults. Opening never fails: whatever cannot be read leaves
@@ -27,9 +30,11 @@
 //!    ([`heal_notice`](crate::notice::heal_notice)); the controller runs on.
 //! 5. **Tray.** [`Desktop::run_tray`] runs the tray in the saved mode ([`TrayStart`]) until
 //!    Exit, `WM_CLOSE`, or the end of the session (`crate::tray`): the hidden window, its
-//!    notification icon, the poll timer, the settings worker, and the message loop. The first
-//!    run and the problems found at the start ([`start_notice`](crate::notice::start_notice))
-//!    are shown once, after the icon is added. Its exit code
+//!    notification icon, the poll timer, the settings worker, and the message loop. Once the
+//!    icon is added, the settings panel opens when `[system] show_panel_on_start` is set (the
+//!    schema default, so the first run always shows it, D43), then the problems found at the
+//!    start ([`start_notice`](crate::notice::start_notice)) are shown once; the welcome of
+//!    the first run only without the panel, which shows the same. Its exit code
 //!    ([`LOOP_EXIT_CODE`](crate::tray::LOOP_EXIT_CODE), 0) becomes the exit code of the
 //!    process; a code outside `0..=255` becomes [`EXIT_FAILED`].
 //! 6. **Stop.** [`Desktop::stop_typing`] runs on every way out of the tray (the tray stops the
@@ -40,8 +45,8 @@
 //!    [`start_error_text`], [`typing_error_text`]) after the mutex was given back, and the
 //!    process exits with [`EXIT_FAILED`].
 //!
-//! Not in this step (design §21.6): the panel and its tabs, the IPC hub (there is no TIP to
-//! serve), and the `migrate` import.
+//! Not in this step (design §21.6): the tabbed settings of §11 (the one-page panel of D43
+//! replaces them), the IPC hub (there is no TIP to serve), and the `migrate` import.
 
 use std::path::Path;
 
@@ -66,6 +71,8 @@ pub struct Opened {
     /// The running `raumakey.exe` lies in the temporary folder
     /// ([`is_temporary_path`](crate::settings::is_temporary_path)): no shortcut is made to it.
     pub temporary_exe: bool,
+    /// `[system] show_panel_on_start` in effect: the tray opens the settings panel at start.
+    pub show_panel_on_start: bool,
 }
 
 /// The shortcut `Raumakey.lnk` in the user's Startup folder ([`shortcut_state`]).
@@ -143,6 +150,11 @@ pub trait Desktop {
 
     /// Shows `text` to the user and waits until it is acknowledged.
     fn report_error(&mut self, text: &str);
+
+    /// Asks the controller that holds the instance to show its settings panel (D45), without
+    /// waiting and without telling whether anything answered: a start that is not the
+    /// instance ends with exit code 0 either way.
+    fn signal_running_instance(&mut self);
 }
 
 /// Runs the controller on `desktop` (see the module documentation) and returns the exit code
@@ -150,8 +162,14 @@ pub trait Desktop {
 pub fn run_controller(desktop: &mut dyn Desktop) -> u8 {
     match desktop.acquire_instance() {
         Ok(true) => {}
-        Ok(false) => return EXIT_OK,
-        Err(error) if error.kind() == WinErrorKind::AccessDenied => return EXIT_OK,
+        Ok(false) => {
+            desktop.signal_running_instance();
+            return EXIT_OK;
+        }
+        Err(error) if error.kind() == WinErrorKind::AccessDenied => {
+            desktop.signal_running_instance();
+            return EXIT_OK;
+        }
         Err(error) => {
             desktop.report_error(&start_error_text(&error));
             return EXIT_FAILED;
@@ -174,7 +192,9 @@ fn run_instance(desktop: &mut dyn Desktop) -> Result<i32, String> {
     if let Err(error) = desktop.start_typing() {
         return Err(typing_error_text(&error));
     }
-    let mut notices: Vec<_> = start_notice(&opened.report).into_iter().collect();
+    // The panel opened at the start says what the welcome would.
+    let welcome = !opened.show_panel_on_start;
+    let mut notices: Vec<_> = start_notice(&opened.report, welcome).into_iter().collect();
     if opened.startup == StartupMode::Shortcut && !opened.temporary_exe {
         let shortcut = desktop.startup_shortcut();
         if needs_repair(opened.startup, opened.temporary_exe, &shortcut)
@@ -188,6 +208,7 @@ fn run_instance(desktop: &mut dyn Desktop) -> Result<i32, String> {
         runtime,
         startup,
         temporary_exe,
+        show_panel_on_start,
     } = opened;
     let start = TrayStart {
         runtime,
@@ -197,6 +218,7 @@ fn run_instance(desktop: &mut dyn Desktop) -> Result<i32, String> {
         status: report.status,
         notices,
         temporary_exe,
+        show_panel: show_panel_on_start,
     };
     let ran = desktop.run_tray(start);
     desktop.stop_typing();

@@ -61,11 +61,11 @@ fn shown(notice: &Notice) -> &str {
 #[test]
 fn a_second_run_without_problems_says_nothing() {
     assert_eq!(
-        start_notice(&report(Location::ExeDir, false, clean())),
+        start_notice(&report(Location::ExeDir, false, clean()), true),
         None
     );
     assert_eq!(
-        start_notice(&report(Location::LocalAppData, false, clean())),
+        start_notice(&report(Location::LocalAppData, false, clean()), true),
         None
     );
 }
@@ -73,7 +73,7 @@ fn a_second_run_without_problems_says_nothing() {
 /// The first run says where the file was created and how the icon and the menu work.
 #[test]
 fn the_first_run_tells_where_the_configuration_was_created() {
-    let notice = start_notice(&report(Location::ExeDir, true, clean())).unwrap();
+    let notice = start_notice(&report(Location::ExeDir, true, clean()), true).unwrap();
     assert_eq!(notice.kind, NoticeKind::Information);
     assert_eq!(notice.question, None);
     let text = shown(&notice);
@@ -82,10 +82,66 @@ fn the_first_run_tells_where_the_configuration_was_created() {
     assert!(text.contains("Ctrl+Shift"), "{text}");
     assert!(text.contains("chuột phải"), "{text}");
 
-    let notice = start_notice(&report(Location::LocalAppData, true, clean())).unwrap();
+    let notice = start_notice(&report(Location::LocalAppData, true, clean()), true).unwrap();
     let text = shown(&notice);
     assert!(text.contains(r"%LOCALAPPDATA%\Raumakey"), "{text}");
     assert!(!text.contains("cạnh raumakey.exe"), "{text}");
+}
+
+/// When the settings panel opens at the start (D43), it tells where the file is and how to
+/// switch the mode: the first run then has no welcome box. Problems are still told, and a
+/// damaged file still asks about recovery.
+#[test]
+fn without_the_welcome_the_first_run_tells_only_problems() {
+    assert_eq!(
+        start_notice(&report(Location::ExeDir, true, clean()), false),
+        None
+    );
+    assert_eq!(
+        start_notice(&report(Location::LocalAppData, true, clean()), false),
+        None
+    );
+    let status = Status {
+        macros: DocumentStatus::Unreadable(ConfigError::Corrupt),
+        ..clean()
+    };
+    let notice = start_notice(&report(Location::ExeDir, true, status.clone()), false).unwrap();
+    assert_eq!(notice.kind, NoticeKind::Warning);
+    let text = shown(&notice);
+    assert!(text.contains("raumakey-macros.toml"), "{text}");
+    assert!(!text.contains("Chào mừng"), "{text}");
+    let welcomed = start_notice(&report(Location::ExeDir, true, status), true).unwrap();
+    assert!(welcomed.text.contains("Chào mừng"), "{}", welcomed.text);
+    // A file that could not be written, or no folder at all, is still a warning.
+    let mut opened = report(
+        Location::ExeDir,
+        true,
+        Status {
+            config: DocumentStatus::Missing,
+            ..clean()
+        },
+    );
+    opened.create_error = Some(ConfigError::PermissionDenied);
+    assert_eq!(
+        start_notice(&opened, false),
+        start_notice(&opened, true),
+        "no welcome in it"
+    );
+    let mut nowhere = report(Location::Unavailable, true, clean());
+    nowhere.create_error = Some(ConfigError::NotFound);
+    assert_eq!(start_notice(&nowhere, false), start_notice(&nowhere, true));
+    assert!(start_notice(&nowhere, false).is_some());
+    // A later run: the same either way.
+    let damaged = Status {
+        config: DocumentStatus::Unreadable(ConfigError::Corrupt),
+        ..clean()
+    };
+    let notice = start_notice(&report(Location::ExeDir, false, damaged.clone()), false);
+    assert_eq!(
+        notice,
+        start_notice(&report(Location::ExeDir, false, damaged), true)
+    );
+    assert_eq!(notice.unwrap().question, Some(Question::Recover));
 }
 
 #[test]
@@ -99,7 +155,7 @@ fn a_first_run_that_could_not_write_the_file_warns_that_changes_are_not_saved() 
         },
     );
     opened.create_error = Some(ConfigError::PermissionDenied);
-    let notice = start_notice(&opened).unwrap();
+    let notice = start_notice(&opened, true).unwrap();
     assert_eq!(notice.kind, NoticeKind::Warning);
     let text = shown(&notice);
     assert!(text.contains(r"D:\Tools\Raumakey\raumakey.toml"), "{text}");
@@ -118,7 +174,7 @@ fn no_folder_at_all_warns_that_nothing_is_saved() {
         },
     );
     opened.create_error = Some(ConfigError::NotFound);
-    let notice = start_notice(&opened).unwrap();
+    let notice = start_notice(&opened, true).unwrap();
     assert_eq!(notice.kind, NoticeKind::Warning);
     let text = shown(&notice);
     assert!(text.contains(r"%LOCALAPPDATA%\Raumakey"), "{text}");
@@ -132,7 +188,7 @@ fn a_damaged_file_at_start_is_kept_and_the_user_is_asked_about_recovery() {
         config: DocumentStatus::Unreadable(ConfigError::Corrupt),
         ..clean()
     };
-    let notice = start_notice(&report(Location::ExeDir, false, status)).unwrap();
+    let notice = start_notice(&report(Location::ExeDir, false, status), true).unwrap();
     assert_eq!(notice.question, Some(Question::Recover));
     let text = shown(&notice);
     assert!(text.contains(r"D:\Tools\Raumakey\raumakey.toml"), "{text}");
@@ -148,7 +204,7 @@ fn a_file_of_a_newer_version_is_kept_without_a_question() {
         config: DocumentStatus::Unreadable(ConfigError::UnsupportedVersion),
         ..clean()
     };
-    let notice = start_notice(&report(Location::ExeDir, false, status)).unwrap();
+    let notice = start_notice(&report(Location::ExeDir, false, status), true).unwrap();
     assert_eq!(notice.kind, NoticeKind::Warning);
     assert_eq!(notice.question, None);
     assert!(shown(&notice).contains("mới hơn"), "{}", notice.text);
@@ -174,7 +230,7 @@ fn defaulted_values_and_skipped_macros_are_listed_by_path_and_count() {
             },
         ],
     };
-    let notice = start_notice(&report(Location::ExeDir, false, status)).unwrap();
+    let notice = start_notice(&report(Location::ExeDir, false, status), true).unwrap();
     assert_eq!(notice.kind, NoticeKind::Warning);
     let text = shown(&notice);
     assert!(text.contains("input.method"), "{text}");
@@ -191,7 +247,7 @@ fn unreadable_macros_and_rules_are_reported() {
         app_rules: DocumentStatus::Unreadable(ConfigError::IoFailure),
         ..clean()
     };
-    let notice = start_notice(&report(Location::ExeDir, false, status)).unwrap();
+    let notice = start_notice(&report(Location::ExeDir, false, status), true).unwrap();
     let text = shown(&notice);
     assert!(text.contains("raumakey-macros.toml"), "{text}");
     assert!(text.contains("raumakey-app-rules.toml"), "{text}");
@@ -213,7 +269,7 @@ fn notices_never_show_file_content_or_macro_text() {
     )
     .unwrap();
     let (settings, opened) = Settings::open(exe.path(), None, &|_| true, &|_| false);
-    let notice = start_notice(&opened).unwrap();
+    let notice = start_notice(&opened, true).unwrap();
     let text = shown(&notice);
     assert!(!text.contains("secret"), "{text}");
     assert!(!text.contains("bí mật"), "{text}");
@@ -377,7 +433,7 @@ fn repeated_schema_paths_are_listed_once() {
         config: DocumentStatus::Loaded { issues },
         ..clean()
     };
-    let text = start_notice(&report(Location::ExeDir, false, status))
+    let text = start_notice(&report(Location::ExeDir, false, status), true)
         .unwrap()
         .text;
     assert_eq!(text.matches("input.method").count(), 1, "{text}");
@@ -390,7 +446,7 @@ fn repeated_schema_paths_are_listed_once() {
         },
         ..clean()
     };
-    let text = start_notice(&report(Location::ExeDir, false, same))
+    let text = start_notice(&report(Location::ExeDir, false, same), true)
         .unwrap()
         .text;
     assert!(!text.contains("mục khác"), "{text}");
@@ -403,7 +459,7 @@ fn unreadable_macros_at_the_start_say_that_no_macro_was_loaded() {
         macros: DocumentStatus::Unreadable(ConfigError::Corrupt),
         ..clean()
     };
-    let text = start_notice(&report(Location::ExeDir, false, status))
+    let text = start_notice(&report(Location::ExeDir, false, status), true)
         .unwrap()
         .text;
     assert!(text.contains("Chưa nạp được mục gõ tắt nào"), "{text}");

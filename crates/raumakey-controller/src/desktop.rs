@@ -1,37 +1,65 @@
 //! The run mode on Windows: the [`Desktop`] of [`crate::run`] and the glue that carries out
 //! the [`Effect`]s of the tray state machine ([`crate::tray`]) on the real notification icon,
-//! popup menu, message boxes, typing hook, and settings worker (plan §10.2, D38–D42; design
-//! §21; matrix #58).
+//! popup menu, message boxes, settings panel, typing hook, and settings worker (plan §10.2,
+//! D38–D45; design §21, §22; matrix #58).
 //!
 //! This module is thin: every decision is made in `crate::run`, `crate::tray`,
-//! `crate::worker`, and `crate::notice`, which are tested on every host, and every Win32 call
-//! is a `raumakey-windows` wrapper.
+//! `crate::panel`, `crate::worker`, and `crate::notice`, which are tested on every host, and
+//! every Win32 call is a `raumakey-windows` wrapper.
 //!
 //! - [`WinDesktop`] holds the single-instance mutex (`raumakey_windows::single_instance`,
 //!   component [`CONTROLLER_INSTANCE`]), opens the settings
 //!   (`Settings::open_for_current_exe`), starts the typing hook ([`TypingHook`]) with their
 //!   snapshots and the hook observer, reads and repairs the Startup-folder shortcut, runs
-//!   [`run_tray`], and shows errors in a message box.
+//!   [`run_tray`], and shows errors in a message box. A start that finds another controller
+//!   asks it to show its settings panel (D45): it passes its right to set the foreground
+//!   window on (`allow_any_foreground`) and posts the registered message
+//!   `Raumakey.<sidhash>.show-panel` ([`SHOW_PANEL_COMPONENT`]) to every top-level window,
+//!   ignoring failures.
 //! - [`run_tray`] loads the V and E icons from `raumakey.exe` itself at the small icon size
-//!   ([`ModeIcons`]), starts the settings worker thread ([`WorkerThread`], which now owns the
-//!   settings), registers the window class, creates the tray window ([`create_tray_window`]),
-//!   and runs the message loop on the calling thread. The window is destroyed after the loop
-//!   has ended.
+//!   ([`ModeIcons`]), registers `TaskbarCreated` and the show-panel request (a registration
+//!   that fails leaves the tray without that message), starts the settings worker thread
+//!   ([`WorkerThread`], which now owns the settings), registers the window class, creates the
+//!   tray window ([`create_tray_window`]), and runs the message loop on the calling thread.
+//!   The window is destroyed after the loop has ended.
 //! - [`create_tray_window`] creates a hidden top-level window: a message-only window would
-//!   never receive the `TaskbarCreated` broadcast. When the controller runs elevated (the
-//!   elevated logon task, or "Run as administrator"), it lets the shell's two messages,
-//!   `TaskbarCreated` and the icon's callback, through User Interface Privilege Isolation
-//!   (`ChangeWindowMessageFilterEx`, through `Window::allow_message_from_lower_integrity`).
-//!   It starts the poll timer ([`POLL_TIMER`], every [`POLL_INTERVAL_MS`]) and posts
-//!   [`START`].
+//!   never receive the `TaskbarCreated` broadcast or the show-panel request. When the
+//!   controller runs elevated (the elevated logon task, or "Run as administrator"), it lets
+//!   the messages of other processes ([`Tray::shell_messages`]: `TaskbarCreated`, the icon's
+//!   callback, and the show-panel request of a start from a normal prompt) through User
+//!   Interface Privilege Isolation (`ChangeWindowMessageFilterEx`, through
+//!   `Window::allow_message_from_lower_integrity`). It starts the poll timer ([`POLL_TIMER`],
+//!   every [`POLL_INTERVAL_MS`]) and posts [`START`].
 //! - [`TrayWindow`] is the window's handler: it passes each message to [`Tray::on_message`],
-//!   carries out the effects on a [`TrayShell`] (icon, menu, notices) and on
+//!   carries out the effects on a [`TrayShell`] (icon, menu, notices, panel) and on
 //!   [`TrayServices`] (hook and worker), and then drains the inbox ([`Tray::on_event`]), the
 //!   hotkey changes coalesced ([`coalesce`]). At each tick of the poll timer it first checks
 //!   the typing hook ([`TrayServices::keep_typing_alive`]), which Windows may have removed
 //!   silently, and makes sure the icon is shown. [`ShellTray`] (over a [`NotifyArea`],
 //!   [`WinNotifyArea`] for real) and [`WinServices`] are the real ones; tests use fakes on a
 //!   real window, message loop, and timer.
+//! - [`ShellTray`] shows one settings panel at a time (`crate::panel`): a dialog box without
+//!   owner on a thread of its own (`raumakey_windows::dialog_box::spawn_dialog`), with the app
+//!   icon of `raumakey.exe` ([`ICON_APP`]). The tray's thread and the panel share the state to
+//!   show (a mutex, never held across a Win32 call; a panic that poisoned it leaves plain data
+//!   that is used on); a refresh stores the new state and posts the panel's private message
+//!   ([`PANEL_REFRESH`]), and the panel shows every control from the state again
+//!   ([`PanelState::view`]). The panel's `init` fills the controls, then posts that message to
+//!   itself, so a refresh refused while the panel was starting (its window is published only
+//!   when `init` returns) is made up once it is up. The user's actions become
+//!   [`Event::Panel`] requests in the inbox, then [`WAKE`]; "Mặc định" asks first (a box owned
+//!   by the panel), and after the box the panel reads the shared state again, since a refresh
+//!   that arrived while the box was open did not reach it. The close (by the user, or
+//!   dismissed by an exit) arrives as [`Event::PanelClosed`] with the number of the latest
+//!   opening; the number and the close are read and marked together, so a reopening never
+//!   loses its close.
+//! - [`ShellTray`] also shows one macro list editor at a time (`crate::macro_dialog`, D44:
+//!   "Danh sách gõ tắt…" of the panel): `spawn_macro_list` on a thread of its own, which reads
+//!   and writes `raumakey-macros.toml` there. Opening it while it is open brings it to the
+//!   front; one that has closed (it counts as closed a moment after its window is gone) is
+//!   replaced by a new one. Each save arrives as [`Event::MacrosSaved`] in the inbox, then
+//!   [`WAKE`] (the tray has the worker poll at once); its close needs no message. An editor
+//!   whose thread cannot start opens nothing, without a notice: choosing it again tries again.
 //!
 //! # Threads and messages
 //!
@@ -41,12 +69,15 @@
 //! | hook (`raumakey_windows::hooks`) | `WH_KEYBOARD_LL`, `WH_MOUSE_LL`, the session core | the observer: [`Event::Hotkey`] into the inbox, then [`WAKE`] |
 //! | settings worker ([`crate::worker`]) | `Settings`, the files, the shortcut, Notepad | [`Event::Worker`] answers into the inbox, then [`WAKE`] |
 //! | one per notice (`raumakey_windows::dialog::spawn_message_box`) | a message box without owner | a "yes" as [`Event::Answered`] into the inbox, then [`WAKE`] |
+//! | the settings panel, while it is open (`raumakey_windows::dialog_box::spawn_dialog`) | a dialog box without owner, its "Mặc định" question | requests as [`Event::Panel`] and its close as [`Event::PanelClosed`] into the inbox, then [`WAKE`]; the tray answers through the shared state and [`PANEL_REFRESH`] |
+//! | the macro list editor, while it is open (`crate::macro_dialog`) | a dialog box without owner, its message boxes, its own store of `raumakey-macros.toml` | each save as [`Event::MacrosSaved`] into the inbox, then [`WAKE`] |
 //!
 //! The tray thread sends the worker numbered commands (`WorkerThread::send`) and hands the
 //! hook modes and runtime snapshots (`TypingHook::update`); the worker hands the hook macro
 //! snapshots. The window handler does no file, network, or engine work: `Settings::apply`,
 //! `poll`, and `recover` may wait up to two seconds for a store lock. The observer runs
-//! inside the hook callback and only sends into a channel and posts a message.
+//! inside the hook callback and only sends into a channel and posts a message. The tray thread
+//! never waits for the panel or the editor.
 //!
 //! A posted message that arrives while the menu's modal loop runs inside the handler gets the
 //! default processing and is lost (`raumakey_windows::window`), so the events travel in the
@@ -60,17 +91,19 @@
 //! # Exit and failures
 //!
 //! Exit, `WM_CLOSE`, and the end of the session stop the hook first (typing is plain at
-//! once), close the open message boxes without waiting for them, save the hotkey changes
-//! left in the inbox, let the worker finish the commands sent and save what is unsaved (at
-//! most [`WORKER_FINISH_TIMEOUT`], so a change made just before is saved), remove the icon,
-//! and end the loop with 0, all inside the message: after `WM_ENDSESSION` the process may end
-//! at any time. Any other way out stops the hook too: when the window is destroyed while the
-//! menu is open (a `WM_CLOSE` reaches `DefWindowProcW` during its modal loop), the handler
-//! takes the same steps when it is freed; when the tray cannot start, the run mode stops the
-//! hook. A box that is still open when the process ends goes with it. A panic in the handler
-//! is contained by the window procedure's guard (`raumakey_windows::window`); one in the
-//! observer by the hook handler's guard; one in a worker command by the worker; one in a box's
-//! callback on its thread.
+//! once), close the open message boxes, the panel, and the macro list editor without waiting
+//! for them (the editor without saving, by design), save the hotkey changes left in the
+//! inbox, let the worker finish the commands sent and save what is
+//! unsaved (at most [`WORKER_FINISH_TIMEOUT`], so a change made just before is saved), remove
+//! the icon, and end the loop with 0, all inside the message: after `WM_ENDSESSION` the
+//! process may end at any time. Any other way out stops the hook too: when the window is
+//! destroyed while the menu is open (a `WM_CLOSE` reaches `DefWindowProcW` during its modal
+//! loop), the handler takes the same steps when it is freed; when the tray cannot start, the
+//! run mode stops the hook. A box, panel, or editor that is still open when the process ends
+//! goes with it. A panic in the handler is contained by the window procedure's guard
+//! (`raumakey_windows::window`); one in the observer by the hook handler's guard; one in a
+//! worker command by the worker; one in a box's callback on its thread; one in the panel's or
+//! the editor's handler by the dialog procedure's guard (`raumakey_windows::dialog_box`).
 //!
 //! If the icon cannot be added (Explorer has not created the taskbar yet, as may happen to the
 //! elevated logon task), or a change of it fails (Explorer went away without
@@ -83,9 +116,13 @@
 //!
 //! The glue tests (`tests/desktop.rs`) run a real hidden window, message loop, and timer with
 //! a fake shell and fake services. They also read back that the tray window is top-level and
-//! that the window of an elevated controller lets the shell's two messages through. A
-//! successful build and these tests are no evidence that the real icon, menu, hook, files,
-//! and broadcasts behave on Windows.
+//! that the window of an elevated controller lets the messages of other processes through,
+//! and they run the real panel and the real macro list editor through [`ShellTray`] in its
+//! test variant ([`ShellTray::with_off_screen_dialogs`]: off every monitor, never activated
+//! or brought to the front, the editor's questions answered "no" without a box), driven with
+//! `SendMessageW`. Nothing is broadcast in tests. A successful build and these tests are no
+//! evidence that the real icon, menu, panel, editor, hook, files, and broadcasts behave on
+//! Windows.
 //!
 //! # Manual check list
 //!
@@ -94,21 +131,22 @@
 //! `D:\Tools\Raumakey`, and start it without arguments (or with the ignored test
 //! `manual_portable_run`, `tests/manual.rs`). Record each result.
 //!
-//! 1. **First run:** a welcome box names `D:\Tools\Raumakey\raumakey.toml` "(cạnh
-//!    raumakey.exe)"; after OK the V icon is in the notification area with the tooltip
-//!    "Raumakey: đang gõ tiếng Việt (Telex)", and `raumakey.toml` exists beside the exe.
-//!    Notepad: `tieengs vieetj` types "tiếng việt".
+//! 1. **First run:** the V icon is in the notification area with the tooltip "Raumakey: đang
+//!    gõ tiếng Việt (Telex)", the settings panel opens (no welcome box; see 20), and
+//!    `raumakey.toml` exists beside the exe. Notepad: `tieengs vieetj` types "tiếng việt".
 //! 2. **Icon:** click it: E, tooltip "Raumakey: đang gõ tiếng Anh", `aa` stays `aa`; click
 //!    again: V. Select it with the keyboard (Win+B, arrows) and press Space or Enter. Tap
 //!    Ctrl+Shift: the icon follows the hotkey each time.
-//! 3. **Menu:** right-click: the items of D42 in order, with separators; "Gõ tiếng Việt
-//!    (Ctrl+Shift)" checked in V mode, exactly one of Telex/VNI/VIQR checked. Choose VNI: the
+//! 3. **Menu:** right-click: "Bảng cấu hình…", a separator, then the items of D42 in order,
+//!    with separators; "Gõ tiếng Việt (Ctrl+Shift)" checked in V mode, exactly one of
+//!    Telex/VNI/VIQR checked. Choose VNI: the
 //!    tooltip names VNI and `tie61ng vie65t` types "tiếng việt" at once; VIQR likewise. Turn
 //!    off "Kiểm tra chính tả", turn on "Đặt dấu kiểu mới (oà, uý)" (`hoaf` types "hoà"),
 //!    turn off "Gõ tắt (macro)" (a macro of `raumakey-macros.toml` no longer expands). After
 //!    each choice `raumakey.toml` holds the new value (open it with "Mở file cấu hình").
 //! 4. **Second run:** "Thoát", start again: no welcome box, every choice of 2–3 kept,
-//!    including the mode. A start while it runs: no second icon, exit code 0.
+//!    including the mode. A start while it runs: no second icon, exit code 0, and the
+//!    running one shows its panel (see 21).
 //! 5. **"Mở file cấu hình":** Notepad opens `raumakey.toml`. Delete the file while Raumakey
 //!    runs, choose it again: a box says there is no file yet.
 //! 6. **Hand edit:** in Notepad set `method = "viqr"`, save: within about 2 s the tooltip and
@@ -154,11 +192,73 @@
 //! 19. **Hand edit of `startup`:** set `startup = "shortcut"` by hand: within about 2 s the
 //!     shortcut appears; set `"none"`: the shortcut of this exe goes. `raumakey.exe startup
 //!     shortcut` from a prompt saves `startup = "shortcut"`, and the menu shows it checked.
+//!
+//! The settings panel (D43–D45, design §22):
+//!
+//! 20. **Panel at start:** on the first run the panel `Raumakey <version> – Bảng cấu hình`
+//!     opens after the icon, in the foreground, with the Raumakey icon in its title bar and on
+//!     its own taskbar button; it shows the defaults, the hint "Bật/tắt nhanh: Ctrl+Shift hoặc
+//!     nhấp biểu tượng V/E", and "Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml (cạnh
+//!     raumakey.exe)". Every label is whole (the three long check boxes on two lines). Turn off
+//!     "Mở bảng này khi Raumakey chạy", "Thoát", start again: no panel; turn it on in the
+//!     panel (open it from the menu), restart: it opens.
+//! 21. **Opening:** "Bảng cấu hình…" opens it; with it open (or minimized, or behind another
+//!     window) choose it again: the same panel comes to the front, no second one. Start
+//!     `raumakey.exe` again from Explorer while it runs: the panel comes to the front (opens
+//!     when closed), exit code 0, no second icon.
+//! 22. **Every control saves at once and typing follows:** each check box and each method
+//!     changes its key in `raumakey.toml` at once (open it in Notepad and reload), and typing
+//!     in Notepad follows at once: VNI (`tie61ng`), "Đặt dấu kiểu mới" (`hoaf` → "hoà"), "Cho
+//!     gõ dấu sau phụ âm cuối" (`toans` → "toán" on, "toans" off), "Kiểm tra chính tả", "Giữ
+//!     nguyên phím đã gõ…" (`thisd` stays "thisd" on), "Bật gõ tắt", "Gõ tắt cả khi đang gõ
+//!     tiếng Anh" (a macro expands in E mode), "Viết hoa theo cách gõ" (`Ko`/`KO`). The menu
+//!     shows the same checks.
+//! 23. **Changes made elsewhere reach the open panel:** with the panel open, tap Ctrl+Shift,
+//!     click the icon, choose VIQR in the menu, and save a hand edit (`spell_check = false`,
+//!     `show_panel_on_start = false`): within about 2 s the panel shows each.
+//! 24. **Refused start with Windows:** from the package ZIP opened in Explorer (the exe runs in
+//!     `%TEMP%`), check "Khởi động cùng Windows": the box explaining that Raumakey must be
+//!     extracted first appears, and the check box goes back to unchecked; no shortcut. With
+//!     `startup = "elevated-task"` written by hand, uncheck it: the elevated command line is
+//!     explained and it is checked again.
+//! 25. **"Mặc định":** change the method, the switches of "Cách gõ" and "Gõ tắt", the mode,
+//!     and "Khởi động cùng Windows"; click "Mặc định": a question box owned by the panel asks
+//!     first; "No" changes nothing; "Yes" resets the two groups (Telex, the defaults) and
+//!     leaves the mode, the start with Windows, "Mở bảng này…", and `raumakey-macros.toml`
+//!     as they were.
+//! 26. **Closing:** Esc, Enter (with the focus on a check box), "Đóng", and the close box each
+//!     close the panel; nothing is asked and every change stays saved.
+//! 27. **Exit and sign-out with the panel open:** "Thoát" from the menu, `taskkill /IM
+//!     raumakey.exe` (without `/F`), and a sign-out each close the panel at once with the
+//!     controller (also with the "Mặc định" question open); no hang.
+//! 28. **Elevated:** start it with "Run as administrator", then start `raumakey.exe` from a
+//!     normal prompt: the elevated controller's panel comes to the front; its controls work.
+//! 29. **No folder:** with no usable folder (`Location::Unavailable`, e.g. a read-only exe
+//!     folder and an unwritable `%LOCALAPPDATA%`), the footer says "Tệp cấu hình: không có,
+//!     nên các thay đổi không được lưu.", "Mở file cấu hình" and "Danh sách gõ tắt…" are
+//!     disabled, and the other controls still change typing until the exit.
+//! 30. **DPI:** on a monitor at 150 % (and when the panel is dragged between monitors of
+//!     different scale), the text is sharp, every label fits, and the icons are not blurred.
+//!
+//! The macro list editor (D44; its own check list is in `crate::macro_dialog`, items 1–9):
+//!
+//! 31. **From the panel:** "Danh sách gõ tắt…" opens the editor ("Raumakey – Danh sách gõ
+//!     tắt") with the rows of `raumakey-macros.toml` beside `raumakey.toml`; click the button
+//!     again (or with the editor minimized or behind the panel): the same editor comes to the
+//!     front, no second one. Close it and click again: a new one opens. Then go through items
+//!     1–8 of the editor's list.
+//! 32. **Saving reaches typing at once:** add a macro and "Lưu": it expands in Notepad right
+//!     away, without waiting for the 2-second poll; also while a hand edit of `raumakey.toml`
+//!     is being reloaded.
+//! 33. **Exit with the editor open:** with unsaved rows and with one of its boxes open, choose
+//!     "Thoát", run `taskkill /IM raumakey.exe` (without `/F`), and sign out: the editor and its
+//!     box close at once with the controller, nothing is asked, and `raumakey-macros.toml` is
+//!     unchanged (the editor's item 9).
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use raumakey_ipc::message::{MacroSnapshot, RuntimeSnapshot};
@@ -166,6 +266,7 @@ use raumakey_model::identity::PRODUCT_NAME;
 use raumakey_windows::dialog::{
     DetachedMessageBox, MessageKind, MessageResponse, message_box, spawn_message_box,
 };
+use raumakey_windows::dialog_box::{DetachedDialog, Dialog, DialogHandler, spawn_dialog};
 use raumakey_windows::error::{E_UNEXPECTED, WinError, WinResult};
 use raumakey_windows::icon::{Icon, IconKind, IconSize, icon_size};
 use raumakey_windows::menu::{MenuItem, PopupMenu};
@@ -178,17 +279,24 @@ use raumakey_windows::shell::{
 use raumakey_windows::sid::current_process_is_elevated;
 use raumakey_windows::single_instance::SingleInstance;
 use raumakey_windows::window::{
-    WM_TIMER, Window, WindowClass, WindowHandle, WindowHandler, post_quit, run_message_loop,
+    AppMessage, WM_TIMER, Window, WindowClass, WindowHandle, WindowHandler, allow_any_foreground,
+    post_quit, post_to_top_level_windows, register_user_message, run_message_loop,
 };
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 
+use crate::macro_dialog::{Placement, Prompt, Prompter, spawn_macro_list, spawn_macro_list_with};
 use crate::notice::{Notice, NoticeKind};
+use crate::panel::{
+    ControlValue, ID_METHOD, PANEL_REFRESH, PanelRequest, PanelState, PanelView, ValueKind,
+    confirmation, off_screen_panel_template, panel_template, request, value_kind,
+};
 use crate::run::{Desktop, Opened, ShortcutState, TypingStartError, shortcut_state};
 use crate::settings::{Settings, is_temporary_path};
 use crate::system::{shortcut_spec, startup_shortcut_path};
 use crate::tray::{
-    Effect, Event, IconState, InputMode, LOOP_EXIT_CODE, POLL_INTERVAL_MS, POLL_TIMER, START,
-    TRAY_CALLBACK, TRAY_ICON_ID, Tray, TrayStart, WAKE, coalesce,
+    Effect, Event, ICON_APP, IconState, InputMode, LOOP_EXIT_CODE, POLL_INTERVAL_MS, POLL_TIMER,
+    RegisteredMessages, SHOW_PANEL_COMPONENT, START, TRAY_CALLBACK, TRAY_ICON_ID, Tray, TrayStart,
+    WAKE, coalesce,
 };
 use crate::typing::{Mailbox, TypingError, TypingHook, TypingUpdate};
 use crate::worker::{SettingsWorker, WorkerCommand, WorkerPorts, WorkerThread};
@@ -257,11 +365,13 @@ impl Desktop for WinDesktop {
 
     fn open_settings(&mut self) -> Opened {
         let (settings, report) = Settings::open_for_current_exe();
+        let system = &settings.document().system;
         let opened = Opened {
             report,
             runtime: settings.runtime_snapshot().clone(),
-            startup: settings.document().system.startup,
+            startup: system.startup,
             temporary_exe: is_temporary_path(&self.exe),
+            show_panel_on_start: system.show_panel_on_start,
         };
         self.settings = Some(settings);
         opened
@@ -333,6 +443,16 @@ impl Desktop for WinDesktop {
         // Nothing is left to try when the box itself cannot be shown.
         let _ = message_box(None, text, PRODUCT_NAME, MessageKind::Error);
     }
+
+    fn signal_running_instance(&mut self) {
+        // The user just started this process, so it may set the foreground window: it passes
+        // that on, then asks every top-level window; only the running controller's tray
+        // window knows the message. Failures are ignored: this start exits with 0 anyway.
+        let _ = allow_any_foreground();
+        if let Ok(message) = register_user_message(SHOW_PANEL_COMPONENT) {
+            let _ = post_to_top_level_windows(message);
+        }
+    }
 }
 
 /// What `Raumakey.lnk` in the user's Startup folder starts, seen from the `raumakey.exe` at
@@ -382,9 +502,15 @@ pub fn run_tray(parts: TrayParts) -> WinResult<i32> {
         wake: target,
     } = parts;
     let icons = ModeIcons::load(Module::executable()?, icon_size(IconKind::Small)?)?;
-    // Without the registered message (0) the tray still runs; only an Explorer restart does
-    // not bring the icon back.
-    let tray = Tray::new(start, taskbar_created_message().unwrap_or(0));
+    // Without a registered message (0) the tray still runs; only an Explorer restart does not
+    // bring the icon back, or a second start does not show the panel.
+    let tray = Tray::new(
+        start,
+        RegisteredMessages {
+            taskbar_created: taskbar_created_message().unwrap_or(0),
+            show_panel: register_user_message(SHOW_PANEL_COMPONENT).unwrap_or(0),
+        },
+    );
     let class = WindowClass::register(WINDOW_CLASS_LABEL)?;
     let temporary_exe = is_temporary_path(&exe);
     let ports = WinWorkerPorts {
@@ -483,6 +609,26 @@ pub trait TrayShell {
 
     /// Removes the icon, if it exists.
     fn remove(&mut self);
+
+    /// Opens the settings panel showing `state`, on a thread of its own; when a panel is open,
+    /// shows `state` in it and brings it to the front instead. The panel open afterwards
+    /// carries `serial`: its close arrives in the inbox as [`Event::PanelClosed`] with it, and
+    /// its requests as [`Event::Panel`].
+    fn open_panel(&mut self, serial: u64, state: PanelState);
+
+    /// Shows `state` in the open panel, if one is open, without waiting.
+    fn refresh_panel(&mut self, state: PanelState);
+
+    /// Closes the open panel, if any, without waiting.
+    fn close_panel(&mut self);
+
+    /// Opens the macro list editor of `raumakey-macros.toml` in the data folder `folder`
+    /// (D44), on a thread of its own, or brings the open one to the front. Each save arrives
+    /// in the inbox as [`Event::MacrosSaved`].
+    fn open_macro_list(&mut self, folder: PathBuf);
+
+    /// Closes the open macro list editor, if any, without waiting and without saving.
+    fn close_macro_list(&mut self);
 }
 
 /// The notification icon as the shell sees it; [`WinNotifyArea`] is the real one.
@@ -578,6 +724,11 @@ impl<S: TrayShell, V: TrayServices> TrayWindow<S, V> {
                 Effect::FinishWorker => self.services.finish_worker(),
                 Effect::RemoveIcon => self.shell.remove(),
                 Effect::EndLoop => post_quit(LOOP_EXIT_CODE),
+                Effect::OpenPanel { serial, state } => self.shell.open_panel(serial, state),
+                Effect::RefreshPanel(state) => self.shell.refresh_panel(state),
+                Effect::ClosePanel => self.shell.close_panel(),
+                Effect::OpenMacroList(folder) => self.shell.open_macro_list(folder),
+                Effect::CloseMacroList => self.shell.close_macro_list(),
             }
         }
     }
@@ -629,6 +780,8 @@ impl<S: TrayShell, V: TrayServices> Drop for TrayWindow<S, V> {
             // The order of an exit (`crate::tray`), without the window.
             self.services.stop_typing();
             self.shell.dismiss_notices();
+            self.shell.close_panel();
+            self.shell.close_macro_list();
             let events = self.take_events();
             for effect in self.tray.flush_hotkeys(events) {
                 if let Effect::Worker { seq, command } = effect {
@@ -811,7 +964,8 @@ impl NotifyArea for WinNotifyArea {
 }
 
 /// The real shell of the tray: the notification icon (over a [`NotifyArea`]), the popup menu,
-/// and message boxes on threads of their own.
+/// message boxes on threads of their own, and the settings panel and the macro list editor,
+/// each on a thread of its own.
 #[derive(Debug)]
 pub struct ShellTray<A: NotifyArea = WinNotifyArea> {
     area: A,
@@ -819,13 +973,22 @@ pub struct ShellTray<A: NotifyArea = WinNotifyArea> {
     shown: bool,
     /// The notices shown so far that may still be open.
     notices: Vec<DetachedMessageBox>,
-    /// Where a "yes" to a notice goes: the tray's inbox, then [`WAKE`].
+    /// The panel opened last, which may still be open.
+    panel: Option<OpenPanel>,
+    /// The macro list editor opened last, which may still be open.
+    macro_list: Option<DetachedDialog>,
+    /// The panel and the editor open off every monitor, never activated, and the editor asks
+    /// nothing (tests).
+    off_screen_dialogs: bool,
+    /// Where a "yes" to a notice, the panel's requests, and the editor's saves go: the tray's
+    /// inbox, then [`WAKE`].
     inbox: Sender<Event>,
     wake: WakeTarget,
 }
 
 impl ShellTray<WinNotifyArea> {
-    /// A shell showing `icons`, answering notices into `inbox` (then [`WAKE`] to `wake`).
+    /// A shell showing `icons`, answering notices, the panel, and the editor into `inbox`
+    /// (then [`WAKE`] to `wake`).
     pub fn new(icons: ModeIcons, inbox: Sender<Event>, wake: WakeTarget) -> Self {
         Self::with_area(WinNotifyArea::new(icons), inbox, wake)
     }
@@ -838,9 +1001,199 @@ impl<A: NotifyArea> ShellTray<A> {
             area,
             shown: false,
             notices: Vec::new(),
+            panel: None,
+            macro_list: None,
+            off_screen_dialogs: false,
             inbox,
             wake,
         }
+    }
+
+    /// The same shell with the dialogs of the tests: the settings panel
+    /// ([`off_screen_panel_template`]) and the macro list editor ([`Placement::OffScreen`])
+    /// open off every monitor, are never activated or brought to the front, and the editor
+    /// answers its own questions "no" without showing a box.
+    #[must_use]
+    pub fn with_off_screen_dialogs(mut self) -> Self {
+        self.off_screen_dialogs = true;
+        self
+    }
+
+    /// Starts a panel showing `state` as opening `serial`; `None` when it cannot be shown,
+    /// which the tray learns as a close.
+    fn spawn_panel(&self, serial: u64, state: PanelState) -> Option<OpenPanel> {
+        let shared = Arc::new(Mutex::new(PanelShared {
+            state,
+            serial,
+            closed: false,
+        }));
+        let template = if self.off_screen_dialogs {
+            off_screen_panel_template()
+        } else {
+            panel_template()
+        };
+        let handler = PanelDialog {
+            shared: Arc::clone(&shared),
+            inbox: self.inbox.clone(),
+            wake: Arc::clone(&self.wake),
+            off_screen: self.off_screen_dialogs,
+            shown: None,
+        };
+        let on_close = {
+            let shared = Arc::clone(&shared);
+            let inbox = self.inbox.clone();
+            let target = Arc::clone(&self.wake);
+            // On the panel's thread once the dialog is gone: the number is read together with
+            // the mark, so an opening that reuses this panel either renumbers it before (and
+            // the close names the new number) or finds it closed and starts another.
+            move |_result: Option<isize>| {
+                let serial = {
+                    let mut shared = lock(&shared);
+                    shared.closed = true;
+                    shared.serial
+                };
+                let _ = inbox.send(Event::PanelClosed(serial));
+                wake(&target);
+            }
+        };
+        match template
+            .build()
+            .and_then(|template| spawn_dialog(template, handler, on_close))
+        {
+            Ok(dialog) => Some(OpenPanel { dialog, shared }),
+            Err(_) => {
+                // No panel: the tray takes it as closed (the inbox is drained after this).
+                let _ = self.inbox.send(Event::PanelClosed(serial));
+                wake(&self.wake);
+                None
+            }
+        }
+    }
+}
+
+/// What the tray's thread and the panel's thread share.
+#[derive(Debug)]
+struct PanelShared {
+    /// What the panel shows.
+    state: PanelState,
+    /// The opening the panel belongs to ([`Effect::OpenPanel`]).
+    serial: u64,
+    /// The panel was closed (set on its thread, after the dialog is gone).
+    closed: bool,
+}
+
+type SharedPanel = Arc<Mutex<PanelShared>>;
+
+/// The shared panel data, also after a thread panicked while it held the lock (its data is
+/// plain and stays usable).
+fn lock(shared: &SharedPanel) -> MutexGuard<'_, PanelShared> {
+    shared.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The panel opened last.
+#[derive(Debug)]
+struct OpenPanel {
+    dialog: DetachedDialog,
+    shared: SharedPanel,
+}
+
+/// Where the off-screen panel of the tests goes (screen coordinates), before Windows shows it.
+const OFF_SCREEN_PIXELS: i32 = -32_000;
+
+/// The handler of the settings panel, on the panel's thread: a thin loop over `crate::panel`.
+/// It shows the shared state ([`PanelState::view`]), and turns the user's actions into
+/// requests ([`request`]) for the tray's inbox, then [`WAKE`]; the tray answers each with the
+/// whole state again ([`PANEL_REFRESH`]).
+struct PanelDialog {
+    shared: SharedPanel,
+    inbox: Sender<Event>,
+    wake: WakeTarget,
+    /// Move the dialog off every monitor before it is shown (tests).
+    off_screen: bool,
+    /// What the controls show now; the method list is filled again only when its items
+    /// change.
+    shown: Option<PanelView>,
+}
+
+impl PanelDialog {
+    /// Shows the shared state in every control. Programmatic changes notify nobody (the
+    /// handler is busy), so this never loops back into a request.
+    fn show(&mut self, dialog: &Dialog<'_>) {
+        let mut view = lock(&self.shared).state.view();
+        for &(id, checked) in &view.checks {
+            dialog.set_checked(id, checked);
+        }
+        let same_items = self
+            .shown
+            .as_ref()
+            .is_some_and(|shown| shown.methods == view.methods);
+        if !same_items && dialog.combo_set_items(ID_METHOD, &view.methods).is_err() {
+            // Filled again at the next refresh.
+            view.methods.clear();
+        }
+        // An item that is not there selects nothing.
+        let _ = dialog.combo_select(ID_METHOD, view.method);
+        for (id, text) in &view.texts {
+            // Texts hold no NUL (paths and hotkey names); a refused one keeps the old text.
+            let _ = dialog.set_text(*id, text);
+        }
+        for &(id, enabled) in &view.enabled {
+            dialog.set_enabled(id, enabled);
+        }
+        self.shown = Some(view);
+    }
+
+    fn send(&self, request: PanelRequest) {
+        // A tray that is gone loses only the request.
+        let _ = self.inbox.send(Event::Panel(request));
+        wake(&self.wake);
+    }
+}
+
+impl DialogHandler for PanelDialog {
+    fn init(&mut self, dialog: &Dialog<'_>) {
+        if self.off_screen {
+            let _ = dialog.move_to(OFF_SCREEN_PIXELS, OFF_SCREEN_PIXELS);
+        }
+        // Only `raumakey.exe` carries the app icon; without it the dialog shows the default.
+        if let Ok(module) = Module::executable() {
+            let _ = dialog.set_icons(module, ICON_APP);
+        }
+        self.show(dialog);
+        // A refresh posted before this returns is refused (the window is published only
+        // then), so the panel looks at the shared state once more when it is up.
+        let _ = dialog.post(PANEL_REFRESH, 0, 0);
+    }
+
+    fn command(&mut self, dialog: &Dialog<'_>, id: u16, code: u16) {
+        let value = match value_kind(id) {
+            Some(ValueKind::Check) => Some(ControlValue::Checked(dialog.checked(id))),
+            Some(ValueKind::Choice) => Some(ControlValue::Selected(dialog.combo_selected(id))),
+            None => None,
+        };
+        let Some(request) = request(id, code, value) else {
+            return;
+        };
+        if let Some(question) = confirmation(request) {
+            let answer = dialog.message_box(question, MessageKind::Question);
+            // A refresh posted while the box was open did not reach this handler.
+            self.show(dialog);
+            if !matches!(answer, Ok(MessageResponse::Yes)) {
+                return;
+            }
+        }
+        self.send(request);
+    }
+
+    fn app_message(&mut self, dialog: &Dialog<'_>, message: AppMessage, _: usize, _: isize) {
+        if message == PANEL_REFRESH {
+            self.show(dialog);
+        }
+    }
+
+    fn close_requested(&mut self, _dialog: &Dialog<'_>) -> bool {
+        // Every change is saved already: nothing to ask.
+        true
     }
 }
 
@@ -912,5 +1265,99 @@ impl<A: NotifyArea> TrayShell for ShellTray<A> {
     fn remove(&mut self) {
         self.area.delete();
         self.shown = false;
+    }
+
+    fn open_panel(&mut self, serial: u64, state: PanelState) {
+        if let Some(open) = &self.panel {
+            let mut shared = lock(&open.shared);
+            if !shared.closed {
+                shared.state = state;
+                shared.serial = serial;
+                drop(shared);
+                // Both are refused while the panel is still starting: it shows the shared
+                // state when it is up, and a new window comes to the front by itself.
+                let _ = open.dialog.post(PANEL_REFRESH, 0, 0);
+                if !self.off_screen_dialogs {
+                    let _ = open.dialog.bring_to_front();
+                }
+                return;
+            }
+        }
+        self.panel = self.spawn_panel(serial, state);
+    }
+
+    fn refresh_panel(&mut self, state: PanelState) {
+        if let Some(open) = &self.panel {
+            let mut shared = lock(&open.shared);
+            if shared.closed {
+                return;
+            }
+            shared.state = state;
+            drop(shared);
+            let _ = open.dialog.post(PANEL_REFRESH, 0, 0);
+        }
+    }
+
+    fn close_panel(&mut self) {
+        if let Some(open) = self.panel.take() {
+            open.dialog.dismiss();
+        }
+    }
+
+    fn open_macro_list(&mut self, folder: PathBuf) {
+        if let Some(open) = &self.macro_list
+            && !open.is_closed()
+        {
+            // Refused while the editor is still starting: a new window comes to the front by
+            // itself.
+            if !self.off_screen_dialogs {
+                let _ = open.bring_to_front();
+            }
+            return;
+        }
+        let inbox = self.inbox.clone();
+        let target = Arc::clone(&self.wake);
+        // On the editor's thread after each write: the tray has the worker poll at once.
+        let on_saved = move || {
+            let _ = inbox.send(Event::MacrosSaved);
+            wake(&target);
+        };
+        // Its close needs no answer: the next opening finds it closed.
+        let on_closed = || {};
+        let spawned = if self.off_screen_dialogs {
+            spawn_macro_list_with(
+                Placement::OffScreen,
+                SilentOffScreen,
+                folder,
+                on_saved,
+                on_closed,
+            )
+        } else {
+            spawn_macro_list(folder, on_saved, on_closed)
+        };
+        // An editor whose thread cannot start opens nothing; choosing it again tries again.
+        self.macro_list = spawned.ok();
+    }
+
+    fn close_macro_list(&mut self) {
+        if let Some(open) = self.macro_list.take() {
+            open.dismiss();
+        }
+    }
+}
+
+/// The questions of the macro list editor of the tests ([`ShellTray::with_off_screen_dialogs`]):
+/// the editor goes off every monitor before it is shown, and every question is answered "no"
+/// without showing a box.
+#[derive(Debug)]
+struct SilentOffScreen;
+
+impl Prompter for SilentOffScreen {
+    fn created(&mut self, dialog: &Dialog<'_>) {
+        let _ = dialog.move_to(OFF_SCREEN_PIXELS, OFF_SCREEN_PIXELS);
+    }
+
+    fn ask(&mut self, _dialog: &Dialog<'_>, _prompt: &Prompt) -> bool {
+        false
     }
 }

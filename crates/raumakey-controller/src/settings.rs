@@ -39,13 +39,16 @@
 //!   [`ConfigDocument::engine_options`], the live mode from `[input] enabled`, the hotkeys from
 //!   `[hotkeys]` (default toggle `Ctrl+Shift`, D5), diagnostics from `[system] diagnostics`,
 //!   and the compatibility rules from `raumakey-app-rules.toml` (the D13 defaults without it).
-//! - **Changes from the tray** ([`Change`], [`Settings::apply`]) are committed at once. When the
-//!   commit reports a conflict, because the file was edited by hand or by another writer since
-//!   it was loaded, the file is loaded again, the change is applied again on what it holds, and
-//!   the commit is retried (up to three times). A change takes effect even when it cannot be
-//!   saved; the error says why it was not. Such a change is kept: it stays in effect over
-//!   later reloads, the next commit writes it, and [`Settings::save_unsaved`] retries it
-//!   (the worker does at every poll and before it ends).
+//! - **Changes from the tray menu and the settings panel** ([`Change`], [`Settings::apply`])
+//!   are committed at once. When the commit reports a conflict, because the file was edited
+//!   by hand or by another writer since it was loaded, the file is loaded again, the change is
+//!   applied again on what it holds, and the commit is retried (up to three times). A change
+//!   takes effect even when it cannot be saved; the error says why it was not. Such a change
+//!   is kept: it stays in effect over later reloads, the next commit writes it, and
+//!   [`Settings::save_unsaved`] retries it (the worker does at every poll and before it ends).
+//!   The kept changes are the last of each kind, applied again in the order they were last
+//!   made, which ends as the whole sequence did: "Mặc định" ([`Change::TypingDefaults`])
+//!   resets a switch changed before it, and a switch changed after it stays.
 //! - **Hand edits.** [`Settings::poll`] (called every two seconds) notices a file that changed
 //!   on disk, even without a new revision, loads it again, and returns the new snapshots
 //!   ([`Reloaded`]). A file whose last read failed in a way that may pass (another program
@@ -185,7 +188,7 @@ pub struct OpenReport {
     pub status: Status,
 }
 
-/// A change made from the tray.
+/// A change made from the tray menu or the settings panel (D42, D43).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Change {
     /// Vietnamese mode on or off (`[input] enabled`, and the live mode of the snapshot).
@@ -198,34 +201,83 @@ pub enum Change {
     SpellCheck(bool),
     /// Modern tone placement (`[input] modern_tone`).
     ModernTone(bool),
+    /// Marks typed after the final consonant (`[input] free_marking`).
+    FreeMarking(bool),
+    /// Restoring the typed keys of a word that is not Vietnamese
+    /// (`[input] auto_restore_invalid`).
+    AutoRestore(bool),
     /// Macro expansion (`[macros] enabled`).
     Macros(bool),
+    /// Macro expansion in English mode too (`[macros] when_disabled`).
+    MacrosWhenEnglish(bool),
+    /// Macro replacements that follow the case of the typed trigger (`[macros] auto_case`).
+    MacroAutoCase(bool),
     /// How Raumakey starts with Windows (`[system] startup`). Only the choice is stored; the
     /// caller creates or removes the shortcut (`crate::startup`).
     Startup(StartupMode),
+    /// The settings panel opens when the controller starts (`[system] show_panel_on_start`).
+    ShowPanelOnStart(bool),
+    /// "Mặc định" of the panel: the input method, `modern_tone`, `free_marking`,
+    /// `spell_check`, `auto_restore_invalid`, and the three switches of `[macros]` take the
+    /// schema defaults ([`ConfigDocument::defaults`]). Nothing else changes: not the mode,
+    /// the key map of a user method, the normalization, the context limit, the hotkeys, or
+    /// `[system]`.
+    TypingDefaults,
 }
 
 impl Change {
     /// Whether `document` holds the value of this change already.
     fn holds_in(self, document: &ConfigDocument) -> bool {
+        let (input, macros) = (&document.input, &document.macros);
         match self {
-            Self::VietnameseMode(on) => document.input.enabled == on,
-            Self::InputMethod(method) => document.input.method == method,
-            Self::SpellCheck(on) => document.input.spell_check == on,
-            Self::ModernTone(on) => document.input.modern_tone == on,
-            Self::Macros(on) => document.macros.enabled == on,
+            Self::VietnameseMode(on) => input.enabled == on,
+            Self::InputMethod(method) => input.method == method,
+            Self::SpellCheck(on) => input.spell_check == on,
+            Self::ModernTone(on) => input.modern_tone == on,
+            Self::FreeMarking(on) => input.free_marking == on,
+            Self::AutoRestore(on) => input.auto_restore_invalid == on,
+            Self::Macros(on) => macros.enabled == on,
+            Self::MacrosWhenEnglish(on) => macros.when_disabled == on,
+            Self::MacroAutoCase(on) => macros.auto_case == on,
             Self::Startup(mode) => document.system.startup == mode,
+            Self::ShowPanelOnStart(on) => document.system.show_panel_on_start == on,
+            Self::TypingDefaults => {
+                let mut reset = document.clone();
+                Self::TypingDefaults.apply_to(&mut reset);
+                reset == *document
+            }
         }
     }
 
     fn apply_to(self, document: &mut ConfigDocument) {
+        let (input, macros) = (&mut document.input, &mut document.macros);
         match self {
-            Self::VietnameseMode(on) => document.input.enabled = on,
-            Self::InputMethod(method) => document.input.method = method,
-            Self::SpellCheck(on) => document.input.spell_check = on,
-            Self::ModernTone(on) => document.input.modern_tone = on,
-            Self::Macros(on) => document.macros.enabled = on,
+            Self::VietnameseMode(on) => input.enabled = on,
+            Self::InputMethod(method) => input.method = method,
+            Self::SpellCheck(on) => input.spell_check = on,
+            Self::ModernTone(on) => input.modern_tone = on,
+            Self::FreeMarking(on) => input.free_marking = on,
+            Self::AutoRestore(on) => input.auto_restore_invalid = on,
+            Self::Macros(on) => macros.enabled = on,
+            Self::MacrosWhenEnglish(on) => macros.when_disabled = on,
+            Self::MacroAutoCase(on) => macros.auto_case = on,
             Self::Startup(mode) => document.system.startup = mode,
+            Self::ShowPanelOnStart(on) => document.system.show_panel_on_start = on,
+            Self::TypingDefaults => {
+                let ConfigDocument {
+                    input: defaults,
+                    macros: macro_defaults,
+                    ..
+                } = ConfigDocument::defaults();
+                input.method = defaults.method;
+                input.modern_tone = defaults.modern_tone;
+                input.free_marking = defaults.free_marking;
+                input.spell_check = defaults.spell_check;
+                input.auto_restore_invalid = defaults.auto_restore_invalid;
+                macros.enabled = macro_defaults.enabled;
+                macros.when_disabled = macro_defaults.when_disabled;
+                macros.auto_case = macro_defaults.auto_case;
+            }
         }
     }
 }
@@ -664,7 +716,9 @@ impl Settings {
         self.commit_unsaved().map(|()| true)
     }
 
-    /// Keeps `change` as unsaved, replacing an earlier change of the same setting.
+    /// Keeps `change` as unsaved, replacing an earlier change of the same kind; the kept
+    /// changes stay in the order they were last made, so applying them again ends as the
+    /// whole sequence of changes did.
     fn remember(&mut self, change: Change) {
         let kind = core::mem::discriminant(&change);
         self.unsaved

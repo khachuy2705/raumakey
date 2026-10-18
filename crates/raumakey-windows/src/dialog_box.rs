@@ -18,7 +18,8 @@
 //!   thread or process cannot know the pointer) is ignored.
 //! - The handler gets a [`Dialog`] in every callback: a view of the dialog window with helpers
 //!   for its controls (check boxes, texts, drop-down lists, list views, the icons of its title
-//!   bar and taskbar button, focus, message boxes owned by the dialog, ending it).
+//!   bar and taskbar button, focus, message boxes owned by the dialog, ending it), and its
+//!   position ([`Dialog::move_to`]).
 //! - [`spawn_dialog`] runs a dialog without owner on a thread of its own, the way
 //!   [`spawn_message_box`](crate::dialog::spawn_message_box) runs message boxes: the caller's
 //!   thread goes on handling its own messages, and a [`DetachedDialog`] posts private messages
@@ -162,9 +163,10 @@ mod win {
         DLGTEMPLATE, DialogBoxIndirectParamW, EndDialog, EnumThreadWindows, GW_OWNER,
         GetClassNameW, GetDlgCtrlID, GetDlgItem, GetLastActivePopup, GetWindow, ICON_BIG,
         ICON_SMALL, IsChild, IsIconic, IsWindow, IsWindowVisible, MapDialogRect, PostMessageW,
-        SW_RESTORE, SendDlgItemMessageW, SendMessageW, SetDlgItemTextW, SetForegroundWindow,
-        ShowWindow, WINDOW_LONG_PTR_INDEX, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED,
-        WM_GETTEXT, WM_GETTEXTLENGTH, WM_INITDIALOG, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETICON,
+        SW_RESTORE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SendDlgItemMessageW, SendMessageW,
+        SetDlgItemTextW, SetForegroundWindow, SetWindowPos, ShowWindow, WINDOW_LONG_PTR_INDEX,
+        WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_GETTEXT, WM_GETTEXTLENGTH,
+        WM_INITDIALOG, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETICON,
     };
     use windows::core::{BOOL, PWSTR};
     // The helpers of the macro list editor: virtual list views, text limits, posting.
@@ -704,6 +706,28 @@ mod win {
         /// flashes its taskbar button.
         pub fn bring_to_front(&self) -> bool {
             bring_to_front(self.hwnd)
+        }
+
+        /// Moves the dialog's upper-left corner to (`x`, `y`) in screen coordinates without
+        /// changing its size, its place in the Z order, or the active window
+        /// (`SetWindowPos`). Called from [`DialogHandler::init`], it places the dialog before
+        /// Windows shows it: Windows moves a dialog whose template starts off every monitor
+        /// back onto one when it creates it, so tests keep their dialogs off the screen this
+        /// way.
+        pub fn move_to(&self, x: i32, y: i32) -> WinResult<()> {
+            // SAFETY: the dialog is a window of this thread; no pointers.
+            unsafe {
+                SetWindowPos(
+                    self.hwnd,
+                    None,
+                    x,
+                    y,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            }
+            .context("SetWindowPos")
         }
 
         /// Ends the dialog with `result` (`EndDialog`) once the current callback returned:

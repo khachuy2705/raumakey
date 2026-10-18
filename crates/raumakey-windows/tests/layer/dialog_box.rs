@@ -187,6 +187,8 @@ mod win {
         panic_on_drop: bool,
         /// `init` posts `WM_DESTROY` to the dialog, as another process could.
         forge_destroy: bool,
+        /// `init` moves the dialog here with `Dialog::move_to` (after moving it off-screen).
+        place: Option<(i32, i32)>,
     }
 
     impl Probe {
@@ -201,6 +203,7 @@ mod win {
                 drops: None,
                 panic_on_drop: false,
                 forge_destroy: false,
+                place: None,
             }
         }
 
@@ -288,6 +291,9 @@ mod win {
                 let posted =
                     unsafe { PostMessageW(Some(dialog.hwnd()), WM_DESTROY, WPARAM(0), LPARAM(0)) };
                 self.check("PostMessageW", posted.map_err(WinError::from));
+            }
+            if let Some((x, y)) = self.place {
+                self.check("move_to", dialog.move_to(x, y));
             }
         }
 
@@ -780,6 +786,19 @@ mod win {
             "{seen:?}"
         );
         assert_ne!(running.thread, current_thread());
+    }
+
+    /// `Dialog::move_to` places the dialog in screen coordinates; from `init` that happens
+    /// before Windows shows it (the controller's off-screen test panel relies on it).
+    #[test]
+    fn move_to_places_the_dialog_in_screen_coordinates() {
+        let running = started(|probe| probe.place = Some((-31_500, -31_400)));
+        let seen = running.settle();
+        assert_eq!(failures(&seen), Vec::<&Seen>::new());
+        let mut frame = RECT::default();
+        // SAFETY: `frame` is a valid out buffer.
+        unsafe { GetWindowRect(running.hwnd, &mut frame) }.unwrap();
+        assert_eq!((frame.left, frame.top), (-31_500, -31_400), "{frame:?}");
     }
 
     /// The reserved top of the `WM_APP` range is refused by `post`, and the handler never sees

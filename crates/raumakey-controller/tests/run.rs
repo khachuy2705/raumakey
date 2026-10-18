@@ -1,8 +1,9 @@
 //! The run mode (`run::run_controller`): `raumakey.exe` without arguments, against a fake
-//! desktop. The single instance first (a second start exits at once with 0); then the
-//! settings, the typing hook, the Startup-shortcut repair (D41), and the tray in the saved
-//! mode with the first-run and problem messages; the hook stops on every way out; errors are
-//! shown to the user, who has no console.
+//! desktop. The single instance first (a second start asks the running controller to show its
+//! panel, D45, and exits at once with 0); then the settings, the typing hook, the
+//! Startup-shortcut repair (D41), and the tray in the saved mode, with the settings panel at
+//! start (D43) and the first-run and problem messages; the hook stops on every way out; errors
+//! are shown to the user, who has no console.
 
 mod support;
 
@@ -30,8 +31,11 @@ fn tray_start(desktop: &FakeDesktop) -> TrayStart {
         location: opened.report.location,
         config_path: opened.report.config_path.clone(),
         status: opened.report.status.clone(),
-        notices: start_notice(&opened.report).into_iter().collect(),
+        notices: start_notice(&opened.report, !opened.show_panel_on_start)
+            .into_iter()
+            .collect(),
         temporary_exe: opened.temporary_exe,
+        show_panel: opened.show_panel_on_start,
     }
 }
 
@@ -80,19 +84,28 @@ fn the_tray_starts_in_the_saved_mode() {
     assert_eq!(start.runtime, desktop.opened.runtime);
 }
 
+/// D45: a start while the controller runs asks it to show its settings panel, opens nothing
+/// itself (no settings, no hook, no tray), and exits at once with 0.
 #[test]
-fn a_second_instance_exits_quietly_with_0_and_opens_nothing() {
+fn a_second_instance_signals_the_running_one_and_exits_with_0() {
     let mut desktop = FakeDesktop {
         instance: Ok(false),
         ..FakeDesktop::default()
     };
     assert_eq!(run_controller(&mut desktop), EXIT_OK);
-    assert_eq!(desktop.calls, [DesktopCall::AcquireInstance]);
+    assert_eq!(
+        desktop.calls,
+        [
+            DesktopCall::AcquireInstance,
+            DesktopCall::SignalRunningInstance
+        ]
+    );
 }
 
 /// An elevated controller of the same user holds the mutex with a higher integrity label, so
 /// a non-elevated start may not open it (`raumakey_windows::single_instance`): a controller
-/// runs, and this start ends quietly as well.
+/// runs, so this start signals it (the elevated controller lets the request through UIPI)
+/// and ends quietly as well.
 #[test]
 fn an_instance_that_this_process_may_not_open_counts_as_running() {
     for error in [
@@ -104,8 +117,29 @@ fn an_instance_that_this_process_may_not_open_counts_as_running() {
             ..FakeDesktop::default()
         };
         assert_eq!(run_controller(&mut desktop), EXIT_OK, "{error}");
-        assert_eq!(desktop.calls, [DesktopCall::AcquireInstance], "{error}");
+        assert_eq!(
+            desktop.calls,
+            [
+                DesktopCall::AcquireInstance,
+                DesktopCall::SignalRunningInstance
+            ],
+            "{error}"
+        );
     }
+}
+
+/// `[system] show_panel_on_start` (the schema default) opens the panel once the icon is
+/// there; turned off, the tray starts without it.
+#[test]
+fn the_tray_opens_the_panel_at_start_as_the_settings_say() {
+    let mut desktop = FakeDesktop::default();
+    assert!(desktop.opened.show_panel_on_start);
+    assert_eq!(run_controller(&mut desktop), EXIT_OK);
+    assert!(started(&desktop).show_panel);
+    let mut desktop = FakeDesktop::default();
+    desktop.opened.show_panel_on_start = false;
+    assert_eq!(run_controller(&mut desktop), EXIT_OK);
+    assert!(!started(&desktop).show_panel);
 }
 
 #[test]
@@ -211,14 +245,28 @@ fn the_exit_code_of_the_message_loop_is_passed_on() {
     }
 }
 
-/// The first run tells the user once where `raumakey.toml` was created: the tray shows it
-/// once its icon is there.
+/// The first run opens the settings panel (the schema default), which shows where
+/// `raumakey.toml` is and how to switch the mode: no welcome box then (D43).
 #[test]
-fn the_first_run_message_goes_to_the_tray() {
+fn the_first_run_opens_the_panel_instead_of_the_welcome() {
     let mut desktop = FakeDesktop::default();
     desktop.opened.report.first_run = true;
     assert_eq!(run_controller(&mut desktop), EXIT_OK);
-    let notice = start_notice(&desktop.opened.report).unwrap();
+    assert!(started(&desktop).show_panel);
+    assert_eq!(started(&desktop).notices, []);
+}
+
+/// A first run without the panel at start (the file existed with `show_panel_on_start =
+/// false` but had to be recreated, or the setting was turned off) tells the user once where
+/// `raumakey.toml` was created: the tray shows it once its icon is there.
+#[test]
+fn the_first_run_message_goes_to_the_tray_without_the_panel() {
+    let mut desktop = FakeDesktop::default();
+    desktop.opened.report.first_run = true;
+    desktop.opened.show_panel_on_start = false;
+    assert_eq!(run_controller(&mut desktop), EXIT_OK);
+    let notice = start_notice(&desktop.opened.report, true).unwrap();
+    assert!(notice.text.contains("Chào mừng"), "{}", notice.text);
     assert_eq!(started(&desktop).notices, [notice]);
 }
 
@@ -340,14 +388,24 @@ fn a_shortcut_that_cannot_be_repaired_is_told_by_the_tray() {
     };
     desktop.opened.startup = StartupMode::Shortcut;
     desktop.opened.report.first_run = true;
+    desktop.opened.show_panel_on_start = false;
     assert_eq!(run_controller(&mut desktop), EXIT_OK);
     assert_eq!(
         started(&desktop).notices,
         [
-            start_notice(&desktop.opened.report).unwrap(),
+            start_notice(&desktop.opened.report, true).unwrap(),
             heal_notice(&error)
         ]
     );
+    // With the panel at start, the repair is told all the same.
+    let mut desktop = FakeDesktop {
+        create_shortcut: Err(error),
+        ..FakeDesktop::default()
+    };
+    desktop.opened.startup = StartupMode::Shortcut;
+    desktop.opened.report.first_run = true;
+    assert_eq!(run_controller(&mut desktop), EXIT_OK);
+    assert_eq!(started(&desktop).notices, [heal_notice(&error)]);
 }
 
 /// Repair only when the shortcut mode is saved, the exe is not temporary, and the shortcut is
@@ -450,5 +508,5 @@ fn start_errors_name_raumakey_and_the_failed_operation_in_vietnamese() {
 fn the_fake_settings_are_a_clean_second_run() {
     let opened = opened_settings();
     assert!(!opened.report.first_run);
-    assert_eq!(start_notice(&opened.report), None);
+    assert_eq!(start_notice(&opened.report, true), None);
 }

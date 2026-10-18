@@ -11,13 +11,14 @@ use raumakey_controller::notice::{
     Notice, NoticeKind, Question, about_notice, elevated_task_notice, open_error_notice,
     recovery_notice, save_error_notice, startup_error_notice, status_notice, temporary_exe_notice,
 };
+use raumakey_controller::panel::{PanelRequest, PanelState};
 use raumakey_controller::settings::{Change, DocumentStatus, Location, Recovery, Settings, Status};
 use raumakey_controller::tray::{
-    Effect, Event, IconState, InputMode, LOOP_EXIT_CODE, MENU_ABOUT, MENU_EXIT, MENU_MACROS,
-    MENU_MODERN_TONE, MENU_OPEN_CONFIG, MENU_SPELL_CHECK, MENU_STARTUP, MENU_TELEX,
-    MENU_VIETNAMESE_MODE, MENU_VIQR, MENU_VNI, POLL_INTERVAL_MS, POLL_TIMER, Reply, START,
-    TOOLTIP_ENGLISH, TRAY_CALLBACK, TRAY_ICON_ID, Tray, TrayCommand, TrayStart, WAKE, coalesce,
-    with_change,
+    Effect, Event, ICON_APP, IconState, InputMode, LOOP_EXIT_CODE, MENU_ABOUT, MENU_EXIT,
+    MENU_MACROS, MENU_MODERN_TONE, MENU_OPEN_CONFIG, MENU_PANEL, MENU_SPELL_CHECK, MENU_STARTUP,
+    MENU_TELEX, MENU_VIETNAMESE_MODE, MENU_VIQR, MENU_VNI, POLL_INTERVAL_MS, POLL_TIMER,
+    RegisteredMessages, Reply, SHOW_PANEL_COMPONENT, START, TOOLTIP_ENGLISH, TRAY_CALLBACK,
+    TRAY_ICON_ID, Tray, TrayCommand, TrayStart, WAKE, coalesce, with_change,
 };
 use raumakey_controller::worker::{
     Answer, OpenError, Outcome, PollReport, Saved, SettingsState, ShortcutSync, StartupError,
@@ -28,6 +29,7 @@ use raumakey_model::options::InputMethod;
 use raumakey_resources::{ICON_ENGLISH, ICON_VIETNAMESE};
 use raumakey_windows::error::{E_ACCESSDENIED, WinError};
 use raumakey_windows::menu::MenuItem;
+use raumakey_windows::names::{SidHash, is_valid_component, message_name};
 use raumakey_windows::shell::{NIN_KEYSELECT, NIN_SELECT, TOOLTIP_CAPACITY, WM_CONTEXTMENU};
 use raumakey_windows::window::{WM_APP, WM_CLOSE, WM_ENDSESSION, WM_TIMER, is_postable};
 
@@ -36,6 +38,9 @@ use InputMode::{English, Vietnamese};
 /// A registered message number standing in for `TaskbarCreated`, which Windows registers at
 /// run time.
 const TASKBAR_CREATED: u32 = 0xC0DE;
+/// A registered message number standing in for the request of a second start to show the
+/// panel (`Raumakey.<sidhash>.show-panel`, D45).
+const SHOW_PANEL: u32 = 0xC123;
 
 const WM_NULL: u32 = 0x0000;
 const WM_CREATE: u32 = 0x0001;
@@ -87,6 +92,15 @@ fn start(mode: InputMode) -> TrayStart {
         status: clean(),
         notices: Vec::new(),
         temporary_exe: false,
+        show_panel: false,
+    }
+}
+
+/// The registered messages of the tests: `TaskbarCreated` and the show-panel request.
+fn messages() -> RegisteredMessages {
+    RegisteredMessages {
+        taskbar_created: TASKBAR_CREATED,
+        show_panel: SHOW_PANEL,
     }
 }
 
@@ -95,6 +109,8 @@ fn exit_effects() -> Vec<Effect> {
     vec![
         Effect::StopTyping,
         Effect::DismissNotices,
+        Effect::ClosePanel,
+        Effect::CloseMacroList,
         Effect::FlushHotkeys,
         Effect::FinishWorker,
         Effect::RemoveIcon,
@@ -170,7 +186,7 @@ fn choose(tray: &mut Tray, command: TrayCommand) -> Vec<Effect> {
 fn running_with(start: TrayStart) -> Tray {
     let mode = InputMode::from_vietnamese(start.runtime.vietnamese_mode);
     let method = start.runtime.options.input_method;
-    let mut tray = Tray::new(start, TASKBAR_CREATED);
+    let mut tray = Tray::new(start, messages());
     assert_eq!(
         tray.on_message(START.id(), 0, 0),
         answered(vec![Effect::ShowIcon(icon(mode, method))])
@@ -192,7 +208,11 @@ fn answer(seq: u64, outcome: Outcome, state: Option<SettingsState>) -> Event {
 }
 
 fn state(runtime: RuntimeSnapshot, startup: StartupMode) -> SettingsState {
-    SettingsState { runtime, startup }
+    SettingsState {
+        runtime,
+        startup,
+        show_panel_on_start: false,
+    }
 }
 
 fn applied(change: Change, result: Result<Saved, ConfigError>) -> Outcome {
@@ -281,9 +301,10 @@ fn the_tooltip_names_the_mode_and_the_input_method() {
 
 // --- The menu ---------------------------------------------------------------------------
 
-/// D42: flat, these labels in this order, separators between the groups.
+/// D42 with "Bảng cấu hình…" first (D43, design §22.4): flat, these labels in this order,
+/// separators between the groups.
 #[test]
-fn the_menu_has_the_labels_of_d42_in_order() {
+fn the_menu_has_the_labels_of_d42_in_order_after_the_panel() {
     let tray = running(Vietnamese);
     let labels: Vec<Option<&str>> = tray
         .menu()
@@ -296,6 +317,8 @@ fn the_menu_has_the_labels_of_d42_in_order() {
     assert_eq!(
         labels,
         [
+            Some("Bảng cấu hình…"),
+            None,
             Some("Gõ tiếng Việt (Ctrl+Shift)"),
             None,
             Some("Telex"),
@@ -313,6 +336,7 @@ fn the_menu_has_the_labels_of_d42_in_order() {
             Some("Thoát"),
         ]
     );
+    assert_eq!(MENU_PANEL, "Bảng cấu hình\u{2026}");
     assert_eq!(MENU_VIETNAMESE_MODE, "Gõ tiếng Việt (Ctrl+Shift)");
     assert_eq!([MENU_TELEX, MENU_VNI, MENU_VIQR], ["Telex", "VNI", "VIQR"]);
     assert_eq!(MENU_SPELL_CHECK, "Kiểm tra chính tả");
@@ -345,6 +369,28 @@ fn command_ids_are_distinct_non_zero_and_round_trip() {
     assert_eq!(ids.len(), TrayCommand::ALL.len());
     assert_eq!(TrayCommand::from_id(0), None);
     assert_eq!(TrayCommand::from_id(999), None);
+    // The commands of D42 keep their ids; "Bảng cấu hình…" is new, first in the menu.
+    let numbered: Vec<(TrayCommand, u16)> = TrayCommand::ALL
+        .iter()
+        .map(|command| (*command, command.id()))
+        .collect();
+    assert_eq!(
+        numbered,
+        [
+            (TrayCommand::Panel, 12),
+            (TrayCommand::VietnameseMode, 1),
+            (TrayCommand::Telex, 2),
+            (TrayCommand::Vni, 3),
+            (TrayCommand::Viqr, 4),
+            (TrayCommand::SpellCheck, 5),
+            (TrayCommand::ModernTone, 6),
+            (TrayCommand::Macros, 7),
+            (TrayCommand::Startup, 8),
+            (TrayCommand::OpenConfig, 9),
+            (TrayCommand::About, 10),
+            (TrayCommand::Exit, 11),
+        ]
+    );
     // Every command is in the menu once.
     let tray = running(Vietnamese);
     let mut menu: Vec<u16> = checks(&tray).into_iter().map(|(id, _)| id).collect();
@@ -359,6 +405,7 @@ fn the_checks_follow_the_settings_in_effect() {
     assert_eq!(
         checks(&tray),
         [
+            (TrayCommand::Panel.id(), false),
             (TrayCommand::VietnameseMode.id(), true),
             (TrayCommand::Telex.id(), true),
             (TrayCommand::Vni.id(), false),
@@ -382,6 +429,7 @@ fn the_checks_follow_the_settings_in_effect() {
     assert_eq!(
         checks(&tray),
         [
+            (TrayCommand::Panel.id(), false),
             (TrayCommand::VietnameseMode.id(), false),
             (TrayCommand::Telex.id(), false),
             (TrayCommand::Vni.id(), false),
@@ -413,7 +461,7 @@ fn start_adds_the_icon_in_the_saved_mode_then_shows_the_start_notices_once() {
     let mut settings = start(English);
     settings.runtime.options.input_method = InputMethod::Vni;
     settings.notices = vec![notice.clone()];
-    let mut tray = Tray::new(settings, TASKBAR_CREATED);
+    let mut tray = Tray::new(settings, messages());
     assert_eq!(tray.mode(), English);
     assert_eq!(
         tray.on_message(START.id(), 0, 0),
@@ -569,7 +617,7 @@ fn other_notifications_and_other_icons_change_nothing() {
 
 #[test]
 fn before_the_start_the_icon_does_not_exist_and_nothing_acts() {
-    let mut tray = Tray::new(start(Vietnamese), TASKBAR_CREATED);
+    let mut tray = Tray::new(start(Vietnamese), messages());
     assert!(!tray.is_running());
     for message in [
         click(),
@@ -707,23 +755,66 @@ fn spell_check_modern_tone_and_macros_switch_in_the_hook_and_the_file() {
 fn a_change_builds_the_snapshot_that_the_settings_build() {
     let exe = tempfile::tempdir().unwrap();
     let (mut settings, _) = Settings::open(exe.path(), None, &|_| true, &|_| false);
-    for change in [
+    let changes = [
         Change::InputMethod(InputMethod::Vni),
         Change::VietnameseMode(false),
         Change::SpellCheck(false),
         Change::ModernTone(true),
         Change::Macros(false),
+        Change::FreeMarking(false),
+        Change::AutoRestore(false),
+        Change::MacrosWhenEnglish(true),
+        Change::MacroAutoCase(false),
+        Change::ShowPanelOnStart(false),
         Change::InputMethod(InputMethod::Viqr),
+        Change::TypingDefaults,
         Change::VietnameseMode(true),
         Change::Startup(StartupMode::Shortcut),
+        Change::ModernTone(true),
         Change::InputMethod(InputMethod::Telex),
         Change::Macros(true),
-    ] {
+        Change::FreeMarking(true),
+        Change::AutoRestore(true),
+        Change::MacrosWhenEnglish(false),
+        Change::MacroAutoCase(true),
+        Change::ShowPanelOnStart(true),
+        Change::SpellCheck(true),
+        Change::InputMethod(InputMethod::Vni),
+        Change::TypingDefaults,
+    ];
+    for change in changes {
         let mut predicted = with_change(settings.runtime_snapshot(), change);
         settings.apply(change).unwrap();
         predicted.config_revision = settings.runtime_snapshot().config_revision;
         assert_eq!(predicted, *settings.runtime_snapshot(), "{change:?}");
     }
+}
+
+/// "Mặc định" with a user-defined method and its key map: the method returns to the default,
+/// as in the settings, while the key map and its id stay.
+#[test]
+fn typing_defaults_build_the_snapshot_that_the_settings_build_for_a_user_method() {
+    let exe = tempfile::tempdir().unwrap();
+    std::fs::write(
+        exe.path().join("raumakey.toml"),
+        "version = 1\nrevision = 1\n[input]\nmethod = \"user\"\nuser_keymap = \"mine\"\n\
+         modern_tone = true\nspell_check = false\n[macros]\nwhen_disabled = true\n\
+         [[keymaps]]\nid = \"mine\"\nversion = 1\nname = \"Mine\"\n\
+         bindings = [ { key = \"s\", actions = [\"tone:acute\"] } ]\n",
+    )
+    .unwrap();
+    let (mut settings, _) = Settings::open(exe.path(), None, &|_| true, &|_| false);
+    assert_eq!(
+        settings.runtime_snapshot().options.input_method,
+        InputMethod::UserDefined
+    );
+    let mut predicted = with_change(settings.runtime_snapshot(), Change::TypingDefaults);
+    settings.apply(Change::TypingDefaults).unwrap();
+    predicted.config_revision = settings.runtime_snapshot().config_revision;
+    assert_eq!(predicted, *settings.runtime_snapshot());
+    assert_eq!(predicted.options.input_method, InputMethod::Telex);
+    assert_eq!(predicted.options.user_keymap_id.as_deref(), Some("mine"));
+    assert_eq!(predicted.keymaps.len(), 1);
 }
 
 #[test]
@@ -814,9 +905,9 @@ fn a_dismissed_menu_or_an_unknown_command_changes_nothing() {
     assert!(tray.ends_loop_when_dropped());
 }
 
-/// Exit stops the hook first (typing is plain at once), closes the open notices without
-/// waiting for them, saves the hotkey changes left in the inbox, lets the worker finish, and
-/// only then removes the icon and ends the loop.
+/// Exit stops the hook first (typing is plain at once), closes the open notices and the panel
+/// without waiting for them, saves the hotkey changes left in the inbox, lets the worker
+/// finish, and only then removes the icon and ends the loop.
 #[test]
 fn exit_stops_the_hook_finishes_the_worker_then_removes_the_icon() {
     let mut tray = running(Vietnamese);
@@ -826,6 +917,8 @@ fn exit_stops_the_hook_finishes_the_worker_then_removes_the_icon() {
         [
             Effect::StopTyping,
             Effect::DismissNotices,
+            Effect::ClosePanel,
+            Effect::CloseMacroList,
             Effect::FlushHotkeys,
             Effect::FinishWorker,
             Effect::RemoveIcon,
@@ -877,7 +970,7 @@ fn close_and_the_end_of_the_session_exit_like_the_menu() {
         assert!(!tray.ends_loop_when_dropped());
     }
     // Before the start too; the start then adds no icon.
-    let mut tray = Tray::new(start(Vietnamese), TASKBAR_CREATED);
+    let mut tray = Tray::new(start(Vietnamese), messages());
     assert_eq!(tray.on_message(WM_CLOSE, 0, 0), answered(exit_effects()));
     assert_eq!(tray.on_message(START.id(), 0, 0), answered(Vec::new()));
 }
@@ -1382,6 +1475,630 @@ fn a_reload_tells_new_problems_once() {
     );
 }
 
+// --- The settings panel (D43, D45) ---------------------------------------------------------
+
+fn open_panel(serial: u64, state: PanelState) -> Effect {
+    Effect::OpenPanel { serial, state }
+}
+
+fn refresh(state: PanelState) -> Effect {
+    Effect::RefreshPanel(state)
+}
+
+fn is_refresh(effect: &Effect) -> bool {
+    matches!(effect, Effect::RefreshPanel(_))
+}
+
+fn panel_request(tray: &mut Tray, request: PanelRequest) -> Vec<Effect> {
+    tray.on_event(Event::Panel(request))
+}
+
+fn set(change: Change) -> PanelRequest {
+    PanelRequest::Change(change)
+}
+
+/// A running tray whose panel was opened from the menu (panel 1).
+fn with_panel(start: TrayStart) -> Tray {
+    let mut tray = running_with(start);
+    let state = tray.panel_state();
+    assert_eq!(
+        choose(&mut tray, TrayCommand::Panel),
+        [open_panel(1, state)]
+    );
+    tray
+}
+
+/// The panel shows the settings the tray holds: the runtime snapshot, the start with Windows,
+/// the panel at start, and where the file lives.
+#[test]
+fn the_panel_state_is_built_from_the_settings_of_the_tray() {
+    let mut settings = start(English);
+    settings.startup = StartupMode::Shortcut;
+    settings.show_panel = true;
+    settings.runtime.options.free_marking = false;
+    let tray = Tray::new(settings.clone(), messages());
+    assert_eq!(
+        tray.panel_state(),
+        PanelState::new(
+            &settings.runtime,
+            StartupMode::Shortcut,
+            true,
+            Location::ExeDir,
+            Some(&config_path())
+        )
+    );
+}
+
+/// `show_panel_on_start` (the default, so the first run always shows it): the start adds the
+/// icon, opens the panel, then shows the start notices. Without it no panel opens.
+#[test]
+fn the_start_opens_the_panel_when_it_is_to_show_at_start() {
+    let notice = Notice {
+        kind: NoticeKind::Warning,
+        text: "cảnh báo".to_owned(),
+        question: None,
+    };
+    let mut settings = start(Vietnamese);
+    settings.show_panel = true;
+    settings.notices = vec![notice.clone()];
+    let mut tray = Tray::new(settings, messages());
+    let state = tray.panel_state();
+    assert!(state.show_on_start);
+    assert_eq!(
+        tray.on_message(START.id(), 0, 0),
+        answered(vec![
+            Effect::ShowIcon(icon(Vietnamese, InputMethod::Telex)),
+            open_panel(1, state),
+            Effect::Notify(notice),
+        ])
+    );
+    // Without it (`running` checks the start's effects): no panel, so nothing to refresh.
+    let mut tray = running(Vietnamese);
+    assert!(!send(&mut tray, click()).effects.iter().any(is_refresh));
+}
+
+/// "Bảng cấu hình…" and the request of a second start (D45) open the panel; while it is open,
+/// they bring it to the front with the state in effect. Each opening is numbered.
+#[test]
+fn the_menu_and_a_second_start_open_the_panel_or_bring_it_to_the_front() {
+    let mut tray = running(Vietnamese);
+    let state = tray.panel_state();
+    assert_eq!(
+        choose(&mut tray, TrayCommand::Panel),
+        [open_panel(1, state.clone())]
+    );
+    assert_eq!(
+        send(&mut tray, (SHOW_PANEL, 0, 0)),
+        answered(vec![open_panel(2, state.clone())])
+    );
+    choose(&mut tray, TrayCommand::SpellCheck);
+    let changed = tray.panel_state();
+    assert!(!changed.spell_check);
+    assert_eq!(
+        choose(&mut tray, TrayCommand::Panel),
+        [open_panel(3, changed)]
+    );
+}
+
+/// The request of a second start acts only while the tray runs: before its start (the icon
+/// is not there yet) and after an exit it is answered without effect.
+#[test]
+fn the_show_panel_request_acts_only_while_the_tray_runs() {
+    let mut tray = Tray::new(start(Vietnamese), messages());
+    assert_eq!(send(&mut tray, (SHOW_PANEL, 0, 0)), answered(Vec::new()));
+    assert_eq!(
+        tray.on_message(START.id(), 0, 0),
+        answered(vec![Effect::ShowIcon(icon(Vietnamese, InputMethod::Telex))])
+    );
+    choose(&mut tray, TrayCommand::Exit);
+    assert_eq!(send(&mut tray, (SHOW_PANEL, 0, 0)), answered(Vec::new()));
+    assert_eq!(choose(&mut tray, TrayCommand::Panel), []);
+}
+
+/// The registered message is named for the user: `Raumakey.<sidhash>.show-panel`.
+#[test]
+fn the_show_panel_message_is_named_for_the_user() {
+    assert_eq!(SHOW_PANEL_COMPONENT, "show-panel");
+    assert!(is_valid_component(SHOW_PANEL_COMPONENT));
+    let hash = SidHash::parse("0123456789abcdef").unwrap();
+    assert_eq!(
+        message_name(&hash, SHOW_PANEL_COMPONENT).unwrap(),
+        "Raumakey.0123456789abcdef.show-panel"
+    );
+}
+
+/// A switch of the panel goes the way of the menu (the hook gets the snapshot, the worker
+/// saves the change), and the panel gets the whole state back.
+#[test]
+fn a_switch_of_the_panel_goes_the_way_of_the_menu_and_the_panel_is_refreshed() {
+    type Expect = fn(&mut RuntimeSnapshot);
+    let cases: [(Change, Expect); 8] = [
+        (Change::SpellCheck(false), |r| r.options.spell_check = false),
+        (Change::ModernTone(true), |r| r.options.modern_tone = true),
+        (Change::FreeMarking(false), |r| {
+            r.options.free_marking = false
+        }),
+        (Change::AutoRestore(false), |r| {
+            r.options.auto_restore_invalid = false;
+        }),
+        (Change::Macros(false), |r| r.options.macros_enabled = false),
+        (Change::MacrosWhenEnglish(true), |r| {
+            r.options.macros_when_disabled = true;
+        }),
+        (Change::MacroAutoCase(false), |r| {
+            r.options.auto_case_macro = false;
+        }),
+        (Change::Macros(true), |r| r.options.macros_enabled = true),
+    ];
+    let mut tray = with_panel(start(Vietnamese));
+    let mut expected = runtime(Vietnamese);
+    for (seq, (change, expect)) in (1..).zip(cases) {
+        expect(&mut expected);
+        let effects = panel_request(&mut tray, set(change));
+        assert_eq!(
+            effects,
+            [
+                hook_runtime(expected.clone()),
+                worker(seq, WorkerCommand::Apply(change)),
+                refresh(tray.panel_state()),
+            ],
+            "{change:?}"
+        );
+        assert_eq!(*tray.runtime(), expected, "{change:?}");
+    }
+    let state = tray.panel_state();
+    assert!(!state.spell_check && state.modern_tone && !state.free_marking);
+    assert!(!state.auto_restore && state.macros && state.macros_when_english);
+    assert!(!state.macro_auto_case);
+}
+
+/// "Gõ tiếng Việt" and the method list of the panel act as the menu does.
+#[test]
+fn the_mode_and_the_method_of_the_panel_act_as_the_menu_does() {
+    let mut tray = with_panel(start(Vietnamese));
+    let effects = panel_request(&mut tray, set(Change::VietnameseMode(false)));
+    assert_eq!(
+        effects,
+        [
+            Effect::UpdateIcon(icon(English, InputMethod::Telex)),
+            Effect::HookMode(false),
+            worker(1, WorkerCommand::Apply(Change::VietnameseMode(false))),
+            refresh(tray.panel_state()),
+        ]
+    );
+    assert!(!tray.panel_state().vietnamese);
+    let mut vni = runtime(English);
+    vni.options.input_method = InputMethod::Vni;
+    let effects = panel_request(&mut tray, set(Change::InputMethod(InputMethod::Vni)));
+    assert_eq!(
+        effects,
+        [
+            Effect::UpdateIcon(icon(English, InputMethod::Vni)),
+            hook_runtime(vni),
+            worker(
+                2,
+                WorkerCommand::Apply(Change::InputMethod(InputMethod::Vni))
+            ),
+            refresh(tray.panel_state()),
+        ]
+    );
+    assert_eq!(tray.panel_state().method, InputMethod::Vni);
+    // The method in effect again: nothing to do, but the panel is refreshed all the same.
+    assert_eq!(
+        panel_request(&mut tray, set(Change::InputMethod(InputMethod::Vni))),
+        [refresh(tray.panel_state())]
+    );
+}
+
+/// "Mở bảng này khi Raumakey chạy" is saved only: the hook does not see it.
+#[test]
+fn the_panel_at_start_is_saved_without_the_hook() {
+    let mut settings = start(Vietnamese);
+    settings.show_panel = true;
+    let mut tray = running_with_panel_at_start(settings);
+    let effects = panel_request(&mut tray, set(Change::ShowPanelOnStart(false)));
+    let state = tray.panel_state();
+    assert!(!state.show_on_start);
+    assert_eq!(
+        effects,
+        [
+            worker(1, WorkerCommand::Apply(Change::ShowPanelOnStart(false))),
+            refresh(state),
+        ]
+    );
+}
+
+/// A running tray that opened its panel at the start (panel 1).
+fn running_with_panel_at_start(start: TrayStart) -> Tray {
+    assert!(start.show_panel);
+    let mut tray = Tray::new(start, messages());
+    let effects = tray.on_message(START.id(), 0, 0).effects;
+    assert!(
+        matches!(effects[1], Effect::OpenPanel { serial: 1, .. }),
+        "{effects:?}"
+    );
+    tray
+}
+
+/// "Mặc định": the hook gets the snapshot with the typing and macro switches at their
+/// defaults (the mode stays), the icon shows the default method, and the worker saves it.
+#[test]
+fn typing_defaults_reach_the_icon_the_hook_and_the_worker() {
+    let mut settings = start(English);
+    settings.runtime.options.input_method = InputMethod::Viqr;
+    settings.runtime.options.spell_check = false;
+    settings.runtime.options.modern_tone = true;
+    settings.runtime.options.macros_when_disabled = true;
+    let mut tray = with_panel(settings);
+    let effects = panel_request(&mut tray, set(Change::TypingDefaults));
+    assert_eq!(
+        effects,
+        [
+            Effect::UpdateIcon(icon(English, InputMethod::Telex)),
+            hook_runtime(runtime(English)),
+            worker(1, WorkerCommand::Apply(Change::TypingDefaults)),
+            refresh(tray.panel_state()),
+        ]
+    );
+    assert_eq!(*tray.runtime(), runtime(English));
+}
+
+/// The start with Windows goes through the shortcut only (`PanelRequest::Startup`): a
+/// `Change::Startup` from the panel changes nothing, and the box is put back.
+#[test]
+fn a_startup_change_without_the_shortcut_changes_nothing() {
+    let mut tray = with_panel(start(Vietnamese));
+    assert_eq!(
+        panel_request(&mut tray, set(Change::Startup(StartupMode::Shortcut))),
+        [refresh(tray.panel_state())]
+    );
+    assert_eq!(tray.startup(), StartupMode::None);
+}
+
+/// "Khởi động cùng Windows" of the panel is absolute: on makes the shortcut, off removes it,
+/// and the value in effect does nothing (the box is put back to it).
+#[test]
+fn the_start_with_windows_of_the_panel_is_absolute() {
+    let mut tray = with_panel(start(Vietnamese));
+    let effects = panel_request(&mut tray, PanelRequest::Startup(true));
+    assert_eq!(tray.panel_state().startup, StartupMode::Shortcut);
+    assert_eq!(
+        effects,
+        [
+            worker(1, WorkerCommand::Startup(true)),
+            refresh(tray.panel_state())
+        ]
+    );
+    assert_eq!(
+        panel_request(&mut tray, PanelRequest::Startup(true)),
+        [refresh(tray.panel_state())]
+    );
+    let effects = panel_request(&mut tray, PanelRequest::Startup(false));
+    assert_eq!(tray.startup(), StartupMode::None);
+    assert_eq!(
+        effects,
+        [
+            worker(2, WorkerCommand::Startup(false)),
+            refresh(tray.panel_state())
+        ]
+    );
+    assert_eq!(
+        panel_request(&mut tray, PanelRequest::Startup(false)),
+        [refresh(tray.panel_state())]
+    );
+}
+
+/// A start with Windows the tray refuses puts the box back: from the temporary folder with
+/// the request to extract Raumakey first; the elevated logon task only explains.
+#[test]
+fn a_refused_start_with_windows_puts_the_box_back() {
+    let mut settings = start(Vietnamese);
+    settings.temporary_exe = true;
+    let mut tray = with_panel(settings);
+    let effects = panel_request(&mut tray, PanelRequest::Startup(true));
+    let state = tray.panel_state();
+    assert_eq!(state.startup, StartupMode::None);
+    assert_eq!(
+        effects,
+        [Effect::Notify(temporary_exe_notice()), refresh(state)]
+    );
+    let mut settings = start(Vietnamese);
+    settings.startup = StartupMode::ElevatedTask;
+    let mut tray = with_panel(settings);
+    let effects = panel_request(&mut tray, PanelRequest::Startup(false));
+    let state = tray.panel_state();
+    assert_eq!(state.startup, StartupMode::ElevatedTask);
+    assert_eq!(
+        effects,
+        [
+            Effect::Notify(elevated_task_notice()),
+            refresh(state.clone())
+        ]
+    );
+    assert_eq!(
+        panel_request(&mut tray, PanelRequest::Startup(true)),
+        [refresh(state)],
+        "the task starts Raumakey already"
+    );
+}
+
+/// "Mở file cấu hình" goes to the worker; "Danh sách gõ tắt…" opens the macro list of the
+/// data folder, when there is one.
+#[test]
+fn the_buttons_open_the_configuration_and_the_macro_list() {
+    let mut tray = with_panel(start(Vietnamese));
+    assert_eq!(
+        panel_request(&mut tray, PanelRequest::OpenConfig),
+        [
+            worker(1, WorkerCommand::OpenConfig),
+            refresh(tray.panel_state())
+        ]
+    );
+    assert_eq!(
+        panel_request(&mut tray, PanelRequest::MacroList),
+        [
+            Effect::OpenMacroList(PathBuf::from(r"D:\Tools\Raumakey")),
+            refresh(tray.panel_state())
+        ]
+    );
+    let mut nowhere = start(Vietnamese);
+    nowhere.location = Location::Unavailable;
+    nowhere.config_path = None;
+    let mut tray = with_panel(nowhere);
+    assert_eq!(
+        panel_request(&mut tray, PanelRequest::MacroList),
+        [refresh(tray.panel_state())]
+    );
+}
+
+/// While the panel is open, every change made another way reaches it: the hotkey, a click on
+/// the icon, the menu, a hand edit (the worker's answer). Nothing is sent when nothing
+/// changed.
+#[test]
+fn changes_made_another_way_refresh_the_open_panel() {
+    let mut tray = with_panel(start(Vietnamese));
+    let effects = tray.on_event(Event::Hotkey(false));
+    assert_eq!(effects.last(), Some(&refresh(tray.panel_state())));
+    assert!(!tray.panel_state().vietnamese);
+    let effects = send(&mut tray, click()).effects;
+    assert_eq!(effects.last(), Some(&refresh(tray.panel_state())));
+    assert!(tray.panel_state().vietnamese);
+    let effects = choose(&mut tray, TrayCommand::SpellCheck);
+    assert_eq!(effects.last(), Some(&refresh(tray.panel_state())));
+    assert!(!tray.panel_state().spell_check);
+    // A tick only polls; WAKE and a dismissed menu change nothing.
+    assert!(!send(&mut tray, tick()).effects.iter().any(is_refresh));
+    assert!(
+        !send(&mut tray, (WAKE.id(), 0, 0))
+            .effects
+            .iter()
+            .any(is_refresh)
+    );
+    assert_eq!(tray.menu_choice(None), []);
+    // The poll found a hand edit: VNI, the start with Windows, no panel at start.
+    let mut edited = runtime(Vietnamese);
+    edited.config_revision = 2;
+    edited.options.input_method = InputMethod::Vni;
+    edited.options.spell_check = false;
+    let answer = Answer {
+        seq: 4,
+        outcome: polled(clean()),
+        state: Some(Box::new(SettingsState {
+            runtime: edited.clone(),
+            startup: StartupMode::Shortcut,
+            show_panel_on_start: false,
+        })),
+    };
+    let effects = tray.on_event(Event::Worker(answer));
+    let state = tray.panel_state();
+    assert_eq!(state.method, InputMethod::Vni);
+    assert_eq!(state.startup, StartupMode::Shortcut);
+    assert!(!state.show_on_start);
+    assert_eq!(
+        effects,
+        [
+            Effect::UpdateIcon(icon(Vietnamese, InputMethod::Vni)),
+            hook_runtime(edited.clone()),
+            refresh(state),
+        ]
+    );
+    // Only `show_panel_on_start` edited by hand: the panel alone follows.
+    send(&mut tray, tick());
+    let answer = Answer {
+        seq: 5,
+        outcome: polled(clean()),
+        state: Some(Box::new(SettingsState {
+            runtime: edited,
+            startup: StartupMode::Shortcut,
+            show_panel_on_start: true,
+        })),
+    };
+    assert_eq!(
+        tray.on_event(Event::Worker(answer)),
+        [refresh(tray.panel_state())]
+    );
+    assert!(tray.panel_state().show_on_start);
+}
+
+/// No panel, no refresh: neither before one was opened nor after it closed; a request from a
+/// panel the tray does not know as open still acts.
+#[test]
+fn nothing_is_refreshed_while_no_panel_is_open() {
+    let mut tray = running(Vietnamese);
+    assert!(!send(&mut tray, click()).effects.iter().any(is_refresh));
+    let mut expected = runtime(English);
+    expected.options.spell_check = false;
+    assert_eq!(
+        panel_request(&mut tray, set(Change::SpellCheck(false))),
+        [
+            hook_runtime(expected),
+            worker(2, WorkerCommand::Apply(Change::SpellCheck(false)))
+        ]
+    );
+    let state = tray.panel_state();
+    assert_eq!(
+        choose(&mut tray, TrayCommand::Panel),
+        [open_panel(1, state)]
+    );
+    assert_eq!(tray.on_event(Event::PanelClosed(1)), []);
+    assert!(!send(&mut tray, click()).effects.iter().any(is_refresh));
+    assert!(!tray.on_event(Event::Hotkey(false)).iter().any(is_refresh));
+    assert!(
+        !panel_request(&mut tray, PanelRequest::OpenConfig)
+            .iter()
+            .any(is_refresh)
+    );
+}
+
+/// The close of a panel that was replaced meanwhile (it closed while a second start or the
+/// menu opened the next one) does not stop the refreshes of the new one.
+#[test]
+fn the_close_of_a_replaced_panel_does_not_stop_the_refreshes() {
+    let mut tray = with_panel(start(Vietnamese));
+    let state = tray.panel_state();
+    assert_eq!(
+        send(&mut tray, (SHOW_PANEL, 0, 0)),
+        answered(vec![open_panel(2, state)])
+    );
+    assert_eq!(tray.on_event(Event::PanelClosed(1)), []);
+    let effects = send(&mut tray, click()).effects;
+    assert_eq!(effects.last(), Some(&refresh(tray.panel_state())));
+    assert_eq!(tray.on_event(Event::PanelClosed(2)), []);
+    assert!(!send(&mut tray, click()).effects.iter().any(is_refresh));
+}
+
+/// Exit closes the open panel without waiting (after the hook and the notices, before the
+/// worker finishes); nothing acts on it afterwards.
+#[test]
+fn exit_closes_the_panel_and_nothing_follows() {
+    let mut tray = with_panel(start(Vietnamese));
+    assert_eq!(choose(&mut tray, TrayCommand::Exit), exit_effects());
+    assert_eq!(panel_request(&mut tray, PanelRequest::OpenConfig), []);
+    assert_eq!(tray.on_event(Event::PanelClosed(1)), []);
+    assert_eq!(send(&mut tray, (SHOW_PANEL, 0, 0)), answered(Vec::new()));
+    assert_eq!(
+        tray.flush_hotkeys(vec![Event::Hotkey(false), Event::PanelClosed(1)]),
+        [worker(
+            1,
+            WorkerCommand::Apply(Change::VietnameseMode(false))
+        )]
+    );
+}
+
+/// Panel events coalesce like any event but the hotkey: they keep their order.
+#[test]
+fn panel_events_keep_their_order_among_the_events() {
+    let events = vec![
+        Event::Panel(PanelRequest::OpenConfig),
+        Event::Hotkey(false),
+        Event::PanelClosed(3),
+        Event::Hotkey(true),
+        Event::Panel(set(Change::Macros(false))),
+    ];
+    assert_eq!(
+        coalesce(events),
+        [
+            Event::Panel(PanelRequest::OpenConfig),
+            Event::PanelClosed(3),
+            Event::Hotkey(true),
+            Event::Panel(set(Change::Macros(false))),
+        ]
+    );
+}
+
+// --- The macro list editor (D44) --------------------------------------------------------------
+
+fn no_reload() -> Outcome {
+    Outcome::Polled(PollReport::default())
+}
+
+/// The editor wrote `raumakey-macros.toml`: the worker polls at once, so the typing hook gets
+/// the new macros now rather than at the next tick; the tick that follows does not poll again
+/// while that poll is on its way.
+#[test]
+fn a_save_of_the_macro_list_makes_the_worker_poll_at_once() {
+    let mut tray = running(Vietnamese);
+    assert_eq!(
+        tray.on_event(Event::MacrosSaved),
+        [worker(1, WorkerCommand::Poll)]
+    );
+    assert_eq!(
+        send(&mut tray, tick()),
+        answered(vec![Effect::EnsureIcon(icon(
+            Vietnamese,
+            InputMethod::Telex
+        ))])
+    );
+    assert_eq!(tray.on_event(answer(1, no_reload(), None)), []);
+    assert_eq!(
+        send(&mut tray, tick()).effects[1],
+        worker(2, WorkerCommand::Poll)
+    );
+}
+
+/// A save while a poll is on its way (it may have read the file before the save is not
+/// lost): the worker polls once more as soon as that poll has answered, also when it
+/// panicked; saves meanwhile ask for that one poll only. The answer's settings are taken over
+/// before the next poll is sent.
+#[test]
+fn a_save_during_a_poll_polls_again_once_it_answered() {
+    let mut tray = running(Vietnamese);
+    send(&mut tray, tick()); // seq 1: a poll
+    assert_eq!(tray.on_event(Event::MacrosSaved), []);
+    assert_eq!(tray.on_event(Event::MacrosSaved), []);
+    let mut edited = runtime(Vietnamese);
+    edited.config_revision = 2;
+    edited.options.spell_check = false;
+    assert_eq!(
+        tray.on_event(answer(
+            1,
+            no_reload(),
+            Some(state(edited.clone(), StartupMode::None))
+        )),
+        [hook_runtime(edited), worker(2, WorkerCommand::Poll)]
+    );
+    assert_eq!(tray.on_event(answer(2, no_reload(), None)), []);
+    // A poll that panicked frees the way as well.
+    send(&mut tray, tick()); // seq 3
+    assert_eq!(tray.on_event(Event::MacrosSaved), []);
+    assert_eq!(
+        tray.on_event(answer(3, Outcome::Failed, None)),
+        [worker(4, WorkerCommand::Poll)]
+    );
+    // The answer to another command leaves the poll on its way.
+    choose(&mut tray, TrayCommand::OpenConfig); // seq 5
+    assert_eq!(tray.on_event(Event::MacrosSaved), []);
+    assert_eq!(tray.on_event(answer(5, Outcome::Opened(Ok(())), None)), []);
+    assert_eq!(
+        tray.on_event(answer(4, no_reload(), None)),
+        [worker(6, WorkerCommand::Poll)]
+    );
+}
+
+/// Before the start and after an exit a save asks nothing; the exit closes the editor without
+/// waiting, after the panel (it closes without saving, by design).
+#[test]
+fn the_macro_list_editor_is_closed_at_the_exit() {
+    let mut tray = Tray::new(start(Vietnamese), messages());
+    assert_eq!(tray.on_event(Event::MacrosSaved), []);
+    tray.on_message(START.id(), 0, 0);
+    let effects = choose(&mut tray, TrayCommand::Exit);
+    let panel = effects.iter().position(|e| *e == Effect::ClosePanel);
+    let editor = effects.iter().position(|e| *e == Effect::CloseMacroList);
+    let worker_finishes = effects.iter().position(|e| *e == Effect::FinishWorker);
+    assert!(panel < editor && editor < worker_finishes, "{effects:?}");
+    assert_eq!(tray.on_event(Event::MacrosSaved), []);
+    assert_eq!(tray.flush_hotkeys(vec![Event::MacrosSaved]), []);
+}
+
+/// The panel's icon is the app icon of `raumakey.exe`, as `raumakey-resources` numbers it.
+#[test]
+fn the_app_icon_id_is_the_one_of_the_resources() {
+    assert_eq!(ICON_APP, raumakey_resources::ICON_APP);
+    assert_ne!(ICON_APP, ICON_VIETNAMESE);
+    assert_ne!(ICON_APP, ICON_ENGLISH);
+}
+
 // --- Window plumbing -----------------------------------------------------------------------
 
 #[test]
@@ -1406,28 +2123,45 @@ fn other_messages_get_the_default_processing() {
         WM_APP + 4,
         0xC000,
         TASKBAR_CREATED + 1,
+        SHOW_PANEL + 1,
     ] {
         assert_eq!(tray.on_message(message, 1, 2), default(), "{message:#x}");
     }
     assert_eq!(tray.mode(), Vietnamese);
 }
 
+/// A registration that failed (0) or any number outside the registered range is never taken
+/// for `TaskbarCreated` or the show-panel request.
 #[test]
-fn only_a_registered_message_number_is_taken_for_taskbar_created() {
-    let mut tray = Tray::new(start(Vietnamese), 0);
-    tray.on_message(START.id(), 0, 0);
-    assert_eq!(tray.on_message(WM_NULL, 0, 0), default());
-    let mut tray = Tray::new(start(Vietnamese), 0x1_0000);
-    tray.on_message(START.id(), 0, 0);
-    assert_eq!(tray.on_message(0x1_0000, 0, 0), default());
-    let mut tray = Tray::new(start(Vietnamese), WM_CLOSE);
-    tray.on_message(START.id(), 0, 0);
-    assert_eq!(tray.on_message(WM_CLOSE, 0, 0), answered(exit_effects()));
+fn only_a_registered_message_number_is_taken_for_taskbar_created_or_show_panel() {
+    for number in [0, 0x1_0000, WM_CLOSE] {
+        for messages in [
+            RegisteredMessages {
+                taskbar_created: number,
+                show_panel: 0,
+            },
+            RegisteredMessages {
+                taskbar_created: 0,
+                show_panel: number,
+            },
+        ] {
+            let mut tray = Tray::new(start(Vietnamese), messages);
+            tray.on_message(START.id(), 0, 0);
+            let expected = match number {
+                WM_CLOSE => answered(exit_effects()),
+                _ => default(),
+            };
+            assert_eq!(tray.on_message(number, 0, 0), expected, "{messages:?}");
+            assert_eq!(tray.shell_messages(), [TRAY_CALLBACK.id()], "{messages:?}");
+        }
+    }
+    assert_eq!(RegisteredMessages::default().taskbar_created, 0);
+    assert_eq!(RegisteredMessages::default().show_panel, 0);
 }
 
 #[test]
 fn the_loop_must_end_when_a_running_tray_loses_its_window() {
-    let tray = Tray::new(start(Vietnamese), TASKBAR_CREATED);
+    let tray = Tray::new(start(Vietnamese), messages());
     assert!(
         !tray.ends_loop_when_dropped(),
         "before the start no loop runs yet"
@@ -1438,18 +2172,20 @@ fn the_loop_must_end_when_a_running_tray_loses_its_window() {
     assert!(!tray.ends_loop_when_dropped(), "Exit ended it already");
 }
 
+/// An elevated controller lets `TaskbarCreated`, the show-panel request of a second start
+/// from a normal prompt (D45), and the icon's callback through UIPI.
 #[test]
 fn an_elevated_controller_lets_the_shell_messages_through() {
-    let tray = Tray::new(start(Vietnamese), TASKBAR_CREATED);
+    let tray = Tray::new(start(Vietnamese), messages());
     assert_eq!(
         tray.shell_messages(),
-        vec![TASKBAR_CREATED, TRAY_CALLBACK.id()]
+        vec![TASKBAR_CREATED, SHOW_PANEL, TRAY_CALLBACK.id()]
     );
     for message in tray.shell_messages() {
         assert!(is_postable(message), "{message:#x}");
     }
     assert_eq!(
-        Tray::new(start(Vietnamese), 0).shell_messages(),
+        Tray::new(start(Vietnamese), RegisteredMessages::default()).shell_messages(),
         vec![TRAY_CALLBACK.id()]
     );
 }

@@ -8,45 +8,69 @@
 //! `WM_CLOSE`, `WM_ENDSESSION`, `TaskbarCreated`, clicks, and the timer meanwhile.
 //!
 //! Each test runs on a fresh thread, which owns the window and destroys it before it ends.
-//! Messages are posted or sent to the test window only: `TaskbarCreated` is never broadcast.
-//! A watchdog ends the message loop with [`WATCHDOG`] if the code under test never does.
+//! Messages are posted or sent to the test window only: `TaskbarCreated` is never broadcast,
+//! and neither is the show-panel request of a second start (the tests register it under a
+//! test name, so a Raumakey running on this desktop never sees it). A watchdog ends the
+//! message loop with [`WATCHDOG`] if the code under test never does.
+//!
+//! One test runs the real settings panel (`ShellTray` with its off-screen variant): it stays
+//! off every monitor and is never activated or brought to the front, and it is driven with
+//! `SendMessageW` from the test thread; no test clicks "Mặc định", whose question would show a
+//! message box. Every wait has a timeout.
 
 #![cfg(windows)]
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use raumakey_config::{ConfigError, StartupMode};
 use raumakey_controller::desktop::{
-    ModeIcons, NotifyArea, ShellTray, TrayServices, TrayShell, create_tray_window,
+    ModeIcons, NotifyArea, ShellTray, TrayServices, TrayShell, WakeTarget, create_tray_window,
 };
+use raumakey_controller::macro_dialog;
 use raumakey_controller::notice::{
     Notice, NoticeKind, Question, save_error_notice, temporary_exe_notice,
 };
+use raumakey_controller::panel::{
+    ID_AUTO_RESTORE, ID_CLOSE, ID_CONFIG_FILE, ID_FREE_MARKING, ID_HINT, ID_MACRO_AUTO_CASE,
+    ID_MACRO_LIST, ID_MACROS, ID_MACROS_WHEN_ENGLISH, ID_METHOD, ID_MODERN_TONE, ID_OPEN_CONFIG,
+    ID_SHOW_ON_START, ID_SPELL_CHECK, ID_STARTUP, ID_VIETNAMESE, PanelRequest, PanelState,
+    panel_title,
+};
 use raumakey_controller::settings::{Change, DocumentStatus, Location, Status};
 use raumakey_controller::tray::{
-    Event, IconState, InputMode, LOOP_EXIT_CODE, POLL_INTERVAL_MS, START, TRAY_CALLBACK,
-    TRAY_ICON_ID, Tray, TrayCommand, TrayStart, WAKE,
+    Event, IconState, InputMode, LOOP_EXIT_CODE, POLL_INTERVAL_MS, RegisteredMessages, START,
+    TRAY_CALLBACK, TRAY_ICON_ID, Tray, TrayCommand, TrayStart, WAKE,
 };
 use raumakey_controller::worker::{Answer, Outcome, PollReport, WorkerCommand};
 use raumakey_ipc::message::RuntimeSnapshot;
 use raumakey_model::options::InputMethod;
+use raumakey_windows::dialog_box::notifications::{BN_CLICKED, CBN_SELCHANGE};
+use raumakey_windows::dialog_template::IDCANCEL;
 use raumakey_windows::icon::{IconKind, icon_size};
 use raumakey_windows::menu::MenuItem;
 use raumakey_windows::module::Module;
 use raumakey_windows::shell::{NIN_SELECT, WM_CONTEXTMENU, taskbar_created_message};
-use raumakey_windows::window::{Window, WindowClass, post_quit, run_message_loop};
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::WindowsAndMessaging::{
-    CHANGEFILTERSTRUCT, ChangeWindowMessageFilterEx, GA_PARENT, GetAncestor, GetDesktopWindow,
-    IsWindowVisible, MSGFLT_ALLOW, MSGFLTINFO_ALREADYALLOWED_FORWND, MSGFLTINFO_NONE,
-    MSGFLTINFO_STATUS, PostMessageW, PostThreadMessageW, SendMessageW, WM_CLOSE, WM_ENDSESSION,
-    WM_QUIT,
+use raumakey_windows::window::{
+    Window, WindowClass, post_quit, register_user_message, run_message_loop,
 };
+use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
+use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+use windows::Win32::UI::WindowsAndMessaging::{
+    BM_CLICK, BM_GETCHECK, CB_GETCOUNT, CB_GETCURSEL, CB_SETCURSEL, CHANGEFILTERSTRUCT,
+    ChangeWindowMessageFilterEx, EnumWindows, GA_PARENT, GetAncestor, GetClassNameW,
+    GetDesktopWindow, GetDlgItem, GetWindowRect, GetWindowThreadProcessId, InternalGetWindowText,
+    IsWindow, IsWindowVisible, MSGFLT_ALLOW, MSGFLTINFO_ALREADYALLOWED_FORWND, MSGFLTINFO_NONE,
+    MSGFLTINFO_STATUS, PostMessageW, PostThreadMessageW, SMTO_NORMAL, SendMessageTimeoutW,
+    SendMessageW, WM_CLOSE, WM_COMMAND, WM_ENDSESSION, WM_GETTEXT, WM_GETTEXTLENGTH, WM_NULL,
+    WM_QUIT, WM_SETTEXT,
+};
+use windows::core::BOOL;
 
 use InputMode::{English, Vietnamese};
 
@@ -70,6 +94,11 @@ enum Call {
     Notify(Notice),
     Dismiss,
     Remove,
+    OpenPanel(u64, Box<PanelState>),
+    RefreshPanel(Box<PanelState>),
+    ClosePanel,
+    MacroList(PathBuf),
+    CloseMacroList,
     HookMode(bool),
     HookRuntime(Box<RuntimeSnapshot>),
     StopTyping,
@@ -83,13 +112,15 @@ type Log = Rc<RefCell<Vec<Call>>>;
 /// Records every call; the menu returns the queued choices in turn (then "dismissed") and runs
 /// `during_menu` with its owner window while it is "open". Notices stay "open" and never
 /// block; a queued "yes" is answered into the inbox as `Event::Answered`, as the box's thread
-/// does.
+/// does. The first panel opened sends the queued panel events into the inbox, as the panel's
+/// thread does.
 struct FakeShell {
     log: Log,
     choices: VecDeque<Option<u16>>,
     answers: VecDeque<bool>,
     inbox: Option<mpsc::Sender<Event>>,
     during_menu: Option<Box<dyn FnMut(HWND)>>,
+    panel_events: Vec<Event>,
 }
 
 impl FakeShell {
@@ -100,7 +131,15 @@ impl FakeShell {
             answers: VecDeque::new(),
             inbox: None,
             during_menu: None,
+            panel_events: Vec::new(),
         }
+    }
+
+    /// The first panel opened sends `events` into `inbox`.
+    fn panel_sending(mut self, events: Vec<Event>, inbox: &mpsc::Sender<Event>) -> Self {
+        self.panel_events = events;
+        self.inbox = Some(inbox.clone());
+        self
     }
 
     fn choosing(mut self, choices: &[Option<u16>]) -> Self {
@@ -166,6 +205,35 @@ impl TrayShell for FakeShell {
 
     fn remove(&mut self) {
         self.log.borrow_mut().push(Call::Remove);
+    }
+
+    fn open_panel(&mut self, serial: u64, state: PanelState) {
+        self.log
+            .borrow_mut()
+            .push(Call::OpenPanel(serial, Box::new(state)));
+        if let Some(inbox) = &self.inbox {
+            for event in self.panel_events.drain(..) {
+                inbox.send(event).unwrap();
+            }
+        }
+    }
+
+    fn refresh_panel(&mut self, state: PanelState) {
+        self.log
+            .borrow_mut()
+            .push(Call::RefreshPanel(Box::new(state)));
+    }
+
+    fn close_panel(&mut self) {
+        self.log.borrow_mut().push(Call::ClosePanel);
+    }
+
+    fn open_macro_list(&mut self, folder: PathBuf) {
+        self.log.borrow_mut().push(Call::MacroList(folder));
+    }
+
+    fn close_macro_list(&mut self) {
+        self.log.borrow_mut().push(Call::CloseMacroList);
     }
 }
 
@@ -295,6 +363,19 @@ fn taskbar_created() -> u32 {
     taskbar_created_message().unwrap()
 }
 
+/// The show-panel request of the tests: registered for this user like the real one, but under
+/// a test name, so that no running Raumakey ever takes it for its own.
+fn test_show_panel() -> u32 {
+    register_user_message("test-show-panel").unwrap()
+}
+
+fn messages() -> RegisteredMessages {
+    RegisteredMessages {
+        taskbar_created: taskbar_created(),
+        show_panel: test_show_panel(),
+    }
+}
+
 fn runtime(mode: InputMode) -> RuntimeSnapshot {
     let mut runtime = RuntimeSnapshot::defaults_v1();
     runtime.config_revision = 1;
@@ -317,23 +398,26 @@ fn start(mode: InputMode) -> TrayStart {
         },
         notices: Vec::new(),
         temporary_exe: false,
+        show_panel: false,
     }
 }
 
 fn tray(mode: InputMode) -> Tray {
-    Tray::new(start(mode), taskbar_created())
+    Tray::new(start(mode), messages())
 }
 
 fn icon(mode: InputMode, method: InputMethod) -> IconState {
     IconState { mode, method }
 }
 
-/// The calls of an exit, in order: the hook stops, open notices close, the worker finishes,
-/// and only then the icon goes.
-fn exit_calls() -> [Call; 4] {
+/// The calls of an exit, in order: the hook stops, open notices, the panel, and the macro list
+/// editor close, the worker finishes, and only then the icon goes.
+fn exit_calls() -> [Call; 6] {
     [
         Call::StopTyping,
         Call::Dismiss,
+        Call::ClosePanel,
+        Call::CloseMacroList,
         Call::FinishWorker,
         Call::Remove,
     ]
@@ -540,7 +624,7 @@ fn messages_arriving_while_a_notice_is_open_are_handled_and_the_exit_closes_it()
             let (services, _feed) = FakeServices::new(&log);
             let window = window_for(
                 label,
-                Tray::new(start, taskbar_created()),
+                Tray::new(start, messages()),
                 FakeShell::new(&log),
                 services,
                 NO_TICKS,
@@ -610,7 +694,7 @@ fn startup_from_the_temporary_folder_is_refused_in_the_menu() {
         start.temporary_exe = true;
         let window = window_for(
             "test-tray-temporary",
-            Tray::new(start, taskbar_created()),
+            Tray::new(start, messages()),
             shell,
             services,
             NO_TICKS,
@@ -880,6 +964,8 @@ fn hotkey_changes_left_at_the_exit_are_saved_before_the_worker_finishes() {
                 Call::Show(icon(English, InputMethod::Telex)),
                 Call::StopTyping,
                 Call::Dismiss,
+                Call::ClosePanel,
+                Call::CloseMacroList,
                 Call::Send(1, WorkerCommand::Apply(Change::VietnameseMode(true))),
                 Call::FinishWorker,
                 Call::Remove,
@@ -949,9 +1035,10 @@ fn filter_status(window: &Window, message: u32) -> MSGFLTINFO_STATUS {
     change.ExtStatus
 }
 
-/// An elevated controller lets `TaskbarCreated` (matrix #58) and the icon's callback through
-/// UIPI, which a non-elevated Explorer needs to reach it; a non-elevated controller leaves its
-/// filter alone. This non-elevated test reads the filter of each test window back.
+/// An elevated controller lets `TaskbarCreated` (matrix #58), the icon's callback, and the
+/// show-panel request of a second start (D45) through UIPI, which a non-elevated Explorer and
+/// a start from a normal prompt need to reach it; a non-elevated controller leaves its filter
+/// alone. This non-elevated test reads the filter of each test window back.
 #[test]
 fn an_elevated_tray_window_lets_the_shell_messages_through() {
     on_fresh_thread(|| {
@@ -977,7 +1064,7 @@ fn an_elevated_tray_window_lets_the_shell_messages_through() {
             NO_TICKS,
         )
         .unwrap();
-        for message in [taskbar_created(), TRAY_CALLBACK.id()] {
+        for message in [taskbar_created(), test_show_panel(), TRAY_CALLBACK.id()] {
             assert_eq!(
                 filter_status(&elevated, message),
                 MSGFLTINFO_ALREADYALLOWED_FORWND,
@@ -1025,4 +1112,474 @@ fn the_mode_icons_are_not_in_a_test_executable() {
     let size = icon_size(IconKind::Small).unwrap();
     let error = ModeIcons::load(Module::executable().unwrap(), size).unwrap_err();
     assert_eq!(error.context(), "LoadImageW");
+}
+
+// --- The settings panel (D43, D45) ---------------------------------------------------------
+
+/// The panel state of a tray built by [`start`] in `mode`.
+fn panel_state(mode: InputMode) -> PanelState {
+    tray(mode).panel_state()
+}
+
+/// "Bảng cấu hình…" opens the panel; its requests come through the inbox, go the way of the
+/// menu, and refresh it; its close stops the refreshes; the show-panel request of a second
+/// start (posted to this window only) opens it again; the exit closes it.
+#[test]
+fn the_panel_opens_from_the_menu_and_a_second_start_and_its_requests_act() {
+    on_fresh_thread(|| {
+        let log = Log::default();
+        let (services, feed) = FakeServices::new(&log);
+        let shell = FakeShell::new(&log)
+            .choosing(&[Some(TrayCommand::Panel.id())])
+            .panel_sending(
+                vec![
+                    Event::Panel(PanelRequest::Change(Change::SpellCheck(false))),
+                    Event::Panel(PanelRequest::MacroList),
+                    Event::PanelClosed(1),
+                ],
+                &feed,
+            );
+        let window = tray_window("test-tray-panel", Vietnamese, shell, services, NO_TICKS);
+        post_icon(&window, WM_CONTEXTMENU, 5, 6);
+        post_icon(&window, NIN_SELECT, 0, 0);
+        post(&window, test_show_panel(), 0, 0);
+        post(&window, WM_CLOSE, 0, 0);
+        assert_eq!(run_loop_with_watchdog(), LOOP_EXIT_CODE);
+        let calls = log.take();
+        assert!(
+            matches!(calls[1], Call::Menu { x: 5, y: 6, .. }),
+            "{calls:?}"
+        );
+        let opened = panel_state(Vietnamese);
+        let mut no_spelling = runtime(Vietnamese);
+        no_spelling.options.spell_check = false;
+        let mut refreshed = opened.clone();
+        refreshed.spell_check = false;
+        let mut english = refreshed.clone();
+        english.vietnamese = false;
+        let mut expected = vec![
+            Call::OpenPanel(1, Box::new(opened)),
+            Call::HookRuntime(Box::new(no_spelling)),
+            Call::Send(1, WorkerCommand::Apply(Change::SpellCheck(false))),
+            Call::RefreshPanel(Box::new(refreshed.clone())),
+            Call::MacroList(PathBuf::from(r"C:\Raumakey")),
+            Call::RefreshPanel(Box::new(refreshed)),
+            // Closed: the click is not shown to it.
+            Call::Update(icon(English, InputMethod::Telex)),
+            Call::HookMode(false),
+            Call::Send(2, WorkerCommand::Apply(Change::VietnameseMode(false))),
+            Call::OpenPanel(2, Box::new(english)),
+        ];
+        expected.extend(exit_calls());
+        assert_eq!(calls[2..], expected);
+    });
+}
+
+/// With `show_panel_on_start` the panel opens once the icon is added.
+#[test]
+fn the_panel_opens_at_start_after_the_icon() {
+    on_fresh_thread(|| {
+        let log = Log::default();
+        let (services, _feed) = FakeServices::new(&log);
+        let mut start = start(English);
+        start.show_panel = true;
+        let state = Tray::new(start.clone(), messages()).panel_state();
+        assert!(state.show_on_start);
+        let window = window_for(
+            "test-tray-panel-start",
+            Tray::new(start, messages()),
+            FakeShell::new(&log),
+            services,
+            NO_TICKS,
+        );
+        post(&window, WM_CLOSE, 0, 0);
+        assert_eq!(run_loop_with_watchdog(), LOOP_EXIT_CODE);
+        let mut expected = vec![
+            Call::Show(icon(English, InputMethod::Telex)),
+            Call::OpenPanel(1, Box::new(state)),
+        ];
+        expected.extend(exit_calls());
+        assert_eq!(log.take(), expected);
+    });
+}
+
+/// The ids of the panel's check boxes and what a state shows in each.
+fn checks_of(state: &PanelState) -> Vec<(u16, bool)> {
+    state.view().checks
+}
+
+const CHECK_BOX_IDS: [u16; 10] = [
+    ID_VIETNAMESE,
+    ID_MODERN_TONE,
+    ID_FREE_MARKING,
+    ID_SPELL_CHECK,
+    ID_AUTO_RESTORE,
+    ID_MACROS,
+    ID_MACROS_WHEN_ENGLISH,
+    ID_MACRO_AUTO_CASE,
+    ID_STARTUP,
+    ID_SHOW_ON_START,
+];
+
+/// How long a test waits for the panel's thread.
+const PANEL_WAIT: Duration = Duration::from_secs(10);
+
+/// Sends `message` to a window of another thread and returns the answer; fails the test when
+/// the thread does not answer in time.
+fn send_to(hwnd: HWND, message: u32, wparam: usize, lparam: isize) -> isize {
+    let mut result = 0_usize;
+    // SAFETY: the pointers some callers pass in `lparam` point to data of this thread that
+    // outlives the call (the receiver is in this process); `result` is a valid out pointer.
+    let answered = unsafe {
+        SendMessageTimeoutW(
+            hwnd,
+            message,
+            WPARAM(wparam),
+            LPARAM(lparam),
+            SMTO_NORMAL,
+            10_000,
+            Some(&mut result),
+        )
+    };
+    assert_ne!(answered.0, 0, "message {message:#x} was answered in time");
+    result as isize
+}
+
+fn item(dialog: HWND, id: u16) -> HWND {
+    // SAFETY: only reads the dialog's list of children.
+    unsafe { GetDlgItem(Some(dialog), i32::from(id)) }.unwrap()
+}
+
+fn window_text(hwnd: HWND) -> String {
+    let length = usize::try_from(send_to(hwnd, WM_GETTEXTLENGTH, 0, 0)).unwrap();
+    let mut buffer = vec![0_u16; length + 1];
+    let copied = send_to(hwnd, WM_GETTEXT, buffer.len(), buffer.as_mut_ptr() as isize);
+    String::from_utf16(&buffer[..usize::try_from(copied).unwrap()]).unwrap()
+}
+
+fn is_enabled(hwnd: HWND) -> bool {
+    // SAFETY: only reads the window's state.
+    unsafe { IsWindowEnabled(hwnd) }.as_bool()
+}
+
+fn is_window(hwnd: HWND) -> bool {
+    // SAFETY: only queries whether the handle names a window.
+    unsafe { IsWindow(Some(hwnd)) }.as_bool()
+}
+
+/// What the panel's check boxes show, in the order of [`CHECK_BOX_IDS`].
+fn shown_checks(panel: HWND) -> Vec<(u16, bool)> {
+    CHECK_BOX_IDS
+        .iter()
+        .map(|&id| (id, send_to(item(panel, id), BM_GETCHECK, 0, 0) == 1))
+        .collect()
+}
+
+/// What the enumeration of [`dialog_windows`] collects.
+struct Found {
+    process: u32,
+    title: Vec<u16>,
+    windows: Vec<HWND>,
+}
+
+/// The top-level dialog windows of this process with the panel's title (only one test of this
+/// executable shows a real panel).
+fn panel_windows() -> Vec<HWND> {
+    dialog_windows(&panel_title())
+}
+
+/// The top-level dialog windows of this process titled `title`. Neither call sends a message
+/// to the window, so a dialog whose `init` still runs is found as well.
+fn dialog_windows(title: &str) -> Vec<HWND> {
+    unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        // SAFETY: `lparam` is the `Found` of the enumeration below, which outlives it.
+        let found = unsafe { &mut *(lparam.0 as *mut Found) };
+        let mut process = 0_u32;
+        // SAFETY: only reads the window's process id into a valid out pointer.
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process)) };
+        let mut class = [0_u16; 16];
+        // SAFETY: the buffer is writable for its length.
+        let class_len = unsafe { GetClassNameW(hwnd, &mut class) };
+        let mut title = [0_u16; 128];
+        // SAFETY: the buffer is writable for its length; no message is sent.
+        let title_len = unsafe { InternalGetWindowText(hwnd, &mut title) };
+        let class = String::from_utf16_lossy(&class[..usize::try_from(class_len).unwrap()]);
+        if process == found.process
+            && class == "#32770"
+            && title[..usize::try_from(title_len).unwrap()] == found.title[..]
+        {
+            found.windows.push(hwnd);
+        }
+        BOOL::from(true)
+    }
+    let mut found = Found {
+        // SAFETY: no preconditions.
+        process: unsafe { GetCurrentProcessId() },
+        title: title.encode_utf16().collect(),
+        windows: Vec::new(),
+    };
+    // SAFETY: the callback runs during the call only and gets a pointer to `found`, which
+    // outlives the call.
+    unsafe { EnumWindows(Some(each), LPARAM(&raw mut found as isize)) }.unwrap();
+    found.windows
+}
+
+/// Waits until `done` holds; fails the test after [`PANEL_WAIT`].
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + PANEL_WAIT;
+    while !done() {
+        assert!(Instant::now() < deadline, "{what} in time");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Waits for the one panel window of this process and for its `init` to have returned (the
+/// dialog's modal loop answers the sent `WM_NULL` only then).
+fn wait_for_panel() -> HWND {
+    wait_for_dialog(&panel_title())
+}
+
+/// Waits for the one dialog of this process titled `title` and for its `init` to have
+/// returned.
+fn wait_for_dialog(title: &str) -> HWND {
+    let mut dialog = None;
+    wait_until("the dialog came up", || {
+        dialog = dialog_windows(title).first().copied();
+        dialog.is_some()
+    });
+    let dialog = dialog.unwrap();
+    send_to(dialog, WM_NULL, 0, 0);
+    dialog
+}
+
+/// The next event of the panel, in time.
+fn next_event(events: &mpsc::Receiver<Event>) -> Event {
+    events.recv_timeout(PANEL_WAIT).expect("an event in time")
+}
+
+/// The real panel, through the real shell (off every monitor, never activated): it shows the
+/// state it was opened with; clicks and a new selection become requests in the inbox; a
+/// refresh puts every control to the new state (a refused click is put back, "Kiểu gõ riêng"
+/// appears, the footer and the disabled buttons of a run without a folder); opening it again
+/// shows the new state in the same window; "Đóng" closes it with its latest number; the exit
+/// closes a panel without waiting.
+#[test]
+fn the_real_panel_shows_the_state_sends_requests_and_closes() {
+    let area = FakeArea {
+        log: AreaLog::default(),
+        adds: VecDeque::new(),
+        modifies: VecDeque::new(),
+    };
+    let (inbox, events) = mpsc::channel();
+    let mut shell =
+        ShellTray::with_area(area, inbox, WakeTarget::default()).with_off_screen_dialogs();
+    let state = panel_state(Vietnamese);
+    shell.open_panel(1, state.clone());
+    let panel = wait_for_panel();
+    // The controls show the state.
+    assert_eq!(shown_checks(panel), checks_of(&state));
+    let methods = item(panel, ID_METHOD);
+    assert_eq!(send_to(methods, CB_GETCOUNT, 0, 0), 3);
+    assert_eq!(send_to(methods, CB_GETCURSEL, 0, 0), 0);
+    assert_eq!(window_text(item(panel, ID_HINT)), state.hint());
+    assert_eq!(
+        window_text(item(panel, ID_CONFIG_FILE)),
+        state.config_file()
+    );
+    assert!(is_enabled(item(panel, ID_OPEN_CONFIG)));
+    assert!(is_enabled(item(panel, ID_MACRO_LIST)));
+    // Off every monitor.
+    let mut frame = RECT::default();
+    // SAFETY: `frame` is a valid out buffer.
+    unsafe { GetWindowRect(panel, &mut frame) }.unwrap();
+    assert!(frame.right < 0 && frame.bottom < 0, "{frame:?}");
+
+    // Clicks and a selection become requests with the new values.
+    send_to(item(panel, ID_SPELL_CHECK), BM_CLICK, 0, 0);
+    assert_eq!(
+        next_event(&events),
+        Event::Panel(PanelRequest::Change(Change::SpellCheck(false)))
+    );
+    send_to(item(panel, ID_STARTUP), BM_CLICK, 0, 0);
+    assert_eq!(
+        next_event(&events),
+        Event::Panel(PanelRequest::Startup(true))
+    );
+    send_to(methods, CB_SETCURSEL, 2, 0);
+    let wparam = usize::from(ID_METHOD) | (usize::from(CBN_SELCHANGE) << 16);
+    send_to(panel, WM_COMMAND, wparam, methods.0 as isize);
+    assert_eq!(
+        next_event(&events),
+        Event::Panel(PanelRequest::Change(Change::InputMethod(InputMethod::Viqr)))
+    );
+    send_to(item(panel, ID_OPEN_CONFIG), BM_CLICK, 0, 0);
+    assert_eq!(next_event(&events), Event::Panel(PanelRequest::OpenConfig));
+    send_to(item(panel, ID_MACRO_LIST), BM_CLICK, 0, 0);
+    assert_eq!(next_event(&events), Event::Panel(PanelRequest::MacroList));
+    // A command of a label asks nothing.
+    let wparam = usize::from(ID_HINT) | (usize::from(BN_CLICKED) << 16);
+    send_to(panel, WM_COMMAND, wparam, 0);
+    assert!(events.try_recv().is_err());
+
+    // A refresh: the start with Windows was refused (put back), the spell check was taken,
+    // a user method with its key map, no hotkey, and no folder.
+    let mut refreshed = state.clone();
+    refreshed.spell_check = false;
+    refreshed.method = InputMethod::UserDefined;
+    refreshed.user_defined_listed = true;
+    refreshed.toggle_hotkey = None;
+    refreshed.location = Location::Unavailable;
+    refreshed.config_path = None;
+    shell.refresh_panel(refreshed.clone());
+    wait_until("the refresh was shown", || {
+        send_to(methods, CB_GETCOUNT, 0, 0) == 4
+    });
+    assert_eq!(shown_checks(panel), checks_of(&refreshed));
+    assert_eq!(send_to(item(panel, ID_STARTUP), BM_GETCHECK, 0, 0), 0);
+    assert_eq!(send_to(methods, CB_GETCURSEL, 0, 0), 3);
+    assert_eq!(
+        window_text(item(panel, ID_HINT)),
+        "Bật/tắt nhanh: nhấp biểu tượng V/E"
+    );
+    assert_eq!(
+        window_text(item(panel, ID_CONFIG_FILE)),
+        "Tệp cấu hình: không có, nên các thay đổi không được lưu."
+    );
+    assert!(!is_enabled(item(panel, ID_OPEN_CONFIG)));
+    assert!(!is_enabled(item(panel, ID_MACRO_LIST)));
+
+    // Opened again: the same window shows the new state (an off-screen panel is never
+    // brought to the front).
+    let mut again = refreshed.clone();
+    again.vietnamese = false;
+    again.method = InputMethod::Vni;
+    again.user_defined_listed = false;
+    shell.open_panel(2, again.clone());
+    wait_until("the second opening was shown", || {
+        send_to(methods, CB_GETCOUNT, 0, 0) == 3
+    });
+    assert_eq!(shown_checks(panel), checks_of(&again));
+    assert_eq!(send_to(methods, CB_GETCURSEL, 0, 0), 1);
+    assert_eq!(panel_windows(), [panel]);
+
+    // "Đóng" closes it; the close names the latest opening.
+    send_to(item(panel, ID_CLOSE), BM_CLICK, 0, 0);
+    assert_eq!(next_event(&events), Event::PanelClosed(2));
+    wait_until("the panel was destroyed", || !is_window(panel));
+    // Refreshing or closing a panel that is gone does nothing.
+    shell.refresh_panel(state.clone());
+    shell.close_panel();
+    assert!(events.try_recv().is_err());
+
+    // A new opening shows a new panel; the exit closes it without waiting.
+    shell.open_panel(3, state.clone());
+    let panel = wait_for_panel();
+    assert_eq!(shown_checks(panel), checks_of(&state));
+    shell.close_panel();
+    assert_eq!(next_event(&events), Event::PanelClosed(3));
+    wait_until("the panel was destroyed", || !is_window(panel));
+    assert_eq!(panel_windows(), []);
+}
+
+/// The editor saved `raumakey-macros.toml` (its event comes through the inbox): the worker
+/// polls at once.
+#[test]
+fn a_save_of_the_macro_list_makes_the_worker_poll() {
+    on_fresh_thread(|| {
+        let log = Log::default();
+        let (services, feed) = FakeServices::new(&log);
+        feed.send(Event::MacrosSaved).unwrap();
+        let window = tray_window(
+            "test-tray-macros-saved",
+            Vietnamese,
+            FakeShell::new(&log),
+            services,
+            NO_TICKS,
+        );
+        post(&window, WM_CLOSE, 0, 0);
+        assert_eq!(run_loop_with_watchdog(), LOOP_EXIT_CODE);
+        let mut expected = vec![
+            Call::Show(icon(Vietnamese, InputMethod::Telex)),
+            Call::Send(1, WorkerCommand::Poll),
+        ];
+        expected.extend(exit_calls());
+        assert_eq!(log.take(), expected);
+    });
+}
+
+/// Types `text` into the edit `edit` as the user would (`WM_SETTEXT`).
+fn type_into(edit: HWND, text: &str) {
+    let units: Vec<u16> = text.encode_utf16().chain([0]).collect();
+    send_to(edit, WM_SETTEXT, 0, units.as_ptr() as isize);
+}
+
+/// The real macro list editor through the real shell (off every monitor, never activated, its
+/// questions answered "no" without a box): one editor at a time, a save reaches the inbox as
+/// `MacrosSaved`, the exit closes it without waiting, and once it is closed (by the exit or by
+/// "Đóng") the next opening shows a new one.
+#[test]
+fn the_real_macro_list_editor_opens_once_reports_saves_and_closes() {
+    let folder = tempfile::tempdir().unwrap();
+    let area = FakeArea {
+        log: AreaLog::default(),
+        adds: VecDeque::new(),
+        modifies: VecDeque::new(),
+    };
+    let (inbox, events) = mpsc::channel();
+    let mut shell =
+        ShellTray::with_area(area, inbox, WakeTarget::default()).with_off_screen_dialogs();
+    let title = macro_dialog::TITLE;
+    shell.open_macro_list(folder.path().to_path_buf());
+    let editor = wait_for_dialog(title);
+    let mut frame = RECT::default();
+    // SAFETY: `frame` is a valid out buffer.
+    unsafe { GetWindowRect(editor, &mut frame) }.unwrap();
+    assert!(frame.right < 0 && frame.bottom < 0, "{frame:?}");
+    // Opened again while it is open: the same editor (an off-screen one is never brought to
+    // the front).
+    shell.open_macro_list(folder.path().to_path_buf());
+    assert_eq!(dialog_windows(title), [editor]);
+
+    // A new row, then "Lưu": the file is written and the save reported.
+    type_into(item(editor, macro_dialog::ID_TRIGGER), "rk");
+    type_into(item(editor, macro_dialog::ID_REPLACEMENT), "Raumakey");
+    send_to(item(editor, macro_dialog::ID_PUT), BM_CLICK, 0, 0);
+    send_to(item(editor, macro_dialog::ID_SAVE), BM_CLICK, 0, 0);
+    assert_eq!(next_event(&events), Event::MacrosSaved);
+    assert!(folder.path().join("raumakey-macros.toml").is_file());
+
+    // The exit closes it without waiting; its close is nothing the tray must hear of.
+    shell.close_macro_list();
+    wait_until("the editor was destroyed", || !is_window(editor));
+    // A new opening shows a new editor; "Đóng" closes it (nothing unsaved, nothing asked).
+    shell.open_macro_list(folder.path().to_path_buf());
+    let editor = wait_for_dialog(title);
+    send_to(item(editor, IDCANCEL), BM_CLICK, 0, 0);
+    wait_until("the editor was closed", || !is_window(editor));
+    // The editor counts as closed a moment after its window is gone (once its thread has left
+    // the dialog box); until then an opening only finds it open. The next opening after that
+    // shows a new editor.
+    wait_until("a new editor was asked for", || {
+        shell.open_macro_list(folder.path().to_path_buf());
+        !dialog_windows(title).is_empty()
+    });
+    let editor = wait_for_dialog(title);
+    shell.close_macro_list();
+    wait_until("the editor was destroyed", || !is_window(editor));
+    assert_eq!(dialog_windows(title), []);
+    // Nothing open: closing does nothing.
+    shell.close_macro_list();
+    assert!(events.try_recv().is_err());
+}
+
+/// The check boxes the real-panel test reads back are the panel's, in the order of its view.
+#[test]
+fn the_check_box_ids_of_the_test_are_the_panels() {
+    assert_eq!(
+        checks_of(&panel_state(Vietnamese))
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>(),
+        CHECK_BOX_IDS
+    );
 }

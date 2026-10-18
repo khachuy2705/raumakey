@@ -22,9 +22,23 @@ fn main() -> ExitCode {
 #[cfg(all(test, windows, target_env = "msvc"))]
 mod tests {
     use raumakey_controller::desktop::ModeIcons;
-    use raumakey_controller::tray::InputMode;
-    use raumakey_windows::icon::{IconKind, IconSize, icon_size};
+    use raumakey_controller::tray::{ICON_APP, InputMode};
+    use raumakey_windows::icon::{Icon, IconKind, IconSize, icon_size};
     use raumakey_windows::module::Module;
+
+    /// The settings panel shows the app icon in its title bar and on its taskbar button, at
+    /// the sizes of every DPI.
+    #[test]
+    fn the_app_icon_of_the_panel_loads_from_this_executable() {
+        let module = Module::executable().unwrap();
+        for kind in [IconKind::Small, IconKind::Large] {
+            let icon = Icon::load(module, ICON_APP, icon_size(kind).unwrap()).unwrap();
+            assert!(!icon.handle().is_invalid(), "{kind:?}");
+        }
+        for size in [16, 20, 24, 32, 40, 48, 64] {
+            Icon::load(module, ICON_APP, IconSize::square(size).unwrap()).unwrap();
+        }
+    }
 
     /// Both mode icons load. Which resource each mode uses is checked by `tests/tray.rs`
     /// (`InputMode::icon_id`), and that the V and E images differ by the tests of

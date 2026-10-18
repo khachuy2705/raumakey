@@ -648,6 +648,200 @@ fn every_tray_change_is_committed_at_once() {
     assert_eq!(stored(&folders.config()).system.startup, StartupMode::None);
 }
 
+/// The switches of the settings panel (D43) are committed at once like the menu's: each to
+/// its own key, and only that key changes.
+#[test]
+fn the_panel_switches_are_committed_to_their_own_keys() {
+    let folders = Folders::new();
+    let (mut settings, _) = folders.open();
+    let defaults = ConfigDocument::defaults();
+    assert!(defaults.input.free_marking);
+    assert!(defaults.input.auto_restore_invalid);
+    assert!(!defaults.macros.when_disabled);
+    assert!(defaults.macros.auto_case);
+    assert!(defaults.system.show_panel_on_start);
+    let changes = [
+        Change::FreeMarking(false),
+        Change::AutoRestore(false),
+        Change::MacrosWhenEnglish(true),
+        Change::MacroAutoCase(false),
+        Change::ShowPanelOnStart(false),
+    ];
+    for (index, change) in changes.into_iter().enumerate() {
+        settings.apply(change).unwrap();
+        let on_disk = stored(&folders.config());
+        assert_eq!(
+            on_disk.revision,
+            u64::try_from(index).unwrap() + 2,
+            "{change:?}"
+        );
+        assert_eq!(&on_disk, settings.document(), "{change:?}");
+    }
+    let mut expected = ConfigDocument::defaults();
+    expected.revision = 6;
+    expected.input.free_marking = false;
+    expected.input.auto_restore_invalid = false;
+    expected.macros.when_disabled = true;
+    expected.macros.auto_case = false;
+    expected.system.show_panel_on_start = false;
+    assert_eq!(stored(&folders.config()), expected);
+    let options = &settings.runtime_snapshot().options;
+    assert!(!options.free_marking);
+    assert!(!options.auto_restore_invalid);
+    assert!(options.macros_when_disabled);
+    assert!(!options.auto_case_macro);
+    assert_consumable(&settings);
+    // The same values again write nothing.
+    for change in changes {
+        settings.apply(change).unwrap();
+    }
+    assert_eq!(stored(&folders.config()).revision, 6);
+}
+
+/// "Mặc định" (D43) resets the groups "Cách gõ" and "Gõ tắt" to the schema defaults and
+/// nothing else: not the mode, the start with Windows, the panel at start, the normalization,
+/// or the key map of a user method.
+#[test]
+fn typing_defaults_reset_the_typing_and_macro_switches_only() {
+    let folders = Folders::new();
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 1\n[input]\nenabled = false\nmethod = \"user\"\n\
+         user_keymap = \"mine\"\nnormalization = \"nfd\"\nmodern_tone = true\n\
+         free_marking = false\nspell_check = false\nauto_restore_invalid = false\n\
+         context_limit = 64\n[macros]\nenabled = false\nwhen_disabled = true\n\
+         auto_case = false\n[system]\nstartup = \"shortcut\"\nshow_panel_on_start = false\n\
+         diagnostics = true\n[hotkeys]\ntoggle_mode = [\"Ctrl+Alt\"]\n\
+         [[keymaps]]\nid = \"mine\"\nversion = 1\nname = \"Mine\"\n\
+         bindings = [ { key = \"s\", actions = [\"tone:acute\"] } ]\n",
+    )
+    .unwrap();
+    let (mut settings, report) = folders.open();
+    assert_eq!(report.status.config, loaded_clean());
+    let before = settings.document().clone();
+    assert_eq!(
+        settings.runtime_snapshot().options.input_method,
+        InputMethod::UserDefined
+    );
+    settings.apply(Change::TypingDefaults).unwrap();
+    let defaults = ConfigDocument::defaults();
+    let mut expected = before.clone();
+    expected.revision = 2;
+    expected.input.method = defaults.input.method;
+    expected.input.modern_tone = defaults.input.modern_tone;
+    expected.input.free_marking = defaults.input.free_marking;
+    expected.input.spell_check = defaults.input.spell_check;
+    expected.input.auto_restore_invalid = defaults.input.auto_restore_invalid;
+    expected.macros.enabled = defaults.macros.enabled;
+    expected.macros.when_disabled = defaults.macros.when_disabled;
+    expected.macros.auto_case = defaults.macros.auto_case;
+    assert_eq!(*settings.document(), expected);
+    assert_eq!(stored(&folders.config()), expected);
+    // Kept: the mode, the normalization, the context limit, the key map, the hotkeys, and the
+    // whole of [system].
+    assert!(!expected.input.enabled);
+    assert_eq!(expected.input.user_keymap.as_deref(), Some("mine"));
+    assert_eq!(expected.input.context_limit, 64);
+    assert_eq!(expected.system, before.system);
+    assert_eq!(expected.hotkeys, before.hotkeys);
+    assert_eq!(expected.keymaps, before.keymaps);
+    let options = &settings.runtime_snapshot().options;
+    assert_eq!(options.input_method, InputMethod::Telex);
+    assert!(!options.enabled);
+    assert_consumable(&settings);
+    // Defaults again: nothing to write.
+    settings.apply(Change::TypingDefaults).unwrap();
+    assert_eq!(stored(&folders.config()).revision, 2);
+}
+
+/// Unsaved changes are applied again in the order of their last application, so "Mặc định"
+/// and single switches that interleave while the file cannot be written end the way they were
+/// made: a switch after the defaults stays, a switch before them is reset. The settings start
+/// from a file with VNI (so "Mặc định" changes something), which is then damaged.
+#[test]
+fn unsaved_typing_defaults_and_single_switches_keep_their_order() {
+    let cases: [(&[Change], bool, InputMethod, bool); 4] = [
+        // The switch, then the defaults: reset.
+        (
+            &[Change::SpellCheck(false), Change::TypingDefaults],
+            true,
+            InputMethod::Telex,
+            false,
+        ),
+        // The defaults, then the switch: it stays.
+        (
+            &[Change::TypingDefaults, Change::SpellCheck(false)],
+            false,
+            InputMethod::Telex,
+            false,
+        ),
+        // A switch before and another after the defaults.
+        (
+            &[
+                Change::InputMethod(InputMethod::Viqr),
+                Change::SpellCheck(false),
+                Change::TypingDefaults,
+                Change::ModernTone(true),
+            ],
+            true,
+            InputMethod::Telex,
+            true,
+        ),
+        // The defaults, a switch, and the defaults again: the last defaults win.
+        (
+            &[
+                Change::TypingDefaults,
+                Change::InputMethod(InputMethod::Viqr),
+                Change::SpellCheck(false),
+                Change::TypingDefaults,
+            ],
+            true,
+            InputMethod::Telex,
+            false,
+        ),
+    ];
+    for (changes, spell_check, method, modern_tone) in cases {
+        let folders = Folders::new();
+        fs::write(
+            folders.config(),
+            "version = 1
+revision = 1
+[input]
+method = \"vni\"
+",
+        )
+        .unwrap();
+        let (mut settings, _) = folders.open();
+        assert_eq!(settings.document().input.method, InputMethod::Vni);
+        fs::write(folders.config(), "[[[ damaged").unwrap();
+        for change in changes {
+            assert_eq!(
+                settings.apply(*change),
+                Err(ConfigError::Corrupt),
+                "{change:?}"
+            );
+        }
+        let in_effect = &settings.document().input;
+        assert_eq!(in_effect.spell_check, spell_check, "{changes:?}");
+        assert_eq!(in_effect.method, method, "{changes:?}");
+        assert_eq!(in_effect.modern_tone, modern_tone, "{changes:?}");
+        // The user fixes the file by hand (VNI, no spell check, modern tone): the reload
+        // applies the unsaved changes again on it, and the retry writes them.
+        fs::write(
+            folders.config(),
+            "version = 1\nrevision = 1\n[input]\nmethod = \"vni\"\nspell_check = false\n\
+             modern_tone = true\n",
+        )
+        .unwrap();
+        settings.poll().unwrap();
+        assert_eq!(settings.save_unsaved(), Ok(true), "{changes:?}");
+        let document = stored(&folders.config());
+        assert_eq!(document.input.spell_check, spell_check, "{changes:?}");
+        assert_eq!(document.input.method, method, "{changes:?}");
+        assert_eq!(document.input.modern_tone, modern_tone, "{changes:?}");
+    }
+}
+
 /// A change to the value the settings hold already writes nothing.
 #[test]
 fn a_change_to_the_current_value_writes_nothing() {

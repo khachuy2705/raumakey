@@ -5,7 +5,9 @@
 //! types Vietnamese through a global keyboard hook (D39), keeps its configuration in
 //! `raumakey.toml` next to the exe (D40), and shows one notification-area icon that switches
 //! the input mode (V or E) and whose menu holds the settings (D42) and the start with Windows
-//! (D41). With arguments, it runs one command of its command line. The modules:
+//! (D41), and a one-page settings panel (D43) that opens from the menu, at start, and when the
+//! exe is started again (D45). With arguments, it runs one command of its command line. The
+//! modules:
 //!
 //! - [`cli`]: the pure parser, usage text, and exit codes;
 //! - [`commands`]: dispatch and the commands that only print (`--version`, `help`, `update`,
@@ -13,8 +15,11 @@
 //! - [`run`]: the run mode (no arguments): single instance, settings, typing hook, the
 //!   Startup-shortcut repair, tray, and error reports, over the [`run::Desktop`] port;
 //! - [`tray`]: the tray as a pure state machine (settings shown, icon, tooltip, menu, and the
-//!   answer to each window message, menu choice, hotkey change, and worker answer, including
-//!   `TaskbarCreated`, matrix #58);
+//!   answer to each window message, menu choice, hotkey change, panel request, and worker
+//!   answer, including `TaskbarCreated`, matrix #58, and the show-panel request of a second
+//!   start);
+//! - [`panel`]: the settings panel as pure data (its state, what each control shows, the
+//!   request of each action, and the dialog template);
 //! - [`worker`]: the settings worker thread, which owns [`settings::Settings`] and does the
 //!   tray's file work (commits, polls, recovery, the shortcut, Notepad);
 //! - [`notice`]: what the run mode tells the user, in Vietnamese message boxes;
@@ -22,8 +27,9 @@
 //!   handler over a platform port, and on Windows `typing::TypingHook`, which the run mode
 //!   starts, with its manual check list;
 //! - `desktop` (Windows): the desktop of the run mode and the thin glue (hidden window,
-//!   notification icon, popup menu, message boxes, poll timer, message loop, hook observer,
-//!   worker thread), with the manual check list of the portable run;
+//!   notification icon, popup menu, message boxes, settings panel, macro list editor, poll
+//!   timer, message loop, hook observer, worker thread), with the manual check list of the
+//!   portable run;
 //! - [`install`]: `install` and `uninstall` of the TSF text service, which stays in the
 //!   repository but is not shipped (design §21.1), with dry runs, verification, the
 //!   installation record, and rollback;
@@ -47,8 +53,8 @@
 //! [`worker::WorkerPorts`]), so the commands and the run mode are tested with in-memory fakes;
 //! only the thin glue in [`system`] and `desktop` needs a real machine.
 //!
-//! Not in the portable release (design §21.6): the settings panel and its tabs, the IPC
-//! server hub (there is no TIP to serve), and `migrate`.
+//! Not in the portable release (design §21.6): the tabbed settings of §11 (the one-page panel
+//! of D43 replaces them), the IPC server hub (there is no TIP to serve), and `migrate`.
 //!
 //! [`run_process`] is the body of `main`: it parses the command line, attaches to the console
 //! of the caller for a subcommand (a GUI-subsystem process has none of its own), runs the
@@ -83,6 +89,7 @@ pub mod macro_dialog;
 pub mod macro_list;
 pub mod notice;
 pub mod output;
+pub mod panel;
 pub mod run;
 pub mod settings;
 pub mod startup;

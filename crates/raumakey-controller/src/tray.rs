@@ -1,16 +1,17 @@
-//! The controller's notification-area icon as a pure state machine (plan §10.2, D42; design
-//! §21.5; matrix #58): the settings that the icon and the menu show, the icon and tooltip, the
-//! tray menu, and what to do with each message of the hidden window, each menu choice, each
-//! mode change of the hotkey, and each answer of the settings worker. The Windows glue in
-//! `crate::desktop` passes them in and carries out the [`Effect`]s on the real notification
-//! icon, popup menu, message boxes, typing hook, and worker thread; everything here is tested
-//! on every host.
+//! The controller's notification-area icon as a pure state machine (plan §10.2, D42–D45;
+//! design §21.5, §22; matrix #58): the settings that the icon, the menu, and the settings panel
+//! show, the icon and tooltip, the tray menu, and what to do with each message of the hidden
+//! window, each menu choice, each mode change of the hotkey, each request of the panel, and
+//! each answer of the settings worker. The Windows glue in `crate::desktop` passes them in and
+//! carries out the [`Effect`]s on the real notification icon, popup menu, message boxes,
+//! settings panel, typing hook, and worker thread; everything here is tested on every host.
 //!
 //! # Settings
 //!
 //! The tray starts from what the run mode read from `raumakey.toml` ([`TrayStart`]): the
-//! runtime snapshot in effect (mode, input method, options) and the startup mode. Each choice
-//! changes them at once: the icon and menu follow, the typing hook gets the new mode
+//! runtime snapshot in effect (mode, input method, options), the startup mode, and whether the
+//! panel opens at start. Each choice changes them at once: the icon, menu, and panel follow,
+//! the typing hook gets the new mode
 //! ([`Effect::HookMode`]) or the new runtime snapshot ([`Effect::HookRuntime`], built by
 //! [`with_change`] exactly as `crate::settings::Settings` builds it after the change), and the
 //! settings worker commits the change ([`Effect::Worker`] with
@@ -44,40 +45,82 @@
 //! the icon and the menu, and hands the hook the new snapshot unless it differs from the one
 //! in effect only in its revision. This is how a hand edit reaches the hook.
 //!
+//! **Macro list saves.** When the macro list editor (D44, `crate::macro_dialog`) wrote
+//! `raumakey-macros.toml` ([`Event::MacrosSaved`]), the worker polls at once, so the hook gets
+//! the new macros now rather than at the next tick. While a poll is on its way (it may have
+//! read the file before the save), the worker polls once more as soon as that poll answered;
+//! saves meanwhile ask for that one poll only.
+//!
 //! # Messages
 //!
 //! | Message | While running | Answer |
 //! |---|---|---|
-//! | [`START`] (posted once when the message loop starts) | adds the icon ([`Effect::ShowIcon`]), then shows the start notices | 0 |
+//! | [`START`] (posted once when the message loop starts) | adds the icon ([`Effect::ShowIcon`]), opens the panel when it opens at start ([`Effect::OpenPanel`]), then shows the start notices | 0 |
 //! | [`TRAY_CALLBACK`] `NIN_SELECT` (click), `NIN_KEYSELECT` (keyboard) | switches the mode | 0 |
 //! | [`TRAY_CALLBACK`] `WM_CONTEXTMENU` (right click, Shift+F10, menu key) | opens the menu at the anchor ([`Effect::OpenMenu`]) | 0 |
 //! | [`TRAY_CALLBACK`], other notifications or another icon id | nothing | 0 |
 //! | `WM_TIMER` of [`POLL_TIMER`] (every [`POLL_INTERVAL_MS`]) | makes sure the icon is shown ([`Effect::EnsureIcon`]: an add or a change that failed is tried again), and asks the worker to poll unless a poll is on its way | 0 |
-//! | [`WAKE`] (the worker or the hook observer left something in the inbox) | nothing: the glue drains the inbox ([`Tray::on_event`]) | 0 |
+//! | [`WAKE`] (the worker, the hook observer, a message box, the panel, or the macro list editor left something in the inbox) | nothing: the glue drains the inbox ([`Tray::on_event`]) | 0 |
 //! | `TaskbarCreated` (Explorer restarted) | adds the icon again with the current state (matrix #58) | 0 |
+//! | `Raumakey.<sidhash>.show-panel` ([`SHOW_PANEL_COMPONENT`], a second start, D45) | opens the panel or brings it to the front ([`Effect::OpenPanel`]) | 0 |
 //! | `WM_CLOSE`; `WM_ENDSESSION` with a non-zero `wParam` (the session ends) | exits | 0 |
 //! | anything else, and `WM_ENDSESSION` of a cancelled end | nothing | `DefWindowProcW` |
 //!
+//! The two registered messages are numbered at run time ([`RegisteredMessages`]); one whose
+//! registration failed is never matched, and the tray runs without it.
+//!
 //! Exiting is, in order, [`Effect::StopTyping`] (typing is plain at once),
-//! [`Effect::DismissNotices`], [`Effect::FlushHotkeys`] (hotkey changes left in the inbox are
-//! saved), [`Effect::FinishWorker`] (the worker runs what was sent and saves what is unsaved,
-//! for a bounded time), [`Effect::RemoveIcon`], and [`Effect::EndLoop`] (the message loop
-//! ends with [`LOOP_EXIT_CODE`]), all before the window procedure returns: after
-//! `WM_ENDSESSION` the process may end at any moment. `WM_CLOSE` is always
-//! answered, never left to `DefWindowProcW`, which would destroy the window under the running
-//! tray. Before [`START`] the icon does not exist, so its messages, the timer,
-//! `TaskbarCreated`, menu choices, and events do nothing, while `WM_CLOSE` and the end of the
-//! session still exit. After an exit every message, choice, and event is answered without
-//! effect, so a message still queued behind it (such as a `TaskbarCreated`) cannot bring the
-//! icon back.
+//! [`Effect::DismissNotices`], [`Effect::ClosePanel`], [`Effect::CloseMacroList`] (none of
+//! them waits; the editor closes without saving, by design), [`Effect::FlushHotkeys`]
+//! (hotkey changes left in the inbox are saved),
+//! [`Effect::FinishWorker`] (the worker runs what was sent and saves what is unsaved, for a
+//! bounded time), [`Effect::RemoveIcon`], and [`Effect::EndLoop`] (the message loop ends with
+//! [`LOOP_EXIT_CODE`]), all before the window procedure returns: after `WM_ENDSESSION` the
+//! process may end at any moment. `WM_CLOSE` is always answered, never left to
+//! `DefWindowProcW`, which would destroy the window under the running tray. Before [`START`]
+//! the icon does not exist, so its messages, the timer, `TaskbarCreated`, the show-panel
+//! request, menu choices, and events do nothing, while `WM_CLOSE` and the end of the session
+//! still exit. After an exit every message, choice, and event is answered without effect, so
+//! a message still queued behind it (such as a `TaskbarCreated`) cannot bring the icon back.
 //!
-//! # Menu (D42)
+//! # Settings panel (D43, D45)
 //!
-//! [`Tray::menu`], flat: "Gõ tiếng Việt (Ctrl+Shift)" (check), separator, "Telex", "VNI",
-//! "VIQR" (the method in effect is checked; none for a user-defined key map), separator,
-//! "Kiểm tra chính tả", "Đặt dấu kiểu mới (oà, uý)", "Gõ tắt (macro)" (checks), separator,
-//! "Khởi động cùng Windows" (check), "Mở file cấu hình", "Giới thiệu", separator, "Thoát".
+//! The panel ([`crate::panel`]) runs on a thread of its own; the tray is the only source of its
+//! data ([`Tray::panel_state`]). It opens from "Bảng cấu hình…", from the request of a second
+//! start, and at [`START`] when `[system] show_panel_on_start` is set; while it is open, each of
+//! these shows the state in effect in it and brings it to the front. Every opening is numbered
+//! ([`Effect::OpenPanel`] `serial`), and only the close of the latest one
+//! ([`Event::PanelClosed`]) counts, so the close of a panel that was replaced meanwhile does
+//! not stop the refreshes of the new one.
 //!
+//! While a panel is open, the tray keeps the state it last sent: after every message, menu
+//! choice, and event whose effects change what the panel shows (the hotkey, a click on the
+//! icon, the menu, a hand edit taken over from the worker), [`Effect::RefreshPanel`] follows
+//! the other effects; after every request of the panel ([`Event::Panel`]) it follows even
+//! when nothing changed, because the panel's check boxes toggle themselves and a refused or
+//! empty request must put them back. Nothing is sent while no panel is open.
+//!
+//! The panel's requests ([`PanelRequest`]) carry target values and go the way of the menu:
+//! the mode as a click on the icon, the method as the menu (nothing for the method in
+//! effect), the switches and "Mặc định" ([`Change::TypingDefaults`]) as a change of the
+//! runtime snapshot (the hook gets it, the worker saves it), and the panel at start to the
+//! worker only (the hook does not see it). "Khởi động cùng Windows" is absolute: on from
+//! `none` makes the shortcut (from the temporary folder, the request to extract Raumakey
+//! first), off from `shortcut` removes it, off from `elevated-task` explains the elevated
+//! command line, and a request for the value in effect does nothing; a `Change::Startup`
+//! (without the shortcut) does nothing either. "Mở file cấu hình" goes to the worker, and
+//! "Danh sách gõ tắt…" opens the macro list editor of the data folder, or brings the open one
+//! to the front ([`Effect::OpenMacroList`]), when there is a folder.
+//!
+//! # Menu (D42, D43)
+//!
+//! [`Tray::menu`], flat: "Bảng cấu hình…", separator, "Gõ tiếng Việt (Ctrl+Shift)" (check),
+//! separator, "Telex", "VNI", "VIQR" (the method in effect is checked; none for a
+//! user-defined key map), separator, "Kiểm tra chính tả", "Đặt dấu kiểu mới (oà, uý)", "Gõ tắt
+//! (macro)" (checks), separator, "Khởi động cùng Windows" (check), "Mở file cấu hình", "Giới
+//! thiệu", separator, "Thoát". The commands of D42 keep their ids; "Bảng cấu hình…" is 12.
+//!
+//! - "Bảng cấu hình…" opens the settings panel, or brings the open one to the front.
 //! - "Khởi động cùng Windows" asks the worker to create the shortcut and save `shortcut`, or
 //!   to remove it and save `none` ([`WorkerCommand::Startup`]); the check follows the worker's
 //!   answer. When the elevated logon task starts Raumakey (`elevated-task`, set from the
@@ -92,14 +135,16 @@
 //! messages to `DefWindowProcW` (see `raumakey_windows::window`); it answers a `WM_CLOSE`
 //! that arrives meanwhile by destroying the window. The handler is then freed when it
 //! returns, and [`Tray::ends_loop_when_dropped`] tells the glue that the loop must end anyway
-//! (after the steps of an exit). Message boxes run no loop on this thread.
+//! (after the steps of an exit). Message boxes, the panel, and the macro list editor run no
+//! loop on this thread.
 //!
 //! Strings shown to the user are new Raumakey strings in Vietnamese (plan §10.2,
-//! `crate::notice`). Nothing here holds keystrokes, document text, or macro text; `Debug` of
-//! the tray shows its mode, method, startup mode, and counters.
+//! `crate::notice`, `crate::panel`). Nothing here holds keystrokes, document text, or macro
+//! text; `Debug` of the tray shows its mode, method, startup mode, whether the panel is open,
+//! and counters.
 
 use core::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use raumakey_config::{ConfigError, StartupMode};
 use raumakey_ipc::message::RuntimeSnapshot;
@@ -115,13 +160,14 @@ use crate::notice::{
     Notice, Question, about_notice, elevated_task_notice, open_error_notice, recovery_notice,
     save_error_notice, startup_error_notice, status_notice, temporary_exe_notice,
 };
+use crate::panel::{PanelRequest, PanelState};
 use crate::settings::{Change, DocumentStatus, Location, Recovery, Status};
 use crate::worker::{
     Answer, Outcome, Saved, SettingsState, ShortcutSync, StartupError, WorkerCommand,
 };
 
-// `ICON_VIETNAMESE` and `ICON_ENGLISH`: the icon groups that `build.rs` embeds, with the ids
-// that `raumakey-resources` (a build-dependency only) assigns.
+// `ICON_APP`, `ICON_VIETNAMESE`, and `ICON_ENGLISH`: the icon groups that `build.rs` embeds,
+// with the ids that `raumakey-resources` (a build-dependency only) assigns.
 include!(concat!(env!("OUT_DIR"), "/icon_ids.rs"));
 
 /// Id of the tray icon among the icons of the hidden window.
@@ -140,6 +186,10 @@ pub const POLL_TIMER: usize = 1;
 pub const POLL_INTERVAL_MS: u32 = 2_000;
 /// Exit code of the message loop after an exit.
 pub const LOOP_EXIT_CODE: i32 = 0;
+/// Component of the registered message `Raumakey.<sidhash>.show-panel`, which a second start
+/// posts to every top-level window to have the running controller show its settings panel
+/// (D45; `raumakey_windows::window::register_user_message`).
+pub const SHOW_PANEL_COMPONENT: &str = "show-panel";
 
 /// Tooltip of the icon in English mode: "Raumakey: typing English".
 pub const TOOLTIP_ENGLISH: &str = "Raumakey: đang gõ tiếng Anh";
@@ -152,6 +202,8 @@ pub const TOOLTIP_VIQR: &str = "Raumakey: đang gõ tiếng Việt (VIQR)";
 /// Tooltip in Vietnamese mode with a user-defined key map ("own input method").
 pub const TOOLTIP_USER_DEFINED: &str = "Raumakey: đang gõ tiếng Việt (kiểu gõ riêng)";
 
+/// Opens the settings panel: "Settings panel…" (with an ellipsis character).
+pub const MENU_PANEL: &str = "Bảng cấu hình\u{2026}";
 /// The check item of Vietnamese mode: "Type Vietnamese (Ctrl+Shift)".
 pub const MENU_VIETNAMESE_MODE: &str = "Gõ tiếng Việt (Ctrl+Shift)";
 /// The input method Telex.
@@ -254,6 +306,8 @@ impl IconState {
 /// The commands of the tray menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TrayCommand {
+    /// Opens the settings panel, or brings the open one to the front.
+    Panel,
     /// Switches Vietnamese mode.
     VietnameseMode,
     /// Telex.
@@ -280,7 +334,8 @@ pub enum TrayCommand {
 
 impl TrayCommand {
     /// Every command, in menu order.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
+        Self::Panel,
         Self::VietnameseMode,
         Self::Telex,
         Self::Vni,
@@ -294,9 +349,11 @@ impl TrayCommand {
         Self::Exit,
     ];
 
-    /// The menu command id (never 0, which a menu returns for "nothing chosen").
+    /// The menu command id (never 0, which a menu returns for "nothing chosen"). The commands
+    /// of D42 keep their numbers; [`TrayCommand::Panel`] came later.
     pub const fn id(self) -> u16 {
         match self {
+            Self::Panel => 12,
             Self::VietnameseMode => 1,
             Self::Telex => 2,
             Self::Vni => 3,
@@ -319,6 +376,7 @@ impl TrayCommand {
     /// The label of the command.
     const fn label(self) -> &'static str {
         match self {
+            Self::Panel => MENU_PANEL,
             Self::VietnameseMode => MENU_VIETNAMESE_MODE,
             Self::Telex => MENU_TELEX,
             Self::Vni => MENU_VNI,
@@ -341,7 +399,10 @@ impl TrayCommand {
 /// `runtime` after `change`, as `crate::settings::Settings` builds the snapshot of the changed
 /// document (only its revision differs, which the commit sets): the mode in both
 /// `vietnamese_mode` and `options.enabled`, a user-defined method without its key map on the
-/// default method, and a startup mode, which the hook does not see, changing nothing.
+/// default method, "Mặc định" ([`Change::TypingDefaults`]) on the default method and switches
+/// of [`EngineOptions::defaults_v1`] (the mode, the key map id, the normalization, and the
+/// context limit stay), and the startup mode and the panel at start, which the hook does not
+/// see, changing nothing.
 pub fn with_change(runtime: &RuntimeSnapshot, change: Change) -> RuntimeSnapshot {
     let mut next = runtime.clone();
     let options = &mut next.options;
@@ -364,8 +425,23 @@ pub fn with_change(runtime: &RuntimeSnapshot, change: Change) -> RuntimeSnapshot
         }
         Change::SpellCheck(on) => options.spell_check = on,
         Change::ModernTone(on) => options.modern_tone = on,
+        Change::FreeMarking(on) => options.free_marking = on,
+        Change::AutoRestore(on) => options.auto_restore_invalid = on,
         Change::Macros(on) => options.macros_enabled = on,
-        Change::Startup(_) => {}
+        Change::MacrosWhenEnglish(on) => options.macros_when_disabled = on,
+        Change::MacroAutoCase(on) => options.auto_case_macro = on,
+        Change::TypingDefaults => {
+            let defaults = EngineOptions::defaults_v1();
+            options.input_method = defaults.input_method;
+            options.modern_tone = defaults.modern_tone;
+            options.free_marking = defaults.free_marking;
+            options.spell_check = defaults.spell_check;
+            options.auto_restore_invalid = defaults.auto_restore_invalid;
+            options.macros_enabled = defaults.macros_enabled;
+            options.macros_when_disabled = defaults.macros_when_disabled;
+            options.auto_case_macro = defaults.auto_case_macro;
+        }
+        Change::Startup(_) | Change::ShowPanelOnStart(_) => {}
     }
     next
 }
@@ -401,6 +477,30 @@ pub struct TrayStart {
     /// `raumakey.exe` runs from the temporary folder: "Khởi động cùng Windows" makes no
     /// shortcut to it.
     pub temporary_exe: bool,
+    /// `[system] show_panel_on_start` in effect: the settings panel opens once the icon is
+    /// added, and the panel's check box shows it.
+    pub show_panel: bool,
+}
+
+/// The registered messages the tray answers, as `RegisterWindowMessageW` numbered them for
+/// this session. A number outside the registered range (`0xC000..=0xFFFF`), such as the 0 of
+/// a failed registration (the [`Default`]), is never taken for its message: the tray then
+/// runs without it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct RegisteredMessages {
+    /// `TaskbarCreated` (`raumakey_windows::shell::taskbar_created_message`): Explorer
+    /// restarted (matrix #58).
+    pub taskbar_created: u32,
+    /// `Raumakey.<sidhash>.show-panel` ([`SHOW_PANEL_COMPONENT`]): a second start asks for the
+    /// settings panel (D45).
+    pub show_panel: u32,
+}
+
+/// `message` when it is a registered message number.
+fn registered(message: u32) -> Option<u32> {
+    (REGISTERED_MESSAGE_FIRST..=REGISTERED_MESSAGE_LAST)
+        .contains(&message)
+        .then_some(message)
 }
 
 /// Something another thread left in the tray's inbox (then it posts [`WAKE`]).
@@ -414,6 +514,13 @@ pub enum Event {
     /// The user answered yes to the question of a notice (message boxes run on threads of
     /// their own, `crate::desktop`).
     Answered(Question),
+    /// A request of the settings panel, which runs on a thread of its own.
+    Panel(PanelRequest),
+    /// The panel opened by [`Effect::OpenPanel`] with this `serial` (or by a later one that
+    /// brought it to the front) was closed.
+    PanelClosed(u64),
+    /// The macro list editor (D44) wrote `raumakey-macros.toml`.
+    MacrosSaved,
 }
 
 /// The events drained from the inbox, with the hotkey changes coalesced: only the last one
@@ -465,6 +572,25 @@ pub enum Effect {
     /// Make sure the icon is shown with this state: add it again when it is not shown, or
     /// when its last change failed (every tick of the poll timer).
     EnsureIcon(IconState),
+    /// Open the settings panel showing `state`; when a panel is open, show `state` in it and
+    /// bring it to the front instead. The panel open afterwards carries `serial` (a new number
+    /// for every opening): its [`Event::PanelClosed`] names it, so the close of a panel that
+    /// was replaced meanwhile is not taken for the close of the open one.
+    OpenPanel {
+        /// The number of this opening.
+        serial: u64,
+        /// What the panel shows.
+        state: PanelState,
+    },
+    /// Show this state in the open panel, if one is open.
+    RefreshPanel(PanelState),
+    /// Close the open panel, if any, without waiting for it.
+    ClosePanel,
+    /// Open the macro list editor of `raumakey-macros.toml` in this data folder (D44), or
+    /// bring the open one to the front.
+    OpenMacroList(PathBuf),
+    /// Close the open macro list editor, if any, without waiting for it and without saving.
+    CloseMacroList,
     /// Stop the typing hook (both hooks are removed; typing is plain at once).
     StopTyping,
     /// Close every open notice without waiting for it.
@@ -532,11 +658,21 @@ pub struct Tray {
     notices: Vec<Notice>,
     /// The registered `TaskbarCreated` message; `None` when registration failed.
     taskbar_created: Option<u32>,
+    /// The registered show-panel request of a second start; `None` when registration failed.
+    show_panel_message: Option<u32>,
+    /// `[system] show_panel_on_start` in effect (the panel opens at [`START`] when set).
+    show_panel_on_start: bool,
+    /// The state last sent to the open panel; `None` while no panel is open.
+    panel: Option<PanelState>,
+    /// The number of the last [`Effect::OpenPanel`].
+    panel_serial: u64,
     phase: Phase,
     /// The number of the last worker command sent.
     sent: u64,
     /// The number of the poll on its way, if one is.
     polling: Option<u64>,
+    /// The macro list was saved while a poll was on its way: poll once more after it.
+    poll_again: bool,
     /// The kind of the last save error told; cleared by a save that works.
     save_error: Option<ConfigError>,
     /// `raumakey.exe` runs from the temporary folder: no shortcut is made to it.
@@ -551,6 +687,9 @@ impl fmt::Debug for Tray {
             .field("config_revision", &self.runtime.config_revision)
             .field("startup", &self.startup)
             .field("location", &self.location)
+            .field("show_panel_on_start", &self.show_panel_on_start)
+            .field("panel_open", &self.panel.is_some())
+            .field("panel_serial", &self.panel_serial)
             .field("phase", &self.phase)
             .field("sent", &self.sent)
             .field("polling", &self.polling)
@@ -559,13 +698,9 @@ impl fmt::Debug for Tray {
 }
 
 impl Tray {
-    /// A tray before its start. `taskbar_created` is the registered `TaskbarCreated` message
-    /// (`raumakey_windows::shell::taskbar_created_message`); a number outside the registered
-    /// range (`0xC000..=0xFFFF`), such as the 0 of a failed registration, is never taken for
-    /// it.
-    pub fn new(start: TrayStart, taskbar_created: u32) -> Self {
-        let registered =
-            (REGISTERED_MESSAGE_FIRST..=REGISTERED_MESSAGE_LAST).contains(&taskbar_created);
+    /// A tray before its start, answering the registered `messages` (see
+    /// [`RegisteredMessages`] for a registration that failed).
+    pub fn new(start: TrayStart, messages: RegisteredMessages) -> Self {
         Self {
             runtime: start.runtime,
             startup: start.startup,
@@ -573,10 +708,15 @@ impl Tray {
             config_path: start.config_path,
             reported: start.status,
             notices: start.notices,
-            taskbar_created: registered.then_some(taskbar_created),
+            taskbar_created: registered(messages.taskbar_created),
+            show_panel_message: registered(messages.show_panel),
+            show_panel_on_start: start.show_panel,
+            panel: None,
+            panel_serial: 0,
             phase: Phase::Starting,
             sent: 0,
             polling: None,
+            poll_again: false,
             save_error: None,
             temporary_exe: start.temporary_exe,
         }
@@ -605,11 +745,24 @@ impl Tray {
         self.startup
     }
 
-    /// The tray menu for the settings in effect (D42).
+    /// What the settings panel shows for the settings in effect.
+    pub fn panel_state(&self) -> PanelState {
+        PanelState::new(
+            &self.runtime,
+            self.startup,
+            self.show_panel_on_start,
+            self.location,
+            self.config_path.as_deref(),
+        )
+    }
+
+    /// The tray menu for the settings in effect (D42, with "Bảng cấu hình…" first, D43).
     pub fn menu(&self) -> Vec<MenuItem<'static>> {
         let options = &self.runtime.options;
         let method = options.input_method;
         vec![
+            TrayCommand::Panel.item(false),
+            MenuItem::Separator,
             TrayCommand::VietnameseMode.item(self.runtime.vietnamese_mode),
             MenuItem::Separator,
             TrayCommand::Telex.item(method == InputMethod::Telex),
@@ -628,13 +781,15 @@ impl Tray {
         ]
     }
 
-    /// The messages that the (non-elevated) shell sends to the hidden window: `TaskbarCreated`
-    /// and the icon's callback. An elevated controller lets them through User Interface
-    /// Privilege Isolation (`Window::allow_message_from_lower_integrity`); a non-elevated one
-    /// does not need to.
+    /// The messages that (non-elevated) other processes send to the hidden window:
+    /// `TaskbarCreated` and the icon's callback from the shell, and the show-panel request of
+    /// a second start from a normal prompt (D45). An elevated controller lets them through
+    /// User Interface Privilege Isolation (`Window::allow_message_from_lower_integrity`); a
+    /// non-elevated one does not need to.
     pub fn shell_messages(&self) -> Vec<u32> {
         self.taskbar_created
             .into_iter()
+            .chain(self.show_panel_message)
             .chain([TRAY_CALLBACK.id()])
             .collect()
     }
@@ -656,6 +811,12 @@ impl Tray {
     /// The answer to window message `message` with its parameters (see the [module
     /// documentation](self)).
     pub fn on_message(&mut self, message: u32, wparam: usize, lparam: isize) -> Reply {
+        let mut reply = self.message(message, wparam, lparam);
+        self.follow_panel(&mut reply.effects, false);
+        reply
+    }
+
+    fn message(&mut self, message: u32, wparam: usize, lparam: isize) -> Reply {
         if message == START.id() {
             return Reply::handled(self.start());
         }
@@ -673,6 +834,14 @@ impl Tray {
             };
             return Reply::handled(effects);
         }
+        if self.show_panel_message == Some(message) {
+            let effects = if self.is_running() {
+                self.open_panel()
+            } else {
+                Vec::new()
+            };
+            return Reply::handled(effects);
+        }
         match message {
             WM_TIMER if wparam == POLL_TIMER => Reply::handled(self.tick()),
             WM_CLOSE => Reply::handled(self.exit()),
@@ -683,6 +852,12 @@ impl Tray {
 
     /// The effects of the command chosen in the menu (`None`: the menu was dismissed).
     pub fn menu_choice(&mut self, chosen: Option<u16>) -> Vec<Effect> {
+        let mut effects = self.choice(chosen);
+        self.follow_panel(&mut effects, false);
+        effects
+    }
+
+    fn choice(&mut self, chosen: Option<u16>) -> Vec<Effect> {
         if !self.is_running() {
             return Vec::new();
         }
@@ -691,6 +866,7 @@ impl Tray {
         };
         let options = &self.runtime.options;
         match command {
+            TrayCommand::Panel => self.open_panel(),
             TrayCommand::VietnameseMode => self.set_mode(self.mode().toggled()),
             TrayCommand::Telex => self.choose_method(InputMethod::Telex),
             TrayCommand::Vni => self.choose_method(InputMethod::Vni),
@@ -714,11 +890,24 @@ impl Tray {
         if !self.is_running() {
             return Vec::new();
         }
-        match event {
+        // The panel's check boxes toggle themselves: whatever a request did (or refused), the
+        // panel is shown the state again.
+        let from_panel = matches!(event, Event::Panel(_));
+        let mut effects = match event {
             Event::Hotkey(vietnamese) => self.set_mode(InputMode::from_vietnamese(vietnamese)),
             Event::Worker(answer) => self.on_answer(answer),
             Event::Answered(question) => self.answered_yes(question),
-        }
+            Event::Panel(request) => self.panel_request(request),
+            Event::PanelClosed(serial) => {
+                if serial == self.panel_serial {
+                    self.panel = None;
+                }
+                Vec::new()
+            }
+            Event::MacrosSaved => self.poll_now(),
+        };
+        self.follow_panel(&mut effects, from_panel);
+        effects
     }
 
     /// At exit ([`Effect::FlushHotkeys`]): the events left in the inbox once the hook has
@@ -727,7 +916,11 @@ impl Tray {
     pub fn flush_hotkeys(&mut self, events: Vec<Event>) -> Vec<Effect> {
         let last = events.into_iter().rev().find_map(|event| match event {
             Event::Hotkey(vietnamese) => Some(vietnamese),
-            Event::Worker(_) | Event::Answered(_) => None,
+            Event::Worker(_)
+            | Event::Answered(_)
+            | Event::Panel(_)
+            | Event::PanelClosed(_)
+            | Event::MacrosSaved => None,
         });
         let Some(vietnamese) = last else {
             return Vec::new();
@@ -741,8 +934,76 @@ impl Tray {
         if !self.is_running() {
             return Vec::new();
         }
-        match question {
+        let mut effects = match question {
             Question::Recover => vec![self.command(WorkerCommand::Recover)],
+        };
+        self.follow_panel(&mut effects, false);
+        effects
+    }
+
+    /// While a panel is open: appends [`Effect::RefreshPanel`] to `effects` when the state it
+    /// shows is no longer the one last sent, or always when `force`d.
+    fn follow_panel(&mut self, effects: &mut Vec<Effect>, force: bool) {
+        let Some(sent) = &self.panel else {
+            return;
+        };
+        let now = self.panel_state();
+        if force || *sent != now {
+            self.panel = Some(now.clone());
+            effects.push(Effect::RefreshPanel(now));
+        }
+    }
+
+    /// Opens the panel, or brings the open one to the front, with the state in effect.
+    fn open_panel(&mut self) -> Vec<Effect> {
+        self.panel_serial += 1;
+        let state = self.panel_state();
+        self.panel = Some(state.clone());
+        vec![Effect::OpenPanel {
+            serial: self.panel_serial,
+            state,
+        }]
+    }
+
+    /// A request of the panel: as the menu would do it, with absolute values.
+    fn panel_request(&mut self, request: PanelRequest) -> Vec<Effect> {
+        match request {
+            PanelRequest::Change(change) => match change {
+                Change::VietnameseMode(on) => self.set_mode(InputMode::from_vietnamese(on)),
+                Change::InputMethod(method) => self.choose_method(method),
+                Change::ShowPanelOnStart(on) => {
+                    self.show_panel_on_start = on;
+                    vec![self.command(WorkerCommand::Apply(change))]
+                }
+                // Only `PanelRequest::Startup` sets the start with Windows: it goes with the
+                // shortcut.
+                Change::Startup(_) => Vec::new(),
+                Change::SpellCheck(_)
+                | Change::ModernTone(_)
+                | Change::FreeMarking(_)
+                | Change::AutoRestore(_)
+                | Change::Macros(_)
+                | Change::MacrosWhenEnglish(_)
+                | Change::MacroAutoCase(_)
+                | Change::TypingDefaults => self.change(change),
+            },
+            PanelRequest::Startup(on) => match (self.startup, on) {
+                // The menu's switch: on (or the request to extract Raumakey first), off, or
+                // the explanation of the elevated logon task.
+                (StartupMode::None, true)
+                | (StartupMode::Shortcut, false)
+                | (StartupMode::ElevatedTask, false) => self.switch_startup(),
+                (StartupMode::None, false)
+                | (StartupMode::Shortcut | StartupMode::ElevatedTask, true) => Vec::new(),
+            },
+            PanelRequest::OpenConfig => vec![self.command(WorkerCommand::OpenConfig)],
+            PanelRequest::MacroList => self
+                .config_path
+                .as_deref()
+                .and_then(Path::parent)
+                .map(|folder| Effect::OpenMacroList(folder.to_path_buf()))
+                .into_iter()
+                .collect(),
         }
     }
 
@@ -764,6 +1025,9 @@ impl Tray {
         }
         self.phase = Phase::Running;
         let mut effects = vec![Effect::ShowIcon(self.icon())];
+        if self.show_panel_on_start {
+            effects.extend(self.open_panel());
+        }
         effects.extend(self.notices.drain(..).map(Effect::Notify));
         effects
     }
@@ -793,6 +1057,17 @@ impl Tray {
             effects.push(self.command(WorkerCommand::Poll));
         }
         effects
+    }
+
+    /// The macro list was saved: the worker polls at once, so the hook gets the new macros
+    /// now; while a poll is on its way (it may have read the file before the save), once more
+    /// as soon as that poll answered.
+    fn poll_now(&mut self) -> Vec<Effect> {
+        if self.polling.is_some() {
+            self.poll_again = true;
+            return Vec::new();
+        }
+        vec![self.command(WorkerCommand::Poll)]
     }
 
     /// The mode becomes `mode`: the icon, the hook (its mode only), and the file.
@@ -852,9 +1127,12 @@ impl Tray {
             return Vec::new();
         }
         self.phase = Phase::Exiting;
+        self.panel = None;
         vec![
             Effect::StopTyping,
             Effect::DismissNotices,
+            Effect::ClosePanel,
+            Effect::CloseMacroList,
             Effect::FlushHotkeys,
             Effect::FinishWorker,
             Effect::RemoveIcon,
@@ -954,6 +1232,11 @@ impl Tray {
                 effects.push(Effect::Notify(open_error_notice(path, error)));
             }
         }
+        // Last, so that the answer was taken over as the answer to the last command.
+        if self.polling.is_none() && self.poll_again {
+            self.poll_again = false;
+            effects.push(self.command(WorkerCommand::Poll));
+        }
         effects
     }
 
@@ -963,6 +1246,7 @@ impl Tray {
         let changed = !same_for_hook(&self.runtime, &state.runtime);
         self.runtime = state.runtime;
         self.startup = state.startup;
+        self.show_panel_on_start = state.show_panel_on_start;
         let mut effects = Vec::new();
         if self.icon() != before {
             effects.push(Effect::UpdateIcon(self.icon()));

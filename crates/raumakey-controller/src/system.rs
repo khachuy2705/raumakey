@@ -416,6 +416,7 @@ mod other {
                 runtime: settings.runtime_snapshot().clone(),
                 startup: settings.document().system.startup,
                 temporary_exe: false,
+                show_panel_on_start: settings.document().system.show_panel_on_start,
             }
         }
 
@@ -442,6 +443,8 @@ mod other {
         fn report_error(&mut self, text: &str) {
             eprintln!("raumakey: {text}");
         }
+
+        fn signal_running_instance(&mut self) {}
     }
 
     /// A clipboard that is never available.

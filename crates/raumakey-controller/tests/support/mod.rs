@@ -213,6 +213,9 @@ pub enum DesktopCall {
     StopTyping,
     ReleaseInstance,
     ReportError(String),
+    /// Asked the running controller to show its panel (D45). Recorded only: nothing is ever
+    /// broadcast in tests.
+    SignalRunningInstance,
 }
 
 /// The path of `raumakey.toml` in the fake desktop's settings.
@@ -221,7 +224,8 @@ pub fn fake_config_path() -> PathBuf {
 }
 
 /// What the fake desktop's settings hold by default: a second run beside `raumakey.exe`,
-/// without problems, on the defaults (revision 1), not starting with Windows.
+/// without problems, on the defaults (revision 1), not starting with Windows, opening the
+/// settings panel at start (the schema default).
 pub fn opened_settings() -> Opened {
     let mut runtime = RuntimeSnapshot::defaults_v1();
     runtime.config_revision = 1;
@@ -241,6 +245,7 @@ pub fn opened_settings() -> Opened {
         runtime,
         startup: StartupMode::None,
         temporary_exe: false,
+        show_panel_on_start: true,
     }
 }
 
@@ -351,6 +356,14 @@ impl Desktop for FakeDesktop {
 
     fn report_error(&mut self, text: &str) {
         self.calls.push(DesktopCall::ReportError(text.to_owned()));
+    }
+
+    fn signal_running_instance(&mut self) {
+        self.calls.push(DesktopCall::SignalRunningInstance);
+        assert!(
+            !self.held,
+            "only a start that is not the instance signals it"
+        );
     }
 }
 

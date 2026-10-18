@@ -170,6 +170,33 @@ fn an_applied_change_is_committed_and_answered_with_the_settings_in_effect() {
     assert_eq!(calls(&log), []);
 }
 
+/// "Mở bảng này khi Raumakey chạy" of the panel (D43): saved like any change, and every answer
+/// carries it, so the tray (and the panel) show what the worker has, also after a hand edit.
+#[test]
+fn every_answer_carries_whether_the_panel_opens_at_start() {
+    let folder = Folder::new();
+    let mut worker = worker(&folder, FakePorts::new(&Log::default()));
+    let answer = worker.handle(1, WorkerCommand::Poll);
+    assert!(state(&answer).show_panel_on_start, "the schema default");
+    let change = Change::ShowPanelOnStart(false);
+    let answer = worker.handle(2, WorkerCommand::Apply(change));
+    assert_eq!(
+        answer.outcome,
+        Outcome::Applied {
+            change,
+            result: Ok(Saved::Written)
+        }
+    );
+    assert!(!state(&answer).show_panel_on_start);
+    assert!(!folder.stored().system.show_panel_on_start);
+    // A hand edit turns it on again; the poll's answer says so.
+    let mut edited = folder.stored();
+    edited.system.show_panel_on_start = true;
+    fs::write(folder.config(), edited.encode().unwrap()).unwrap();
+    let answer = worker.handle(3, WorkerCommand::Poll);
+    assert!(state(&answer).show_panel_on_start);
+}
+
 /// A change to the value in effect writes nothing, and says so: the tray does not take it for
 /// a save that worked.
 #[test]

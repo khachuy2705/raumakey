@@ -100,8 +100,9 @@ fn config_name(config_path: Option<&Path>) -> String {
     )
 }
 
-/// Where the configuration lives, as a parenthesis.
-fn location_text(location: Location) -> &'static str {
+/// Where the configuration lives, as a parenthesis (also the footer of the settings panel,
+/// `crate::panel`).
+pub(crate) fn location_text(location: Location) -> &'static str {
     match location {
         Location::ExeDir => "(cạnh raumakey.exe)",
         Location::LocalAppData => "(trong %LOCALAPPDATA%\\Raumakey)",
@@ -255,7 +256,12 @@ fn problem_section(header: &str, lines: &[String]) -> String {
 /// found: the first run (where `raumakey.toml` was created, or why it could not be), and every
 /// problem of the files. A damaged `raumakey.toml` asks whether Raumakey may move it aside
 /// ([`Question::Recover`]). `None` for a later run without problems.
-pub fn start_notice(report: &OpenReport) -> Option<Notice> {
+///
+/// Without `welcome` the welcome of a first run that created the file is left out: the
+/// settings panel, which opens at that start, shows where the file is and how to switch the
+/// mode (D43). The warnings (a file that could not be created, no folder at all, problems of
+/// the files) and the recovery question are the same either way.
+pub fn start_notice(report: &OpenReport, welcome: bool) -> Option<Notice> {
     let path = report.config_path.as_deref();
     let mut sections = Vec::new();
     let mut kind = NoticeKind::Information;
@@ -269,6 +275,7 @@ pub fn start_notice(report: &OpenReport) -> Option<Notice> {
         );
     } else if report.first_run {
         match report.create_error {
+            None if !welcome => {}
             None => {
                 let place = match report.location {
                     Location::LocalAppData => {

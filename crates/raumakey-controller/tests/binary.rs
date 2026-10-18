@@ -102,8 +102,11 @@ fn hold_the_controller_instance() -> SingleInstance {
 
 /// Without arguments `raumakey.exe` runs the controller. A second start (the Startup
 /// shortcut while the controller runs, a double click) finds the single-instance mutex held,
-/// ends at once with 0, and prints nothing. This test holds the mutex itself, so the process
-/// it starts can never become the first instance and show a tray icon.
+/// asks the running controller to show its panel (D45), ends at once with 0, and prints
+/// nothing. This test holds the mutex itself, so the process it starts can never become the
+/// first instance and show a tray icon; and since it can hold the mutex only while no
+/// controller of this user runs in this session, no window answers the request that start
+/// posts.
 #[cfg(windows)]
 #[test]
 fn a_second_start_exits_at_once_with_0_and_says_nothing() {
