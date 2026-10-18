@@ -1107,17 +1107,18 @@ mod win {
             if hwnd == 0 {
                 return false;
             }
+            let window = HWND(hwnd as *mut c_void);
+            // The handle stays published until `DialogBoxIndirectParamW` returns, a while after
+            // the window was destroyed when the dialog's thread is held up (a busy desktop), and
+            // `PostMessageW` to such a destroyed window may still succeed: a destroyed window
+            // takes no message, so it was not reached.
+            // SAFETY: only queries whether the handle names a window.
+            if !unsafe { IsWindow(Some(window)) }.as_bool() {
+                return false;
+            }
             // SAFETY: posts plain values; a handle that no longer names a window makes the call
             // fail.
-            unsafe {
-                PostMessageW(
-                    Some(HWND(hwnd as *mut c_void)),
-                    message,
-                    WPARAM(wparam),
-                    LPARAM(lparam),
-                )
-            }
-            .is_ok()
+            unsafe { PostMessageW(Some(window), message, WPARAM(wparam), LPARAM(lparam)) }.is_ok()
         }
     }
 
