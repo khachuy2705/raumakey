@@ -386,7 +386,7 @@ như mô tả và báo lại.
 | 23 | Trong danh sách gõ tắt, gõ một chữ cái khi danh sách đang có focus | Dòng có từ gõ tắt bắt đầu bằng chữ đó được chọn; nội dung đang gõ dở trong hai ô không bị mất vì một dòng khác |
 | 24 | Sửa danh sách gõ tắt mà chưa lưu, bấm Đóng | Raumakey hỏi có bỏ thay đổi không |
 | 25 | Để bảng cấu hình và danh sách gõ tắt cùng mở, chọn **Thoát** trong menu khay; lần khác, đăng xuất khỏi Windows | Cả hai cửa sổ đóng ngay, Raumakey thoát, không treo |
-| 26 | Đặt màn hình ở mức phóng to 150% rồi mở bảng | Chữ rõ, không bị cắt; các ô chọn hai dòng hiện đủ chữ |
+| 26 | Đặt màn hình ở mức phóng to 125%, 150% và 175% (và, nếu có, hai màn hình khác mức phóng to), mở bảng, danh sách gõ tắt và mục **Giới thiệu** | Chữ rõ, không bị cắt; không chữ nào bị ngắt giữa chừng (ví dụ "ti" / "ếng"); các ô chọn hai dòng hiện đủ chữ |
 
 ### 5.7 Dòng lệnh
 

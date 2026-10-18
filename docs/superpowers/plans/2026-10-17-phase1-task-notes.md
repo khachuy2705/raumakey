@@ -765,3 +765,32 @@ agent nào tắt tiến trình đó.
   context. Đỏ: test gõ chữ (chọn 0, cần 2), yêu cầu tìm giả mạo (trả 0, cần 2), test trong
   controller (chọn 0, cần 2), test trang không ghi được (`pszText` bị đổi), test vòng văn bản
   riêng, test ô dài (panic khi cắt slice).
+
+### S5: ngắt dòng tiếng Việt
+
+- Ảnh chụp bảng cấu hình thật cho thấy nhãn "Giữ nguyên phím đã gõ khi từ không phải tiếng Việt"
+  bị ngắt thành "…không phải ti" / "ếng Việt". Phép đo bằng `DrawTextW` (`DT_WORDBREAK`, Segoe UI
+  9 pt, khung hẹp hơn chữ 4 px) xác nhận: chữ ASCII `tieng` giữ một dòng, còn `tiếng`, `Việt`,
+  `không`, `nguyên`, `được`, `thư`, `phải` đều bị ngắt giữa chữ. GDI coi chỗ trước một chữ cái
+  ngoài ASCII là chỗ ngắt được, như chữ Hán. Một `MessageBoxW` thật với một dòng tiếng Việt dài
+  cũng ngắt "Biểu t" / "ượng". Lỗi này có từ bản portable đầu tiên, ở mọi hộp thông báo.
+- Sửa: Raumakey tự ngắt dòng, chỉ ở dấu cách, đo bằng đúng font của control hoặc của hộp thông
+  báo (`wrap_words`, `Dialog::set_text_wrapped`, `message_box`), nên Windows không còn gì phải tự
+  ngắt. Độ rộng dòng của hộp thông báo được đo trên máy: hộp có icon giữ nguyên dòng tới 318 px và
+  ngắt dòng 321 px ở 96 DPI. Raumakey dùng tối đa 300 px theo DPI, 50 ký tự trung bình, và một phần
+  tư vùng làm việc của màn hình. Các mức phóng to khác chưa được đo. Ví dụ trong ngoặc của nhãn và
+  hai chữ cuối của gợi ý dùng dấu cách không ngắt (U+00A0), để một dòng không kết thúc bằng "→".
+- Đỏ: 6/8 test `wrap_words` và test `message_text_width` với khung rỗng; cả 7 test Windows (số
+  dòng vẽ ra dưới Common Controls 5 và 6, câu tiếng Việt "274 > 180", chỗ cho ô chọn, chỉ nhận nhãn
+  và ô chọn, ngắt lại sau khi đổi DPI, hộp thông báo thật); test controller "Windows không còn gì
+  phải tự ngắt" (ô 114: 274/231 px, ô 122: 270/224 px, ghi chú vị trí: 612/553 px, gợi ý của danh
+  sách: 548/536 px); 2 test dấu cách không ngắt.
+- Agent cũng tìm ra một lỗi cũ: hộp thông báo chỉ có nút OK không đóng khi nhận `WM_COMMAND(IDOK)`,
+  vì nút duy nhất của nó có id `IDCANCEL`, nên lúc thoát Raumakey không đóng được các hộp đó. Sửa:
+  gửi `IDCANCEL` (như phím Esc; hộp vẫn trả lời `IDOK`), còn câu hỏi thì gửi `IDNO`. Đỏ: hộp
+  Information, Warning và Error "still open" trong cả hai test (hộp tách luồng và hộp của một hộp
+  thoại).
+- Review: chấp thuận, kèm vài điểm nhỏ. Không có lỗi về tính đúng. Lề của độ rộng hộp thông báo
+  chỉ khoảng 20 px ở 96 DPI (comment cũ ghi sai là một phần sáu); các mức phóng to khác và màn hình
+  có DPI khác nhau cần kiểm tra thủ công. Đã sửa comment, dùng hằng `IDNO`/`IDCANCEL`, và ẩn seam
+  test khỏi tài liệu.

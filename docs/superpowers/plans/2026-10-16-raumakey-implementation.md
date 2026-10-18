@@ -1498,12 +1498,47 @@ riêng, theo TDD, được review độc lập rồi mới merge.
 | S2 | Bảng cấu hình | `raumakey-controller`: các `Change` mới; trạng thái bảng và yêu cầu của bảng (thuần); tray mở, cập nhật và đóng bảng; mục menu "Bảng cấu hình…"; mở bảng lúc khởi động theo `show_panel_on_start`; chạy lại exe mở bảng (D45); glue Windows của bảng |
 | S3 | Danh sách gõ tắt | Mô hình danh sách (thuần): kiểm tra theo D29 và D30, giữ khoá lạ; hộp thoại có list view; đọc và ghi trên luồng của hộp thoại; kiểm tra tệp ngay sau khi lưu |
 | S4 | Tài liệu và bản phát hành | Thiết kế §22, kế hoạch §15 và §17, `GUIDE.md`, `README.md`, ghi chép task, bản build trong `release\` |
+| S5 | Ngắt dòng tiếng Việt | Thêm sau khi ảnh chụp bảng thật cho thấy GDI ngắt giữa chữ tiếng Việt: Raumakey tự ngắt dòng ở dấu cách cho nhãn nhiều dòng và mọi hộp thông báo; đóng đúng các hộp thông báo OK khi thoát |
 
 ### 17.2 Trạng thái
 
+Mọi task đã xong, đã được review độc lập và sửa theo review. `2026-10-17-phase1-task-notes.md`
+(mục "Bảng cấu hình và danh sách gõ tắt") ghi các lần chạy đỏ và kết quả review.
+
 | Task | Trạng thái | Commit | Review |
 |---|---|---|---|
-| S1 | Đang làm | — | — |
-| S2 | Chưa bắt đầu | — | — |
-| S3 | Chưa bắt đầu | — | — |
-| S4 | Thiết kế §22 và kế hoạch D43–D45 đã viết | — | — |
+| S1 | Xong | `d28a3f3`, `b7707e2`, `eb4ecf1` | Sửa: `WM_DESTROY` giả mạo làm hộp thoại không đóng được; chữ bắt đầu bằng U+FFFF; post tới hộp thoại vừa bị huỷ vẫn "thành công" |
+| S2 | Xong | `ab46448`, `4c7371c` | Sửa: dòng cuối mất tên tệp khi cấu hình ở `%LOCALAPPDATA%`; phím mũi tên vào danh sách kiểu gõ; mở lại lúc bảng đang đóng |
+| S3 | Xong | `89aae9c`, `deb89b3`, `db88ddb` | Sửa: lần lưu đầu làm mất giá trị không đọc được; gõ chữ vào danh sách nhảy về dòng 0 |
+| S4 | Xong | `7bd1a91`, `f00f270`, `e5c26a9` và commit này; bản build trong `release\` | — |
+| S5 | Xong | `5217dc5`, `185e493`, `174db96`, `e37590e` | Chấp thuận; sửa comment về lề độ rộng hộp thông báo |
+
+Bằng chứng cho bản sửa đổi `e37590e`, chạy ngày 2026-10-18 trên host phát triển Windows 11 x86_64
+(Rust 1.99.1, `rust-lld` + `xwin`), khi không có Raumakey nào khác đang chạy:
+
+| Lệnh | Kết quả |
+|---|---|
+| `cargo xtask ci`: fmt và Clippy với `-D warnings`, feature mặc định và cả sáu feature `evkey-compat` | Đạt |
+| `cargo xtask ci`: `cargo test --locked --workspace` | 2,467 đạt, 0 không đạt, 22 bị bỏ qua |
+| Cũng các test đó với các feature `evkey-compat` | 2,541 đạt, 0 không đạt, 22 bị bỏ qua |
+| `cargo xtask ci`: bước fuzz smoke | 10 đạt |
+| Test i686 (WOW64), lệnh ở `GUIDE.md` §3 | 1,041 đạt, 0 không đạt, 14 bị bỏ qua |
+| `cargo xtask cross --release` | Đạt (x86_64, i686, aarch64) |
+| `cargo xtask inspect --release` | Cả 66 mục kiểm tra đều đạt |
+| `cargo xtask package --release` | Đạt: mỗi package có 6 tệp |
+| `raumakey.exe --version` của package | `Raumakey 0.1.0`; checksum khớp `SHA256SUMS` |
+| Sáu bản bộ test `desktop` chạy song song, 4 lượt | 0/24 lượt fail (trước bản sửa `eb4ecf1`: 17/24) |
+
+Smoke test của `raumakey.exe` thật (package release) trên máy phát triển, với hook mức thấp thật:
+
+- Lần chạy đầu trong một thư mục trống ngoài `%TEMP%`: bảng "Raumakey 0.1.0 – Bảng cấu hình" hiện
+  ra; `raumakey.toml` (có `show_panel_on_start = true`) và `raumakey.toml.lock` được tạo cạnh exe.
+- Lần chạy thứ hai trong lúc bản đầu chạy: thoát với mã 0; bản đầu vẫn chỉ có một bảng.
+- Nút "Danh sách gõ tắt…" mở hộp thoại "Raumakey – Danh sách gõ tắt".
+- WM_CLOSE gửi tới cửa sổ khay: mã thoát 0, cả bảng và danh sách gõ tắt đóng, không còn tiến trình.
+- Ảnh chụp (`PrintWindow`) bảng và danh sách ở 96 DPI: mọi nhãn đủ chữ, không chữ nào bị ngắt giữa
+  chừng.
+
+Chưa kiểm chứng: việc gõ trong ứng dụng thật, và các mức phóng to khác 100 %. Các danh sách kiểm
+tra thủ công ở module `typing`, `desktop` và `macro_dialog` của controller, và `GUIDE.md` §5.6,
+chưa được chạy. Không điều nào ở trên là bằng chứng về hành vi khi chạy thật.
