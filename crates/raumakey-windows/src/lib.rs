@@ -14,8 +14,11 @@
 //! class names), [`menu`] (menu items and their flags), [`icon`] (icon sizes), [`dialog`]
 //! (message box styles, texts, and answers), [`dialog_template`] (in-memory dialog templates:
 //! layout, styles, validation), [`dialog_box`] (the private messages dialogs reserve, the
-//! notification codes of their controls), [`word_wrap`] (wrapping at spaces only, the width of
-//! a message box line), and [`com_server`] (COM object and server-lock counts). Their Win32
+//! notification codes of their controls), [`file_dialog`] (the flags and the file types of the
+//! Open dialog, and how its answer is read), [`programs`] (which windows are an application's,
+//! one program per executable, the description in a version resource), [`word_wrap`]
+//! (wrapping at spaces only, the width of a message box line), and [`com_server`] (COM object
+//! and server-lock counts). Their Win32
 //! parts and the purely Win32 modules (`com`, `file_replace`,
 //! `known_folder`, `module`, `pipe`, `sid`, `single_instance`, `task_scheduler`, and the
 //! `evkey-compat` module `legacy`) exist only on Windows.
@@ -27,9 +30,11 @@
 //! foreground), [`shell`] (the notification icon and its callbacks, the double-click among
 //! them), [`input`] (the clock and the user's double-click time), [`foreground`] (the
 //! application in front and the watcher that reports each change of it), [`menu`], [`icon`],
-//! [`dialog`], [`dialog_template`] and [`dialog_box`] (the settings panel and the macro list:
-//! modal dialog boxes from in-memory templates, run on a thread of their own and driven by a
-//! handler),
+//! [`dialog`], [`dialog_template`] and [`dialog_box`] (the settings panel, the macro list, and
+//! the exclusions dialog: modal dialog boxes from in-memory templates, run on a thread of their
+//! own and driven by a handler), [`file_dialog`] (the Open dialog that the exclusions dialog
+//! shows to choose a program), [`programs`] (the applications with a window, the running
+//! processes, and the descriptions of programs, which the exclusions dialog lists),
 //! [`word_wrap`] (Vietnamese texts of labels, check boxes, and message boxes wrapped at spaces
 //! with the real fonts, since Windows' own word wrap cuts Vietnamese words), `single_instance`,
 //! and `module` (the module that links this crate and its path). The TIP's
@@ -48,6 +53,7 @@ pub mod dialog;
 pub mod dialog_box;
 pub mod dialog_template;
 pub mod error;
+pub mod file_dialog;
 pub mod foreground;
 pub mod hooks;
 pub mod icon;
@@ -57,6 +63,7 @@ pub mod menu;
 pub mod names;
 pub mod panic;
 pub mod process;
+pub mod programs;
 pub mod registry;
 pub mod security;
 pub mod shell;

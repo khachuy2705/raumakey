@@ -38,13 +38,15 @@ use raumakey_config::{ConfigError, StartupMode};
 use raumakey_controller::desktop::{
     ModeIcons, NotifyArea, ShellTray, TrayServices, TrayShell, WakeTarget, create_tray_window,
 };
+use raumakey_controller::exclusions::{ExclusionsRequest, ExclusionsState, default_apps};
+use raumakey_controller::exclusions_dialog;
 use raumakey_controller::macro_dialog;
 use raumakey_controller::notice::{
     Notice, NoticeKind, Question, save_error_notice, temporary_exe_notice,
 };
 use raumakey_controller::panel::{
-    ID_AUTO_RESTORE, ID_CLOSE, ID_CONFIG_FILE, ID_CONFIG_LOCATION, ID_FREE_MARKING, ID_HINT,
-    ID_MACRO_AUTO_CASE, ID_MACRO_LIST, ID_MACROS, ID_MACROS_WHEN_ENGLISH, ID_METHOD,
+    ID_AUTO_RESTORE, ID_CLOSE, ID_CONFIG_FILE, ID_CONFIG_LOCATION, ID_EXCLUSIONS, ID_FREE_MARKING,
+    ID_HINT, ID_MACRO_AUTO_CASE, ID_MACRO_LIST, ID_MACROS, ID_MACROS_WHEN_ENGLISH, ID_METHOD,
     ID_MODERN_TONE, ID_OPEN_CONFIG, ID_SHOW_ON_START, ID_SPELL_CHECK, ID_STARTUP, ID_VIETNAMESE,
     PanelRequest, PanelState, panel_title,
 };
@@ -80,16 +82,18 @@ use windows::Win32::Graphics::Gdi::{
     GetDC, HDC, HGDIOBJ, ReleaseDC, SelectObject,
 };
 use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
+use windows::Win32::UI::Controls::LVM_GETITEMCOUNT;
 use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use windows::Win32::UI::WindowsAndMessaging::{
     BM_CLICK, BM_GETCHECK, CB_GETCOUNT, CB_GETCURSEL, CB_SETCURSEL, CHANGEFILTERSTRUCT,
-    ChangeWindowMessageFilterEx, EnumChildWindows, EnumWindows, GA_PARENT, GWL_STYLE, GetAncestor,
-    GetClassNameW, GetClientRect, GetDesktopWindow, GetDlgCtrlID, GetDlgItem, GetNextDlgGroupItem,
-    GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, InternalGetWindowText, IsWindow,
-    IsWindowVisible, MSGFLT_ALLOW, MSGFLTINFO_ALREADYALLOWED_FORWND, MSGFLTINFO_NONE,
-    MSGFLTINFO_STATUS, PostMessageW, PostThreadMessageW, SMTO_NORMAL, SendMessageTimeoutW,
-    SendMessageW, WM_CLOSE, WM_COMMAND, WM_ENDSESSION, WM_GETFONT, WM_GETTEXT, WM_GETTEXTLENGTH,
-    WM_NULL, WM_QUIT, WM_SETTEXT,
+    ChangeWindowMessageFilterEx, EnumChildWindows, EnumWindows, GA_PARENT, GW_CHILD, GWL_STYLE,
+    GetAncestor, GetClassNameW, GetClientRect, GetDesktopWindow, GetDlgCtrlID, GetDlgItem,
+    GetNextDlgGroupItem, GetWindow, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId,
+    InternalGetWindowText, IsWindow, IsWindowVisible, MSGFLT_ALLOW,
+    MSGFLTINFO_ALREADYALLOWED_FORWND, MSGFLTINFO_NONE, MSGFLTINFO_STATUS, PostMessageW,
+    PostThreadMessageW, SMTO_NORMAL, SendMessageTimeoutW, SendMessageW, WM_CHAR, WM_CLOSE,
+    WM_COMMAND, WM_ENDSESSION, WM_GETFONT, WM_GETTEXT, WM_GETTEXTLENGTH, WM_NULL, WM_QUIT,
+    WM_SETTEXT,
 };
 use windows::core::BOOL;
 
@@ -121,6 +125,9 @@ enum Call {
     ClosePanel,
     MacroList(PathBuf),
     CloseMacroList,
+    OpenExclusions(u64, ExclusionsState),
+    RefreshExclusions(ExclusionsState),
+    CloseExclusions,
     HookMode(bool),
     HookRuntime(Box<RuntimeSnapshot>),
     StopTyping,
@@ -150,6 +157,7 @@ struct FakeShell {
     inbox: Option<mpsc::Sender<Event>>,
     during_menu: Option<Box<dyn FnMut(HWND)>>,
     panel_events: Vec<Event>,
+    exclusions_events: Vec<Event>,
     foreground: VecDeque<Option<ForegroundApp>>,
     reads: Reads,
 }
@@ -163,9 +171,17 @@ impl FakeShell {
             inbox: None,
             during_menu: None,
             panel_events: Vec::new(),
+            exclusions_events: Vec::new(),
             foreground: VecDeque::new(),
             reads: Reads::default(),
         }
+    }
+
+    /// The first exclusions dialog opened sends `events` into `inbox`.
+    fn exclusions_sending(mut self, events: Vec<Event>, inbox: &mpsc::Sender<Event>) -> Self {
+        self.exclusions_events = events;
+        self.inbox = Some(inbox.clone());
+        self
     }
 
     /// Answers the next reads of the application in front with `apps`, and records the reads
@@ -277,6 +293,25 @@ impl TrayShell for FakeShell {
         self.log.borrow_mut().push(Call::CloseMacroList);
     }
 
+    fn open_exclusions(&mut self, serial: u64, state: ExclusionsState) {
+        self.log
+            .borrow_mut()
+            .push(Call::OpenExclusions(serial, state));
+        if let Some(inbox) = &self.inbox {
+            for event in self.exclusions_events.drain(..) {
+                inbox.send(event).unwrap();
+            }
+        }
+    }
+
+    fn refresh_exclusions(&mut self, state: ExclusionsState) {
+        self.log.borrow_mut().push(Call::RefreshExclusions(state));
+    }
+
+    fn close_exclusions(&mut self) {
+        self.log.borrow_mut().push(Call::CloseExclusions);
+    }
+
     fn foreground_app(&mut self, window: Option<isize>) -> Option<ForegroundApp> {
         self.reads.borrow_mut().push(window);
         self.foreground.pop_front().flatten()
@@ -353,7 +388,7 @@ impl TrayServices for FakeServices {
     }
 
     fn send(&mut self, seq: u64, command: WorkerCommand) {
-        self.log.borrow_mut().push(Call::Send(seq, command));
+        self.log.borrow_mut().push(Call::Send(seq, command.clone()));
         if let Some(action) = &mut self.on_send {
             action(seq, command, &self.feed);
         }
@@ -450,6 +485,7 @@ fn start(mode: InputMode) -> TrayStart {
         notices: Vec::new(),
         temporary_exe: false,
         show_panel: false,
+        exclusions: default_apps(),
     }
 }
 
@@ -461,14 +497,15 @@ fn icon(mode: InputMode, method: InputMethod) -> IconState {
     IconState::new(mode, method)
 }
 
-/// The calls of an exit, in order: the hook stops, open notices, the panel, and the macro list
-/// editor close, the worker finishes, and only then the icon goes.
-fn exit_calls() -> [Call; 6] {
+/// The calls of an exit, in order: the hook stops, open notices, the panel, the macro list
+/// editor, and the exclusions dialog close, the worker finishes, and only then the icon goes.
+fn exit_calls() -> [Call; 7] {
     [
         Call::StopTyping,
         Call::Dismiss,
         Call::ClosePanel,
         Call::CloseMacroList,
+        Call::CloseExclusions,
         Call::FinishWorker,
         Call::Remove,
     ]
@@ -1152,6 +1189,7 @@ fn hotkey_changes_left_at_the_exit_are_saved_before_the_worker_finishes() {
                 Call::Dismiss,
                 Call::ClosePanel,
                 Call::CloseMacroList,
+                Call::CloseExclusions,
                 Call::Send(1, WorkerCommand::Apply(Change::VietnameseMode(true))),
                 Call::FinishWorker,
                 Call::Remove,
@@ -1573,8 +1611,11 @@ impl Drop for RealShell {
     fn drop(&mut self) {
         self.shell.close_panel();
         self.shell.close_macro_list();
+        self.shell.close_exclusions();
         let deadline = Instant::now() + PANEL_WAIT;
-        while (!panel_windows().is_empty() || !dialog_windows(macro_dialog::TITLE).is_empty())
+        while (!panel_windows().is_empty()
+            || !dialog_windows(macro_dialog::TITLE).is_empty()
+            || !dialog_windows(exclusions_dialog::TITLE).is_empty())
             && Instant::now() < deadline
         {
             std::thread::sleep(Duration::from_millis(10));
@@ -1744,6 +1785,9 @@ fn the_real_panel_shows_the_state_sends_requests_and_closes() {
     assert_eq!(next_event(&events), Event::Panel(PanelRequest::OpenConfig));
     send_to(item(panel, ID_MACRO_LIST), BM_CLICK, 0, 0);
     assert_eq!(next_event(&events), Event::Panel(PanelRequest::MacroList));
+    assert!(is_enabled(item(panel, ID_EXCLUSIONS)));
+    send_to(item(panel, ID_EXCLUSIONS), BM_CLICK, 0, 0);
+    assert_eq!(next_event(&events), Event::Panel(PanelRequest::Exclusions));
     // A command of a label asks nothing.
     let wparam = usize::from(ID_HINT) | (usize::from(BN_CLICKED) << 16);
     send_to(panel, WM_COMMAND, wparam, 0);
@@ -1776,6 +1820,8 @@ fn the_real_panel_shows_the_state_sends_requests_and_closes() {
     assert_eq!(window_text(item(panel, ID_CONFIG_LOCATION)), "");
     assert!(!is_enabled(item(panel, ID_OPEN_CONFIG)));
     assert!(!is_enabled(item(panel, ID_MACRO_LIST)));
+    // Without a folder the edits of the exclusions dialog take effect in memory.
+    assert!(is_enabled(item(panel, ID_EXCLUSIONS)));
 
     // Opened again: the same window shows the new state (an off-screen panel is never
     // brought to the front).
@@ -1933,11 +1979,16 @@ fn single_line_width(control: HWND, line: &str) -> i32 {
     })
 }
 
-/// What is wrong with the text of `control` when it is a check box or a label that wraps
-/// (not one that shortens its text on one line): each line that does not fit the control's
-/// line width (`line_width`: the client width, less a check box's box) on one line, which
-/// Windows would wrap, possibly inside a word, and lines that need more height than the
-/// control has. `None` for other controls.
+/// The pixels a push button keeps clear around its text, on each side: its edge and the
+/// focus rectangle inside it.
+const BUTTON_TEXT_MARGIN: i32 = 4;
+
+/// What is wrong with the text of `control` when it is a push button, a check box, or a label
+/// that wraps (not one that shortens its text on one line): for a push button, a text that
+/// does not fit on its one line inside the button's edges; for the others, each line that
+/// does not fit the control's line width (`line_width`: the client width, less a check box's
+/// box) on one line, which Windows would wrap, possibly inside a word, and lines that need
+/// more height than the control has. `None` for other controls.
 fn text_overflow(control: HWND) -> Option<Vec<String>> {
     let mut class = [0_u16; 16];
     // SAFETY: the buffer is writable for its length.
@@ -1945,13 +1996,30 @@ fn text_overflow(control: HWND) -> Option<Vec<String>> {
     let class = String::from_utf16_lossy(&class[..usize::try_from(length).unwrap()]);
     // SAFETY: only reads the window's style.
     let style = unsafe { GetWindowLongW(control, GWL_STYLE) } as u32;
+    let push_button = class == "Button" && matches!(style & 0x0F, 0 | 1);
     let check_box = class == "Button" && matches!(style & 0x0F, 2..=6 | 9);
     let shortens = style & (styles::SS_PATHELLIPSIS | styles::SS_ENDELLIPSIS) != 0;
+    // SAFETY: only reads the control's id.
+    let id = unsafe { GetDlgCtrlID(control) };
+    if push_button {
+        let text = window_text(control);
+        let mut client = RECT::default();
+        // SAFETY: `client` is a valid out buffer.
+        unsafe { GetClientRect(control, &mut client) }.unwrap();
+        let width = single_line_width(control, &text);
+        let room = client.right - 2 * BUTTON_TEXT_MARGIN;
+        let problems = if text.contains('\n') || width > room {
+            vec![format!(
+                "{id}: button {text:?} takes {width} pixels of {room}"
+            )]
+        } else {
+            Vec::new()
+        };
+        return Some(problems);
+    }
     if !check_box && !(class == "Static" && !shortens) {
         return None;
     }
-    // SAFETY: only reads the control's id.
-    let id = unsafe { GetDlgCtrlID(control) };
     let limit = line_width(control).unwrap();
     let text = window_text(control);
     let mut problems = Vec::new();
@@ -1987,11 +2055,12 @@ fn text_overflow(control: HWND) -> Option<Vec<String>> {
     Some(problems)
 }
 
-/// The real panel, opened with the long note of `%LOCALAPPDATA%`, and the real macro list
-/// editor, under Common Controls 6 as `raumakey.exe` runs them: every check box and every
-/// label that wraps shows lines that each fit its line width on one line, so Windows has
-/// nothing left to wrap and cuts no Vietnamese word ("…không phải ti" / "ếng Việt"), and is
-/// tall enough for them.
+/// The real panel, opened with the long note of `%LOCALAPPDATA%`, the real macro list editor,
+/// and the real exclusions dialog, without a folder (its note shown), under Common Controls 6
+/// as `raumakey.exe` runs them: every check box and every label that wraps shows lines that
+/// each fit its line width on one line, so Windows has nothing left to wrap and cuts no
+/// Vietnamese word ("…không phải ti" / "ếng Việt"), and is tall enough for them; and the text
+/// of every push button, "Ứng dụng loại trừ…" of the panel among them, fits on its one line.
 #[test]
 fn the_real_panel_and_editor_leave_windows_nothing_to_wrap() {
     let folder = tempfile::tempdir().unwrap();
@@ -2002,21 +2071,31 @@ fn the_real_panel_and_editor_leave_windows_nothing_to_wrap() {
     state.config_path = Some(PathBuf::from(
         r"C:\Users\Nguyen Van Anh\AppData\Local\Raumakey\raumakey.toml",
     ));
+    let exclusions = ExclusionsState {
+        apps: default_apps(),
+        can_save: false,
+    };
     {
         // The dialogs' threads inherit the context; the guard may go once they started.
         let _v6 = CommonControls6::activate();
         shell.open_panel(1, state.clone());
         shell.open_macro_list(folder.path().to_path_buf());
+        shell.open_exclusions(1, exclusions);
     }
     let panel = wait_for_panel();
     let editor = wait_for_dialog(macro_dialog::TITLE);
+    let excluded = wait_for_dialog(exclusions_dialog::TITLE);
     assert_eq!(
         window_text(item(panel, ID_CONFIG_LOCATION)).replace('\n', " "),
         state.config_location()
     );
+    assert_eq!(
+        window_text(item(excluded, exclusions_dialog::ID_NOT_SAVED)).replace('\n', " "),
+        exclusions_dialog::NOT_SAVED
+    );
     let mut checked = 0;
     let mut found = Vec::new();
-    for dialog in [panel, editor] {
+    for dialog in [panel, editor, excluded] {
         for control in children(dialog) {
             if let Some(problems) = text_overflow(control) {
                 checked += 1;
@@ -2025,14 +2104,17 @@ fn the_real_panel_and_editor_leave_windows_nothing_to_wrap() {
         }
     }
     assert_eq!(found, Vec::<String>::new());
-    // The panel's ten check boxes and three labels, and the editor's five labels.
-    assert_eq!(checked, 18);
+    // The panel's ten check boxes, three labels, and five push buttons; the editor's five
+    // labels and four push buttons; the exclusions dialog's three labels and six push buttons.
+    assert_eq!(checked, 18 + 5 + 4 + 3 + 6);
 
     shell.close_panel();
     assert_eq!(next_event(&events), Event::PanelClosed(1));
+    shell.close_exclusions();
+    assert_eq!(next_event(&events), Event::ExclusionsClosed(1));
     shell.close_macro_list();
     wait_until("the dialogs were destroyed", || {
-        !is_window(panel) && !is_window(editor)
+        !is_window(panel) && !is_window(editor) && !is_window(excluded)
     });
 }
 
@@ -2150,6 +2232,169 @@ fn the_real_macro_list_editor_opens_once_reports_saves_and_closes() {
     // Nothing open: closing does nothing.
     shell.close_macro_list();
     assert!(events.try_recv().is_err());
+}
+
+// --- The exclusions dialog (D48) ---------------------------------------------------------------
+
+/// The exclusions state of a tray built by [`start`].
+fn exclusions_state() -> ExclusionsState {
+    tray(Vietnamese).exclusions_state()
+}
+
+/// "Ứng dụng loại trừ…" of the panel opens the exclusions dialog; its edits come through the
+/// inbox, go to the worker as they are, and the dialog is shown the list again; its close
+/// stops the refreshes; the exit closes it after the panel and the macro list editor.
+#[test]
+fn the_exclusions_dialog_opens_from_the_panel_and_its_edits_reach_the_worker() {
+    on_fresh_thread(|| {
+        let log = Log::default();
+        let (services, feed) = FakeServices::new(&log);
+        let add = ExclusionsRequest::Add(ExeName::new("notepad.exe").unwrap());
+        let shell = FakeShell::new(&log)
+            .choosing(&[Some(TrayCommand::Panel.id())])
+            .panel_sending(vec![Event::Panel(PanelRequest::Exclusions)], &feed)
+            .exclusions_sending(
+                vec![
+                    Event::Exclusions(add.clone()),
+                    Event::ExclusionsClosed(1),
+                    Event::Exclusions(ExclusionsRequest::Defaults),
+                ],
+                &feed,
+            );
+        let window = tray_window(
+            "test-tray-exclusions",
+            Vietnamese,
+            shell,
+            services,
+            NO_TICKS,
+        );
+        post_icon(&window, WM_CONTEXTMENU, 5, 6);
+        post(&window, WM_CLOSE, 0, 0);
+        assert_eq!(run_loop_with_watchdog(), LOOP_EXIT_CODE);
+        let calls = log.take();
+        let opened = panel_state(Vietnamese);
+        let state = exclusions_state();
+        let mut expected = vec![
+            Call::OpenPanel(1, Box::new(opened.clone())),
+            Call::OpenExclusions(1, state.clone()),
+            Call::RefreshPanel(Box::new(opened)),
+            Call::Send(1, WorkerCommand::Exclusions(add)),
+            Call::RefreshExclusions(state),
+            // Closed: nothing is shown to it any more, and its edits still go to the worker.
+            Call::Send(2, WorkerCommand::Exclusions(ExclusionsRequest::Defaults)),
+        ];
+        expected.extend(exit_calls());
+        assert_eq!(calls[2..], expected);
+    });
+}
+
+/// Types `typed` into the edit of the exclusions dialog's combo box as the keyboard does.
+fn type_into_combo(dialog: HWND, typed: &str) {
+    // SAFETY: only reads the window list.
+    let edit = unsafe { GetWindow(item(dialog, exclusions_dialog::ID_APP), GW_CHILD) }.unwrap();
+    for unit in typed.encode_utf16() {
+        send_to(edit, WM_CHAR, usize::from(unit), 1);
+    }
+}
+
+fn exclusion_rows(dialog: HWND) -> isize {
+    send_to(
+        item(dialog, exclusions_dialog::ID_LIST),
+        LVM_GETITEMCOUNT,
+        0,
+        0,
+    )
+}
+
+/// The real exclusions dialog through the real shell (off every monitor, never activated):
+/// it shows the state it was opened with; "Thêm" becomes a request in the inbox; a refresh
+/// shows the new list; opening it again shows the new state in the same window; "Đóng" closes
+/// it with its latest number; a new opening shows a new dialog, which the exit closes without
+/// waiting.
+#[test]
+fn the_real_exclusions_dialog_shows_the_state_sends_requests_and_closes() {
+    let (inbox, events) = mpsc::channel();
+    let mut shell = real_shell(inbox);
+    let title = exclusions_dialog::TITLE;
+    let state = exclusions_state();
+    shell.open_exclusions(1, state.clone());
+    let dialog = wait_for_dialog(title);
+    assert_eq!(exclusion_rows(dialog), 4);
+    let mut frame = RECT::default();
+    // SAFETY: `frame` is a valid out buffer.
+    unsafe { GetWindowRect(dialog, &mut frame) }.unwrap();
+    assert!(frame.right < 0 && frame.bottom < 0, "{frame:?}");
+
+    type_into_combo(dialog, "notepad");
+    send_to(item(dialog, exclusions_dialog::ID_ADD), BM_CLICK, 0, 0);
+    assert_eq!(
+        next_event(&events),
+        Event::Exclusions(ExclusionsRequest::Add(ExeName::new("notepad.exe").unwrap()))
+    );
+
+    let mut refreshed = state.clone();
+    refreshed.apps.push(ExeName::new("notepad.exe").unwrap());
+    shell.refresh_exclusions(refreshed.clone());
+    wait_until("the refresh was shown", || exclusion_rows(dialog) == 5);
+
+    // Opened again: the same window shows the new state.
+    let mut again = refreshed.clone();
+    again.apps.truncate(1);
+    shell.open_exclusions(2, again);
+    wait_until("the second opening was shown", || {
+        exclusion_rows(dialog) == 1
+    });
+    assert_eq!(dialog_windows(title), [dialog]);
+
+    // "Đóng" closes it; the close names the latest opening.
+    send_to(item(dialog, IDCANCEL), BM_CLICK, 0, 0);
+    assert_eq!(next_event(&events), Event::ExclusionsClosed(2));
+    wait_until("the dialog was destroyed", || !is_window(dialog));
+    shell.refresh_exclusions(state.clone());
+    shell.close_exclusions();
+    assert!(events.try_recv().is_err());
+
+    // A new opening shows a new dialog; the exit closes it without waiting.
+    shell.open_exclusions(3, state);
+    let dialog = wait_for_dialog(title);
+    assert_eq!(exclusion_rows(dialog), 4);
+    shell.close_exclusions();
+    assert_eq!(next_event(&events), Event::ExclusionsClosed(3));
+    wait_until("the dialog was destroyed", || !is_window(dialog));
+    assert_eq!(dialog_windows(title), []);
+}
+
+/// Opened again at once after the user closed it: a new dialog opens, and only the close of
+/// the old opening is reported, so the tray keeps the new one.
+#[test]
+fn an_exclusions_dialog_opened_again_while_it_closes_opens_a_new_one() {
+    let (inbox, events) = mpsc::channel();
+    let mut shell = real_shell(inbox);
+    let title = exclusions_dialog::TITLE;
+    let state = exclusions_state();
+    shell.open_exclusions(1, state.clone());
+    let dialog = wait_for_dialog(title);
+    // The close box; the handler has agreed once this returns.
+    send_to(dialog, WM_CLOSE, 0, 0);
+    shell.open_exclusions(2, state);
+    assert_eq!(next_event(&events), Event::ExclusionsClosed(1));
+    let mut again = None;
+    wait_until("a new dialog came up", || {
+        again = dialog_windows(title)
+            .into_iter()
+            .find(|&window| window != dialog);
+        again.is_some()
+    });
+    let again = again.unwrap();
+    send_to(again, WM_NULL, 0, 0);
+    assert_eq!(exclusion_rows(again), 4);
+    assert!(events.try_recv().is_err(), "the new dialog stays open");
+    shell.close_exclusions();
+    assert_eq!(next_event(&events), Event::ExclusionsClosed(2));
+    wait_until("the dialogs were destroyed", || {
+        !is_window(dialog) && !is_window(again)
+    });
+    assert_eq!(dialog_windows(title), []);
 }
 
 /// The check boxes the real-panel test reads back are the panel's, in the order of its view.

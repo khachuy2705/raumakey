@@ -36,6 +36,7 @@ fn tray_start(desktop: &FakeDesktop) -> TrayStart {
             .collect(),
         temporary_exe: opened.temporary_exe,
         show_panel: opened.show_panel_on_start,
+        exclusions: opened.exclusions.clone(),
     }
 }
 

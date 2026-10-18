@@ -200,6 +200,8 @@ fn style_constants_have_their_win32_values() {
     assert_eq!(styles::SS_ENDELLIPSIS, 0x4000);
     assert_eq!(styles::SS_PATHELLIPSIS, 0x8000);
     assert_eq!(styles::CBS_DROPDOWNLIST, 0x0003);
+    assert_eq!(styles::CBS_DROPDOWN, 0x0002);
+    assert_eq!(styles::CBS_AUTOHSCROLL, 0x0040);
     assert_eq!(styles::ES_AUTOHSCROLL, 0x0080);
     assert_eq!(styles::LVS_REPORT, 0x0001);
     assert_eq!(styles::LVS_SINGLESEL, 0x0004);
@@ -323,6 +325,15 @@ fn typed_controls_get_their_default_styles() {
             Control::drop_down_list(12, at),
             ControlClass::ComboBox,
             CHILD | styles::WS_TABSTOP | styles::WS_VSCROLL | styles::CBS_DROPDOWNLIST,
+        ),
+        (
+            Control::drop_down_combo(15, at),
+            ControlClass::ComboBox,
+            CHILD
+                | styles::WS_TABSTOP
+                | styles::WS_VSCROLL
+                | styles::CBS_DROPDOWN
+                | styles::CBS_AUTOHSCROLL,
         ),
         (
             Control::edit(13, at),
@@ -620,6 +631,7 @@ fn ids_are_non_zero_and_unique_except_the_static_id_of_labels_and_group_boxes() 
         Control::push_button(STATIC_ID, "a", at),
         Control::default_push_button(STATIC_ID, "a", at),
         Control::drop_down_list(STATIC_ID, at),
+        Control::drop_down_combo(STATIC_ID, at),
         Control::edit(STATIC_ID, at),
         Control::list_view(STATIC_ID, at),
     ] {

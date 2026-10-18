@@ -54,17 +54,31 @@
 //!   (`[macros] when_disabled` included), and the mode hotkey still switches the global mode.
 //!   A hand edit of `[exclusions]` takes effect through [`Settings::poll`] like any other, and
 //!   changes from the tray menu and the panel keep the list, since a commit writes the whole
-//!   document.
-//! - **Changes from the tray menu and the settings panel** ([`Change`], [`Settings::apply`])
-//!   are committed at once. When the commit reports a conflict, because the file was edited
-//!   by hand or by another writer since it was loaded, the file is loaded again, the change is
-//!   applied again on what it holds, and the commit is retried (up to three times). A change
-//!   takes effect even when it cannot be saved; the error says why it was not. Such a change
-//!   is kept: it stays in effect over later reloads, the next commit writes it, and
-//!   [`Settings::save_unsaved`] retries it (the worker does at every poll and before it ends).
-//!   The kept changes are the last of each kind, applied again in the order they were last
-//!   made, which ends as the whole sequence did: "Mặc định" ([`Change::TypingDefaults`])
-//!   resets a switch changed before it, and a switch changed after it stays.
+//!   document. The exclusions dialog (D48) edits the list through
+//!   [`Settings::edit_exclusions`].
+//! - **Changes from the tray menu, the settings panel, and the exclusions dialog**
+//!   ([`Change`] with [`Settings::apply`], [`ExclusionsRequest`] with
+//!   [`Settings::edit_exclusions`]) are committed at once. When the commit reports a conflict,
+//!   because the file was edited by hand or by another writer since it was loaded, the file is
+//!   loaded again, the change is applied again on what it holds, and the commit is retried (up
+//!   to three times). A change takes effect even when it cannot be saved; the error says why
+//!   it was not. Such a change is kept: it stays in effect over later reloads, the next commit
+//!   writes it, and [`Settings::save_unsaved`] retries it (the worker does at every poll and
+//!   before it ends). The kept changes are the last of each setting and the last edit of each
+//!   excluded application, applied again in the order they were last made, which ends as the
+//!   whole sequence did: "Mặc định" of the panel ([`Change::TypingDefaults`]) resets a switch
+//!   changed before it, and a switch changed after it stays; "Mặc định" of the exclusions
+//!   dialog ([`ExclusionsRequest::Defaults`]) replaces every edit of the list before it.
+//!
+//!   An exclusion edit is no [`Change`], by design: a [`Change`] sets one value to a target
+//!   (it is `Copy`, and the tray works out its runtime snapshot itself,
+//!   `crate::tray::with_change`), while an exclusion edit adds an application to a list or
+//!   takes one out, and the tray takes the list and the rules that follow from it from the
+//!   worker's answer. Both go through one private path ([`Settings::edit_exclusions`] and
+//!   [`Settings::apply`] are the same code over an internal edit), so they share every
+//!   guarantee above; the order of the list as a sequence of edits made it may differ from the
+//!   order after they are applied again on a hand-edited file (an application removed and
+//!   added again keeps its place there), which changes nothing that is matched.
 //! - **Hand edits.** [`Settings::poll`] (called every two seconds) notices a file that changed
 //!   on disk, even without a new revision, loads it again, and returns the new snapshots
 //!   ([`Reloaded`]). A file whose last read failed in a way that may pass (another program
@@ -132,6 +146,7 @@ use raumakey_model::host::ExeName;
 use raumakey_model::options::InputMethod;
 use raumakey_model::policy::{AppRule, CompatibilityConfig, RuleAction};
 
+use crate::exclusions::ExclusionsRequest;
 use crate::system::is_inside_folder;
 
 /// How long a commit waits for a store lock, shorter than the store's default of ten seconds
@@ -305,6 +320,53 @@ impl Change {
                 macros.when_disabled = macro_defaults.when_disabled;
                 macros.auto_case = macro_defaults.auto_case;
             }
+        }
+    }
+}
+
+/// An edit of the settings in effect, kept until a commit writes it ([`Settings::apply`],
+/// [`Settings::edit_exclusions`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Edit {
+    /// A change of one setting.
+    Setting(Change),
+    /// An edit of `[exclusions] apps`.
+    Exclusions(ExclusionsRequest),
+}
+
+impl Edit {
+    /// Whether `document` holds what this edit makes of it already.
+    fn holds_in(&self, document: &ConfigDocument) -> bool {
+        match self {
+            Self::Setting(change) => change.holds_in(document),
+            Self::Exclusions(request) => request.holds_in(&document.exclusions.apps),
+        }
+    }
+
+    fn apply_to(&self, document: &mut ConfigDocument) {
+        match self {
+            Self::Setting(change) => change.apply_to(document),
+            Self::Exclusions(request) => request.apply_to(&mut document.exclusions.apps),
+        }
+    }
+
+    /// Whether `earlier`, kept as unsaved before this edit, is needless once this one is
+    /// kept: an earlier change of the same setting, an earlier edit of the same application,
+    /// and, for "Mặc định" of the exclusions, every earlier edit of the list.
+    fn replaces(&self, earlier: &Self) -> bool {
+        use ExclusionsRequest::{Add, Defaults, Remove};
+        match (self, earlier) {
+            (Self::Setting(change), Self::Setting(kept)) => {
+                core::mem::discriminant(change) == core::mem::discriminant(kept)
+            }
+            (Self::Exclusions(Defaults), Self::Exclusions(_)) => true,
+            (
+                Self::Exclusions(Add(exe) | Remove(exe)),
+                Self::Exclusions(Add(kept) | Remove(kept)),
+            ) => exe == kept,
+            (Self::Setting(_), Self::Exclusions(_))
+            | (Self::Exclusions(_), Self::Setting(_))
+            | (Self::Exclusions(Add(_) | Remove(_)), Self::Exclusions(Defaults)) => false,
         }
     }
 }
@@ -501,9 +563,9 @@ pub struct Settings {
     runtime: RuntimeSnapshot,
     macros: Arc<MacroSnapshot>,
     status: Status,
-    /// Changes in effect that no commit has written yet, the last of each setting
-    /// ([`Settings::save_unsaved`]).
-    unsaved: Vec<Change>,
+    /// Edits in effect that no commit has written yet, the last of each setting and of each
+    /// excluded application ([`Settings::save_unsaved`]).
+    unsaved: Vec<Edit>,
 }
 
 impl fmt::Debug for Settings {
@@ -681,6 +743,12 @@ impl Settings {
         self.config.input.enabled
     }
 
+    /// The excluded applications in effect (`[exclusions] apps`, D47), including edits that
+    /// could not be saved, in the order of the list.
+    pub fn excluded_apps(&self) -> &[ExeName] {
+        &self.config.exclusions.apps
+    }
+
     /// The runtime snapshot of the settings in effect; it passes
     /// [`RuntimeSnapshot::validate`].
     pub fn runtime_snapshot(&self) -> &RuntimeSnapshot {
@@ -715,15 +783,33 @@ impl Settings {
     /// [`Settings::save_unsaved`] retries it. Without a folder ([`Location::Unavailable`])
     /// nothing is kept, since nothing can ever be saved.
     pub fn apply(&mut self, change: Change) -> Result<(), ConfigError> {
-        if change.holds_in(&self.config) {
+        self.edit(Edit::Setting(change))
+    }
+
+    /// Makes `request` of the exclusions dialog (D48) on `[exclusions] apps` in effect and
+    /// commits it at once, exactly as [`Settings::apply`] commits a change (see the [module
+    /// documentation](self)): an edit of what is in effect already (adding an application
+    /// that is listed, removing one that is not, the defaults again) writes nothing; the edit
+    /// takes effect in [`Settings::excluded_apps`] and the runtime snapshot (one rule per
+    /// excluded application) even when it cannot be saved, and the errors are those of
+    /// [`Settings::apply`]. An edit that could not be saved is kept, the last of each
+    /// application ("Mặc định" replaces every edit before it), and retried; without a folder
+    /// nothing is kept.
+    pub fn edit_exclusions(&mut self, request: ExclusionsRequest) -> Result<(), ConfigError> {
+        self.edit(Edit::Exclusions(request))
+    }
+
+    /// [`Settings::apply`] and [`Settings::edit_exclusions`].
+    fn edit(&mut self, edit: Edit) -> Result<(), ConfigError> {
+        if edit.holds_in(&self.config) {
             return Ok(());
         }
-        change.apply_to(&mut self.config);
+        edit.apply_to(&mut self.config);
         self.rebuild();
         if self.stores.is_none() {
             return Err(ConfigError::NotFound);
         }
-        self.remember(change);
+        self.remember(edit);
         self.commit_unsaved()
     }
 
@@ -743,20 +829,18 @@ impl Settings {
         self.commit_unsaved().map(|()| true)
     }
 
-    /// Keeps `change` as unsaved, replacing an earlier change of the same kind; the kept
-    /// changes stay in the order they were last made, so applying them again ends as the
-    /// whole sequence of changes did.
-    fn remember(&mut self, change: Change) {
-        let kind = core::mem::discriminant(&change);
-        self.unsaved
-            .retain(|kept| core::mem::discriminant(kept) != kind);
-        self.unsaved.push(change);
+    /// Keeps `edit` as unsaved, replacing the earlier edits it makes needless
+    /// ([`Edit::replaces`]); the kept edits stay in the order they were last made, so applying
+    /// them again ends as the whole sequence of edits did.
+    fn remember(&mut self, edit: Edit) {
+        self.unsaved.retain(|kept| !edit.replaces(kept));
+        self.unsaved.push(edit);
     }
 
-    /// Applies the unsaved changes on the document in effect (after a reload).
+    /// Applies the unsaved edits on the document in effect (after a reload).
     fn apply_unsaved(&mut self) {
-        for change in &self.unsaved {
-            change.apply_to(&mut self.config);
+        for edit in &self.unsaved {
+            edit.apply_to(&mut self.config);
         }
     }
 
@@ -798,10 +882,7 @@ impl Settings {
                     return Err(error);
                 }
             }
-            let holds = self
-                .unsaved
-                .iter()
-                .all(|change| change.holds_in(&self.config));
+            let holds = self.unsaved.iter().all(|edit| edit.holds_in(&self.config));
             self.apply_unsaved();
             self.rebuild();
             if holds {

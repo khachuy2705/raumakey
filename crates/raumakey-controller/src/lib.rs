@@ -27,9 +27,9 @@
 //!   handler over a platform port, and on Windows `typing::TypingHook`, which the run mode
 //!   starts, with its manual check list;
 //! - `desktop` (Windows): the desktop of the run mode and the thin glue (hidden window,
-//!   notification icon, popup menu, message boxes, settings panel, macro list editor, poll
-//!   timer, message loop, hook observer, worker thread), with the manual check list of the
-//!   portable run;
+//!   notification icon, popup menu, message boxes, settings panel, macro list editor,
+//!   exclusions dialog, poll timer, message loop, hook observer, worker thread), with the
+//!   manual check list of the portable run;
 //! - [`install`]: `install` and `uninstall` of the TSF text service, which stays in the
 //!   repository but is not shipped (design §21.1), with dry runs, verification, the
 //!   installation record, and rollback;
@@ -42,6 +42,11 @@
 //! - [`macro_dialog`]: the macro list editor itself: its template, cells, and the decisions
 //!   of its buttons (pure), and on Windows the dialog on a thread of its own
 //!   (`spawn_macro_list`), with its manual check list;
+//! - [`exclusions`]: the excluded applications of `[exclusions]` (D47, D48) as data: the edits
+//!   of the exclusions dialog and the state it shows;
+//! - [`exclusions_dialog`]: the exclusions dialog opened from the panel (D48): its template,
+//!   texts, rows, and what "Thêm" makes of the text typed (pure), and on Windows the dialog on
+//!   a thread of its own (`spawn_exclusions`), with its manual check list;
 //! - [`startup`]: `startup <none|shortcut|elevated-task>`;
 //! - [`convert`]: `convert` of files and of the clipboard;
 //! - [`elevation`]: the elevated restart of the privileged commands;
@@ -84,6 +89,8 @@ pub mod convert;
 #[cfg(windows)]
 pub mod desktop;
 pub mod elevation;
+pub mod exclusions;
+pub mod exclusions_dialog;
 pub mod install;
 pub mod macro_dialog;
 pub mod macro_list;

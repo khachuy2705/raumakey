@@ -8,6 +8,7 @@ use std::cell::Cell;
 use std::path::PathBuf;
 
 use raumakey_config::{ConfigError, StartupMode};
+use raumakey_controller::exclusions::{ExclusionsRequest, ExclusionsState, default_apps};
 use raumakey_controller::notice::{
     Notice, NoticeKind, Question, about_notice, elevated_task_notice, open_error_notice,
     recovery_notice, save_error_notice, startup_error_notice, status_notice, temporary_exe_notice,
@@ -97,6 +98,7 @@ fn start(mode: InputMode) -> TrayStart {
         notices: Vec::new(),
         temporary_exe: false,
         show_panel: false,
+        exclusions: default_apps(),
     }
 }
 
@@ -115,6 +117,7 @@ fn exit_effects() -> Vec<Effect> {
         Effect::DismissNotices,
         Effect::ClosePanel,
         Effect::CloseMacroList,
+        Effect::CloseExclusions,
         Effect::FlushHotkeys,
         Effect::FinishWorker,
         Effect::RemoveIcon,
@@ -239,6 +242,7 @@ fn state(runtime: RuntimeSnapshot, startup: StartupMode) -> SettingsState {
         runtime,
         startup,
         show_panel_on_start: false,
+        exclusions: default_apps(),
     }
 }
 
@@ -1978,9 +1982,10 @@ fn a_dismissed_menu_or_an_unknown_command_changes_nothing() {
     assert!(tray.ends_loop_when_dropped());
 }
 
-/// Exit stops the hook first (typing is plain at once), closes the open notices and the panel
-/// without waiting for them, saves the hotkey changes left in the inbox, lets the worker
-/// finish, and only then removes the icon and ends the loop.
+/// Exit stops the hook first (typing is plain at once), closes the open notices, the panel,
+/// the macro list editor, and the exclusions dialog without waiting for them, saves the
+/// hotkey changes left in the inbox, lets the worker finish, and only then removes the icon
+/// and ends the loop.
 #[test]
 fn exit_stops_the_hook_finishes_the_worker_then_removes_the_icon() {
     let mut tray = running(Vietnamese);
@@ -1992,6 +1997,7 @@ fn exit_stops_the_hook_finishes_the_worker_then_removes_the_icon() {
             Effect::DismissNotices,
             Effect::ClosePanel,
             Effect::CloseMacroList,
+            Effect::CloseExclusions,
             Effect::FlushHotkeys,
             Effect::FinishWorker,
             Effect::RemoveIcon,
@@ -2974,6 +2980,7 @@ fn changes_made_another_way_refresh_the_open_panel() {
             runtime: edited.clone(),
             startup: StartupMode::Shortcut,
             show_panel_on_start: false,
+            exclusions: default_apps(),
         })),
     };
     let effects = tray.on_event(Event::Worker(answer));
@@ -2998,6 +3005,7 @@ fn changes_made_another_way_refresh_the_open_panel() {
             runtime: edited,
             startup: StartupMode::Shortcut,
             show_panel_on_start: true,
+            exclusions: default_apps(),
         })),
     };
     assert_eq!(
@@ -3176,6 +3184,323 @@ fn the_macro_list_editor_is_closed_at_the_exit() {
     assert!(panel < editor && editor < worker_finishes, "{effects:?}");
     assert_eq!(tray.on_event(Event::MacrosSaved), []);
     assert_eq!(tray.flush_hotkeys(vec![Event::MacrosSaved]), []);
+}
+
+// --- The exclusions dialog (D48) ---------------------------------------------------------------
+
+fn open_exclusions(serial: u64, state: ExclusionsState) -> Effect {
+    Effect::OpenExclusions { serial, state }
+}
+
+fn refresh_exclusions(state: ExclusionsState) -> Effect {
+    Effect::RefreshExclusions(state)
+}
+
+fn is_exclusions_refresh(effect: &Effect) -> bool {
+    matches!(effect, Effect::RefreshExclusions(_))
+}
+
+fn exclusions_request(tray: &mut Tray, request: ExclusionsRequest) -> Vec<Effect> {
+    tray.on_event(Event::Exclusions(request))
+}
+
+/// The default exclusions followed by `more`.
+fn defaults_and(more: &[&str]) -> Vec<ExeName> {
+    let mut apps = default_apps();
+    apps.extend(more.iter().map(|name| exe(name)));
+    apps
+}
+
+/// A running tray whose exclusions dialog was opened from the panel (dialog 1).
+fn with_exclusions_dialog(start: TrayStart) -> Tray {
+    let mut tray = with_panel(start);
+    let state = tray.exclusions_state();
+    assert_eq!(
+        panel_request(&mut tray, PanelRequest::Exclusions),
+        [open_exclusions(1, state), refresh(tray.panel_state())]
+    );
+    tray
+}
+
+/// The dialog shows the list in effect and whether its edits are saved.
+#[test]
+fn the_exclusions_state_is_built_from_the_settings_of_the_tray() {
+    let mut settings = start(Vietnamese);
+    settings.exclusions = vec![exe("mstsc.exe"), exe("putty.exe")];
+    let tray = Tray::new(settings, messages());
+    assert_eq!(
+        tray.exclusions_state(),
+        ExclusionsState {
+            apps: vec![exe("mstsc.exe"), exe("putty.exe")],
+            can_save: true,
+        }
+    );
+    let mut nowhere = start(Vietnamese);
+    nowhere.location = Location::Unavailable;
+    nowhere.config_path = None;
+    let tray = Tray::new(nowhere, messages());
+    assert_eq!(
+        tray.exclusions_state(),
+        ExclusionsState {
+            apps: default_apps(),
+            can_save: false,
+        }
+    );
+}
+
+/// "Ứng dụng loại trừ…" of the panel opens the dialog, also without a folder (the edits then
+/// take effect in memory); while it is open, the button brings it to the front with the state
+/// in effect. Each opening is numbered.
+#[test]
+fn the_panel_button_opens_the_exclusions_dialog_or_brings_it_to_the_front() {
+    let mut tray = with_exclusions_dialog(start(Vietnamese));
+    let state = tray.exclusions_state();
+    assert_eq!(
+        panel_request(&mut tray, PanelRequest::Exclusions),
+        [open_exclusions(2, state), refresh(tray.panel_state())]
+    );
+    let mut nowhere = start(Vietnamese);
+    nowhere.location = Location::Unavailable;
+    nowhere.config_path = None;
+    let tray = with_exclusions_dialog(nowhere);
+    assert!(!tray.exclusions_state().can_save);
+}
+
+/// An edit goes to the worker as it is; the tray does not work out the list or the rules
+/// itself (no snapshot for the hook), and the dialog is shown the list in effect again at
+/// once.
+#[test]
+fn an_edit_of_the_dialog_goes_to_the_worker_and_the_dialog_is_shown_the_list_again() {
+    let mut tray = with_exclusions_dialog(start(Vietnamese));
+    let add = ExclusionsRequest::Add(exe("notepad.exe"));
+    assert_eq!(
+        exclusions_request(&mut tray, add.clone()),
+        [
+            worker(1, WorkerCommand::Exclusions(add)),
+            refresh_exclusions(tray.exclusions_state()),
+        ]
+    );
+    assert_eq!(tray.exclusions_state().apps, default_apps());
+    assert_eq!(*tray.runtime(), runtime(Vietnamese));
+    for request in [
+        ExclusionsRequest::Remove(exe("mstsc.exe")),
+        ExclusionsRequest::Defaults,
+    ] {
+        let effects = exclusions_request(&mut tray, request.clone());
+        assert!(
+            matches!(&effects[..], [Effect::Worker { command, .. }, Effect::RefreshExclusions(_)]
+                if *command == WorkerCommand::Exclusions(request.clone())),
+            "{effects:?}"
+        );
+    }
+}
+
+/// The worker's answer brings the new list and its rules: the dialog shows the list, the hook
+/// gets the snapshot, and the icon shows E at once when the application in front is the one
+/// just excluded. A save that worked is no error to tell.
+#[test]
+fn the_answer_brings_the_new_list_to_the_dialog_the_hook_and_the_icon() {
+    let mut tray = with_exclusions_dialog(start(Vietnamese));
+    assert_eq!(tray.on_foreground(app("notepad.exe")), []);
+    let add = ExclusionsRequest::Add(exe("notepad.exe"));
+    exclusions_request(&mut tray, add.clone());
+    let mut excluding = runtime(Vietnamese);
+    excluding.config_revision = 2;
+    excluding
+        .compatibility
+        .rules
+        .insert(0, rule("notepad.exe", None, false));
+    let mut settings = state(excluding.clone(), StartupMode::None);
+    settings.exclusions = defaults_and(&["notepad.exe"]);
+    let effects = tray.on_event(answer(
+        1,
+        Outcome::Exclusions {
+            request: add,
+            result: Ok(Saved::Written),
+        },
+        Some(settings),
+    ));
+    let shown = tray.exclusions_state();
+    assert_eq!(shown.apps, defaults_and(&["notepad.exe"]));
+    assert_eq!(
+        effects,
+        [
+            Effect::UpdateIcon(excluded_icon("notepad.exe")),
+            hook_runtime(excluding),
+            refresh_exclusions(shown),
+        ]
+    );
+}
+
+/// An edit that could not be saved is told once per kind of error, like any change, and the
+/// edit is in effect (the answer carries it).
+#[test]
+fn an_exclusion_edit_that_cannot_be_saved_is_told_once() {
+    let mut tray = with_exclusions_dialog(start(Vietnamese));
+    let request = ExclusionsRequest::Remove(exe("mstsc.exe"));
+    let mut settings = state(runtime(Vietnamese), StartupMode::None);
+    settings.exclusions = default_apps().split_off(1);
+    exclusions_request(&mut tray, request.clone());
+    let failed = |seq| {
+        answer(
+            seq,
+            Outcome::Exclusions {
+                request: request.clone(),
+                result: Err(ConfigError::PermissionDenied),
+            },
+            Some(settings.clone()),
+        )
+    };
+    let effects = tray.on_event(failed(1));
+    assert_eq!(
+        effects,
+        [
+            Effect::Notify(save_error_notice(
+                Some(&config_path()),
+                ConfigError::PermissionDenied
+            )),
+            refresh_exclusions(tray.exclusions_state()),
+        ]
+    );
+    exclusions_request(&mut tray, request.clone());
+    assert_eq!(tray.on_event(failed(2)), [], "told already");
+    // A save that works ends it: the next failure is told again.
+    exclusions_request(&mut tray, request.clone());
+    tray.on_event(answer(
+        3,
+        Outcome::Exclusions {
+            request: request.clone(),
+            result: Ok(Saved::Written),
+        },
+        Some(settings.clone()),
+    ));
+    exclusions_request(&mut tray, request.clone());
+    assert!(matches!(tray.on_event(failed(4))[..], [Effect::Notify(_)]));
+}
+
+/// A hand edit of `[exclusions]` taken over from a poll reaches the open dialog; a poll that
+/// changes nothing refreshes nothing, and nothing is sent once the dialog closed.
+#[test]
+fn a_hand_edit_of_the_exclusions_refreshes_the_open_dialog() {
+    let mut tray = with_exclusions_dialog(start(Vietnamese));
+    send(&mut tray, tick()); // seq 1
+    assert!(
+        !tray
+            .on_event(answer(
+                1,
+                polled(clean()),
+                Some(state(runtime(Vietnamese), StartupMode::None))
+            ))
+            .iter()
+            .any(is_exclusions_refresh)
+    );
+    send(&mut tray, tick()); // seq 2
+    let mut edited = runtime(Vietnamese);
+    edited
+        .compatibility
+        .rules
+        .insert(0, rule("putty.exe", None, false));
+    let mut settings = state(edited.clone(), StartupMode::None);
+    settings.exclusions = vec![exe("putty.exe")];
+    let effects = tray.on_event(answer(2, polled(clean()), Some(settings.clone())));
+    assert_eq!(
+        effects,
+        [
+            hook_runtime(edited),
+            refresh_exclusions(ExclusionsState {
+                apps: vec![exe("putty.exe")],
+                can_save: true,
+            }),
+        ]
+    );
+    // Closed: no refresh, also when the list changes again.
+    assert_eq!(tray.on_event(Event::ExclusionsClosed(1)), []);
+    send(&mut tray, tick()); // seq 3
+    settings.exclusions = Vec::new();
+    settings.runtime = runtime(Vietnamese);
+    assert!(
+        !tray
+            .on_event(answer(3, polled(clean()), Some(settings)))
+            .iter()
+            .any(is_exclusions_refresh)
+    );
+    assert!(tray.exclusions_state().apps.is_empty());
+}
+
+/// The close of a dialog that was replaced meanwhile does not stop the refreshes of the new
+/// one; an edit from a dialog the tray does not know as open still acts.
+#[test]
+fn the_close_of_a_replaced_exclusions_dialog_does_not_stop_the_refreshes() {
+    let mut tray = with_exclusions_dialog(start(Vietnamese));
+    panel_request(&mut tray, PanelRequest::Exclusions); // dialog 2
+    assert_eq!(tray.on_event(Event::ExclusionsClosed(1)), []);
+    let effects = exclusions_request(&mut tray, ExclusionsRequest::Defaults);
+    assert_eq!(
+        effects.last(),
+        Some(&refresh_exclusions(tray.exclusions_state()))
+    );
+    assert_eq!(tray.on_event(Event::ExclusionsClosed(2)), []);
+    assert_eq!(
+        exclusions_request(&mut tray, ExclusionsRequest::Defaults),
+        [worker(
+            2,
+            WorkerCommand::Exclusions(ExclusionsRequest::Defaults)
+        )]
+    );
+}
+
+/// Exit closes the dialog without waiting, after the panel and the macro list editor and
+/// before the worker finishes; nothing acts on it afterwards, and its events left in the inbox
+/// are dropped.
+#[test]
+fn exit_closes_the_exclusions_dialog_and_nothing_follows() {
+    let mut tray = with_exclusions_dialog(start(Vietnamese));
+    let effects = choose(&mut tray, TrayCommand::Exit);
+    assert_eq!(effects, exit_effects());
+    let editor = effects.iter().position(|e| *e == Effect::CloseMacroList);
+    let dialog = effects.iter().position(|e| *e == Effect::CloseExclusions);
+    let worker_finishes = effects.iter().position(|e| *e == Effect::FinishWorker);
+    assert!(editor < dialog && dialog < worker_finishes, "{effects:?}");
+    assert_eq!(
+        exclusions_request(&mut tray, ExclusionsRequest::Defaults),
+        []
+    );
+    assert_eq!(tray.on_event(Event::ExclusionsClosed(1)), []);
+    assert_eq!(panel_request(&mut tray, PanelRequest::Exclusions), []);
+    assert_eq!(
+        tray.flush_hotkeys(vec![
+            Event::Exclusions(ExclusionsRequest::Defaults),
+            Event::ExclusionsClosed(1),
+        ]),
+        []
+    );
+    // Before the start the dialog's events do nothing either.
+    let mut tray = Tray::new(start(Vietnamese), messages());
+    assert_eq!(
+        exclusions_request(&mut tray, ExclusionsRequest::Defaults),
+        []
+    );
+}
+
+/// The dialog's events keep their order among the events, like the panel's.
+#[test]
+fn exclusions_events_keep_their_order_among_the_events() {
+    let events = vec![
+        Event::Exclusions(ExclusionsRequest::Add(exe("a.exe"))),
+        Event::Hotkey(false),
+        Event::ExclusionsClosed(3),
+        Event::Hotkey(true),
+        Event::Exclusions(ExclusionsRequest::Defaults),
+    ];
+    assert_eq!(
+        coalesce(events),
+        [
+            Event::Exclusions(ExclusionsRequest::Add(exe("a.exe"))),
+            Event::ExclusionsClosed(3),
+            Event::Hotkey(true),
+            Event::Exclusions(ExclusionsRequest::Defaults),
+        ]
+    );
 }
 
 /// The panel's icon is the app icon of `raumakey.exe`, as `raumakey-resources` numbers it.

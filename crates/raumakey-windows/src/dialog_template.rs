@@ -116,6 +116,11 @@ pub mod styles {
     pub const SS_PATHELLIPSIS: u32 = 0x8000;
     /// `CBS_DROPDOWNLIST`: a combo box whose text is always one of its items.
     pub const CBS_DROPDOWNLIST: u32 = 0x0003;
+    /// `CBS_DROPDOWN`: a combo box with an edit, whose text the user may type or choose from
+    /// its list.
+    pub const CBS_DROPDOWN: u32 = 0x0002;
+    /// `CBS_AUTOHSCROLL`: the edit of a combo box scrolls horizontally while the user types.
+    pub const CBS_AUTOHSCROLL: u32 = 0x0040;
     /// `ES_AUTOHSCROLL`: the edit scrolls horizontally while the user types.
     pub const ES_AUTOHSCROLL: u32 = 0x0080;
     /// `LVS_REPORT`: a list view with columns.
@@ -137,10 +142,10 @@ pub mod styles {
 }
 
 use styles::{
-    BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_PUSHBUTTON, CBS_DROPDOWNLIST, DS_3DLOOK,
-    DS_CENTER, DS_MODALFRAME, DS_SETFONT, ES_AUTOHSCROLL, LVS_REPORT, LVS_SHOWSELALWAYS,
-    LVS_SINGLESEL, SS_LEFT, WS_BORDER, WS_CAPTION, WS_CHILD, WS_GROUP, WS_POPUP, WS_SYSMENU,
-    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_PUSHBUTTON, CBS_AUTOHSCROLL, CBS_DROPDOWN,
+    CBS_DROPDOWNLIST, DS_3DLOOK, DS_CENTER, DS_MODALFRAME, DS_SETFONT, ES_AUTOHSCROLL, LVS_REPORT,
+    LVS_SHOWSELALWAYS, LVS_SINGLESEL, SS_LEFT, WS_BORDER, WS_CAPTION, WS_CHILD, WS_GROUP, WS_POPUP,
+    WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 /// The style of every dialog: a pop-up window with a title bar, a close box, and the frame of
@@ -333,6 +338,7 @@ enum Kind {
     GroupBox,
     Label,
     DropDownList,
+    DropDownCombo,
     Edit,
     ListView,
 }
@@ -342,7 +348,7 @@ impl Kind {
         match self {
             Self::CheckBox | Self::PushButton | Self::GroupBox => ControlClass::Button,
             Self::Label => ControlClass::Static,
-            Self::DropDownList => ControlClass::ComboBox,
+            Self::DropDownList | Self::DropDownCombo => ControlClass::ComboBox,
             Self::Edit => ControlClass::Edit,
             Self::ListView => ControlClass::ListView,
         }
@@ -439,6 +445,26 @@ impl Control {
             "",
             rect,
             WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
+        )
+    }
+
+    /// An editable drop-down combo box (`CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL`): an
+    /// edit, empty until the dialog's handler fills it, whose text the user may type, paste,
+    /// or choose from the list below it. `rect.cy` is the height of the closed box, as for
+    /// [`drop_down_list`](Self::drop_down_list); the template's height adds
+    /// [`DROPPED_LIST_HEIGHT`] for the list. The dialog reads and sets the edit's text
+    /// through the combo box itself (`WM_GETTEXT`, `WM_SETTEXT`).
+    pub fn drop_down_combo(id: u16, rect: DialogRect) -> Self {
+        let rect = DialogRect {
+            cy: rect.cy.saturating_add(DROPPED_LIST_HEIGHT),
+            ..rect
+        };
+        Self::new(
+            Kind::DropDownCombo,
+            id,
+            "",
+            rect,
+            WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWN | CBS_AUTOHSCROLL,
         )
     }
 

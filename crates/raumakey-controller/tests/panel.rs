@@ -9,11 +9,11 @@ use raumakey_config::StartupMode;
 use raumakey_controller::install::PRODUCT_VERSION;
 use raumakey_controller::panel::{
     CHECK_BOXES, ControlValue, DEFAULTS_QUESTION, ID_AUTO_RESTORE, ID_CLOSE, ID_CONFIG_FILE,
-    ID_CONFIG_LOCATION, ID_DEFAULTS, ID_FREE_MARKING, ID_HINT, ID_MACRO_AUTO_CASE, ID_MACRO_LIST,
-    ID_MACROS, ID_MACROS_WHEN_ENGLISH, ID_METHOD, ID_MODERN_TONE, ID_OPEN_CONFIG, ID_SHOW_ON_START,
-    ID_SPELL_CHECK, ID_STARTUP, ID_VIETNAMESE, OFF_SCREEN, PANEL_REFRESH, PanelRequest, PanelState,
-    PanelView, ValueKind, confirmation, off_screen_panel_template, panel_template, request,
-    value_kind,
+    ID_CONFIG_LOCATION, ID_DEFAULTS, ID_EXCLUSIONS, ID_FREE_MARKING, ID_HINT, ID_MACRO_AUTO_CASE,
+    ID_MACRO_LIST, ID_MACROS, ID_MACROS_WHEN_ENGLISH, ID_METHOD, ID_MODERN_TONE, ID_OPEN_CONFIG,
+    ID_SHOW_ON_START, ID_SPELL_CHECK, ID_STARTUP, ID_VIETNAMESE, OFF_SCREEN, PANEL_REFRESH,
+    PanelRequest, PanelState, PanelView, ValueKind, confirmation, off_screen_panel_template,
+    panel_template, request, value_kind,
 };
 use raumakey_controller::settings::{Change, Location};
 use raumakey_ipc::message::RuntimeSnapshot;
@@ -421,7 +421,8 @@ fn the_method_list_and_its_selection_follow_the_state() {
     assert_eq!(user.view().method, None);
 }
 
-/// Without a folder, "Mở file cấu hình" and "Danh sách gõ tắt…" are disabled.
+/// Without a folder, "Mở file cấu hình" and "Danh sách gõ tắt…" are disabled; "Ứng dụng loại
+/// trừ…" is never disabled (the edits of the exclusions dialog then take effect in memory).
 #[test]
 fn without_a_folder_the_file_buttons_are_disabled() {
     let nowhere = PanelState::new(
@@ -436,6 +437,7 @@ fn without_a_folder_the_file_buttons_are_disabled() {
         view.enabled,
         [(ID_OPEN_CONFIG, false), (ID_MACRO_LIST, false)]
     );
+    assert!(view.enabled.iter().all(|(id, _)| *id != ID_EXCLUSIONS));
     assert!(view.texts.contains(&(
         ID_CONFIG_FILE,
         "Tệp cấu hình: không có, nên các thay đổi không được lưu.".to_owned()
@@ -456,6 +458,7 @@ fn check_boxes_and_the_method_list_hold_values() {
     for id in [
         ID_HINT,
         ID_MACRO_LIST,
+        ID_EXCLUSIONS,
         ID_CONFIG_FILE,
         ID_CONFIG_LOCATION,
         ID_OPEN_CONFIG,
@@ -477,6 +480,7 @@ fn expected_request(id: u16, code: u16, value: Option<ControlValue>) -> Option<P
     match (id, code, value) {
         (ID_OPEN_CONFIG, BN_CLICKED, _) => Some(PanelRequest::OpenConfig),
         (ID_MACRO_LIST, BN_CLICKED, _) => Some(PanelRequest::MacroList),
+        (ID_EXCLUSIONS, BN_CLICKED, _) => Some(PanelRequest::Exclusions),
         (ID_DEFAULTS, BN_CLICKED, _) => Some(C(Change::TypingDefaults)),
         (ID_METHOD, CBN_SELCHANGE, Some(ControlValue::Selected(Some(index)))) => [
             InputMethod::Telex,
@@ -522,6 +526,7 @@ fn every_action_on_every_control_makes_its_request_or_none() {
         ID_MACRO_LIST,
         ID_STARTUP,
         ID_SHOW_ON_START,
+        ID_EXCLUSIONS,
         ID_CONFIG_FILE,
         ID_CONFIG_LOCATION,
         ID_OPEN_CONFIG,
@@ -552,8 +557,8 @@ fn every_action_on_every_control_makes_its_request_or_none() {
             }
         }
     }
-    // 10 check boxes × 2 values, 4 methods, 3 buttons × every value.
-    assert_eq!(made, 20 + 4 + 3 * values.len());
+    // 10 check boxes × 2 values, 4 methods, 4 buttons × every value.
+    assert_eq!(made, 20 + 4 + 4 * values.len());
 }
 
 /// Clicks as the handler reads them: the new state of the box, the new selection.
@@ -609,6 +614,7 @@ fn only_the_defaults_ask_first() {
         PanelRequest::Startup(true),
         PanelRequest::OpenConfig,
         PanelRequest::MacroList,
+        PanelRequest::Exclusions,
     ] {
         assert_eq!(confirmation(other), None, "{other:?}");
     }
@@ -692,6 +698,12 @@ fn expected_controls() -> Vec<(u16, ControlClass, &'static str, u32)> {
             Button,
             "Mở bảng này khi Raumakey chạy",
             check,
+        ),
+        (
+            ID_EXCLUSIONS,
+            Button,
+            "Ứng dụng loại trừ\u{2026}",
+            push | WS_GROUP,
         ),
         (
             STATIC_ID,
@@ -833,6 +845,7 @@ fn arrow_keys_stay_within_each_group_of_check_boxes() {
             vec![ID_MACROS, ID_MACROS_WHEN_ENGLISH, ID_MACRO_AUTO_CASE],
             vec![ID_MACRO_LIST],
             vec![ID_STARTUP, ID_SHOW_ON_START],
+            vec![ID_EXCLUSIONS],
             vec![ID_OPEN_CONFIG, ID_DEFAULTS, ID_CLOSE],
         ]
     );
@@ -968,7 +981,7 @@ fn the_layout_keeps_every_control_inside_its_group_without_overlap() {
                 ID_MACRO_LIST,
             ],
         ),
-        ("Hệ thống", &[ID_STARTUP, ID_SHOW_ON_START]),
+        ("Hệ thống", &[ID_STARTUP, ID_SHOW_ON_START, ID_EXCLUSIONS]),
     ];
     for (caption, ids) in groups {
         let group = boxes

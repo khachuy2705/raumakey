@@ -19,7 +19,11 @@
 //! impersonation on a fresh test thread (which reverts before it ends) of tokens that exist only
 //! in this process (a low-integrity copy of the process token, an AppContainer "lowbox" token
 //! made with `NtCreateLowBoxToken` for a made-up package SID, with no AppContainer profile, or
-//! the anonymous logon), and read-only queries. Anything that sends input, hooks the keyboard or
+//! the anonymous logon), a child `cmd.exe` without a console window that waits on its standard
+//! input until the test ends it, and read-only queries (the top-level windows of the desktop,
+//! the running processes, version resources). Open dialogs are asked for only after a dismiss
+//! or under a `WH_CBT` hook of the dialog's thread that refuses every window, so none is
+//! shown. Anything that sends input, hooks the keyboard or
 //! mouse, touches the real clipboard, writes `HKEY_LOCAL_MACHINE`, registers COM/TSF, schedules
 //! tasks, changes which processes may take the foreground, or shows a menu, a message box, or a
 //! notification icon is `#[ignore]`d and run manually.
@@ -38,6 +42,7 @@ mod dialog;
 mod dialog_box;
 mod dialog_template;
 mod error;
+mod file_dialog;
 mod foreground;
 mod hooks;
 mod icon;
@@ -46,6 +51,7 @@ mod keyboard;
 mod menu;
 mod names;
 mod process;
+mod programs;
 mod registry_model;
 mod security;
 mod shell;
@@ -57,6 +63,8 @@ mod word_wrap;
 // Win32 modules.
 #[cfg(windows)]
 mod com;
+#[cfg(windows)]
+mod dialog_box_choices;
 #[cfg(windows)]
 mod dialog_box_editor;
 #[cfg(windows)]

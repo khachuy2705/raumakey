@@ -417,6 +417,7 @@ mod other {
                 startup: settings.document().system.startup,
                 temporary_exe: false,
                 show_panel_on_start: settings.document().system.show_panel_on_start,
+                exclusions: settings.excluded_apps().to_vec(),
             }
         }
 

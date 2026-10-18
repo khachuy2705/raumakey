@@ -32,6 +32,7 @@
 //! +-------------------------+  +- Hệ thống -------------------------+
 //!                              | [ ] Khởi động cùng Windows         |
 //!                              | [x] Mở bảng này khi Raumakey chạy  |
+//!                              | [Ứng dụng loại trừ…]               |
 //!                              +------------------------------------+
 //! Mọi thay đổi có hiệu lực và được lưu ngay.
 //! Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml
@@ -52,13 +53,16 @@
 //! glue sets them wrapped at spaces to their control's width ([`PanelView::wrapped`]), and
 //! Windows finds nothing left to wrap; no text has a line break of its own. Without a folder
 //! ([`Location::Unavailable`]) the path line says that changes are not saved, the line under
-//! it is empty, and "Mở file cấu hình" and "Danh sách gõ tắt…" are disabled.
+//! it is empty, and "Mở file cấu hình" and "Danh sách gõ tắt…" are disabled. "Ứng dụng loại
+//! trừ…" (D48) opens the exclusions dialog ([`PanelRequest::Exclusions`]) and is never
+//! disabled: without a folder its edits take effect in memory, like the panel's.
 //!
 //! The arrow keys move the focus within a group (`WS_GROUP` starts one), and Windows counts
 //! labels and group boxes as members (`GetNextDlgGroupItem`). So every group holds check
 //! boxes only, the method list alone, push buttons only, or texts only: an arrow key on a
 //! check box never reaches the method list, where the next arrow would change (and save) the
-//! method, nor a button or a label.
+//! method, nor a button or a label ("Ứng dụng loại trừ…" under the check boxes of "Hệ
+//! thống" starts a group of its own).
 //!
 //! Strings shown to the user are new Raumakey strings in Vietnamese (design §22; not taken
 //! from any other input method). Nothing here holds keystrokes, document text, or macro text:
@@ -106,6 +110,8 @@ pub const ID_MACRO_LIST: u16 = 123;
 pub const ID_STARTUP: u16 = 130;
 /// "Mở bảng này khi Raumakey chạy" (check box).
 pub const ID_SHOW_ON_START: u16 = 131;
+/// "Ứng dụng loại trừ…" (button, D48).
+pub const ID_EXCLUSIONS: u16 = 132;
 /// The path of `raumakey.toml` (label, shortened in its middle).
 pub const ID_CONFIG_FILE: u16 = 140;
 /// "Mở file cấu hình" (button).
@@ -177,7 +183,7 @@ pub const PANEL_REFRESH: AppMessage = match AppMessage::new(1) {
 /// Width of the panel in dialog units.
 pub const PANEL_WIDTH: i16 = 330;
 /// Height of the panel in dialog units.
-pub const PANEL_HEIGHT: i16 = 220;
+pub const PANEL_HEIGHT: i16 = 238;
 /// Where [`off_screen_panel_template`] places the panel (both coordinates), far off every
 /// monitor.
 pub const OFF_SCREEN: i16 = -30_000;
@@ -367,6 +373,9 @@ pub enum PanelRequest {
     OpenConfig,
     /// "Danh sách gõ tắt…": open the macro list (D44).
     MacroList,
+    /// "Ứng dụng loại trừ…": open the exclusions dialog (D48), also when nothing can be saved
+    /// (its edits then take effect until Raumakey exits).
+    Exclusions,
 }
 
 /// The kind of value a control holds, which the glue reads after the user changed it.
@@ -408,6 +417,7 @@ pub fn request(id: u16, code: u16, value: Option<ControlValue>) -> Option<PanelR
     match (id, code) {
         (ID_OPEN_CONFIG, BN_CLICKED) => Some(PanelRequest::OpenConfig),
         (ID_MACRO_LIST, BN_CLICKED) => Some(PanelRequest::MacroList),
+        (ID_EXCLUSIONS, BN_CLICKED) => Some(PanelRequest::Exclusions),
         (ID_DEFAULTS, BN_CLICKED) => Some(Set(Change::TypingDefaults)),
         (ID_METHOD, CBN_SELCHANGE) => match value {
             Some(ControlValue::Selected(Some(index))) => METHODS
@@ -515,7 +525,7 @@ pub fn panel_template() -> DialogTemplate {
         .with_control(
             Control::push_button(ID_MACRO_LIST, "Danh sách gõ tắt…", rect(176, 84, 84, 14)).group(),
         )
-        .with_control(Control::group_box(STATIC_ID, "Hệ thống", rect(169, 110, 154, 42)).group())
+        .with_control(Control::group_box(STATIC_ID, "Hệ thống", rect(169, 110, 154, 60)).group())
         .with_control(
             Control::check_box(
                 ID_STARTUP,
@@ -530,33 +540,37 @@ pub fn panel_template() -> DialogTemplate {
             rect(176, 136, 140, 10),
         ))
         .with_control(
+            Control::push_button(ID_EXCLUSIONS, "Ứng dụng loại trừ…", rect(176, 150, 84, 14))
+                .group(),
+        )
+        .with_control(
             Control::label(
                 STATIC_ID,
                 "Mọi thay đổi có hiệu lực và được lưu ngay.",
-                rect(7, 158, 316, 8),
+                rect(7, 176, 316, 8),
             )
             .group(),
         )
         .with_control(
-            Control::label(ID_CONFIG_FILE, "", rect(7, 169, 316, 8))
+            Control::label(ID_CONFIG_FILE, "", rect(7, 187, 316, 8))
                 .with_style(styles::SS_NOPREFIX | styles::SS_PATHELLIPSIS),
         )
         .with_control(
-            Control::label(ID_CONFIG_LOCATION, "", rect(7, 179, 316, 16))
+            Control::label(ID_CONFIG_LOCATION, "", rect(7, 197, 316, 16))
                 .with_style(styles::SS_NOPREFIX),
         )
         .with_control(
-            Control::push_button(ID_OPEN_CONFIG, "Mở file cấu hình", rect(7, 199, 76, 14)).group(),
+            Control::push_button(ID_OPEN_CONFIG, "Mở file cấu hình", rect(7, 217, 76, 14)).group(),
         )
         .with_control(Control::push_button(
             ID_DEFAULTS,
             "Mặc định",
-            rect(87, 199, 56, 14),
+            rect(87, 217, 56, 14),
         ))
         .with_control(Control::default_push_button(
             ID_CLOSE,
             "Đóng",
-            rect(267, 199, 56, 14),
+            rect(267, 217, 56, 14),
         ))
 }
 

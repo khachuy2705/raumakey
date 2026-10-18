@@ -11,6 +11,7 @@ use raumakey_config::{
     AtomicStore, ConfigDocument, ConfigError, ExclusionsSection, FieldIssue, IssueReason,
     StartupMode, StdReplacer, StoreDocument, is_writable_dir,
 };
+use raumakey_controller::exclusions::ExclusionsRequest;
 #[cfg(windows)]
 use raumakey_controller::settings::is_protected_dir;
 use raumakey_controller::settings::{
@@ -1731,6 +1732,292 @@ fn nothing_is_kept_for_a_retry_without_a_folder() {
     );
     assert!(!settings.has_unsaved());
     assert_eq!(settings.save_unsaved(), Ok(false));
+}
+
+// --- Edits of the exclusions dialog (D48) ---------------------------------------------------
+
+fn exe(name: &str) -> ExeName {
+    ExeName::new(name).unwrap()
+}
+
+fn exes(names: &[&str]) -> Vec<ExeName> {
+    names.iter().map(|name| exe(name)).collect()
+}
+
+/// The default exclusions followed by `more`.
+fn defaults_and(more: &[&str]) -> Vec<ExeName> {
+    let mut apps = ExclusionsSection::default().apps;
+    apps.extend(exes(more));
+    apps
+}
+
+/// Each edit of the exclusions dialog takes effect in the list and the runtime snapshot and is
+/// committed at once; an edit of what is in effect already writes nothing.
+#[test]
+fn an_exclusion_edit_takes_effect_and_is_committed_at_once() {
+    let folders = Folders::new();
+    let (mut settings, _) = folders.open();
+    assert_eq!(settings.excluded_apps(), &defaults_and(&[])[..]);
+
+    settings
+        .edit_exclusions(ExclusionsRequest::Add(exe("notepad.exe")))
+        .unwrap();
+    let document = stored(&folders.config());
+    assert_eq!(document.revision, 2);
+    assert_eq!(document.exclusions.apps, defaults_and(&["notepad.exe"]));
+    assert_eq!(settings.document(), &document);
+    assert_eq!(
+        settings.excluded_apps(),
+        &defaults_and(&["notepad.exe"])[..]
+    );
+    let runtime = settings.runtime_snapshot();
+    assert_eq!(
+        runtime.compatibility,
+        with_exclusions(
+            &[
+                "mstsc.exe",
+                "msrdc.exe",
+                "rdcman.exe",
+                "vmconnect.exe",
+                "notepad.exe"
+            ],
+            CompatibilityConfig::defaults_v1()
+        )
+    );
+    assert!(!policy_of(runtime, "notepad.exe", None).vietnamese_allowed);
+    assert_eq!(runtime.config_revision, 2);
+    assert_consumable(&settings);
+
+    // Listed already: nothing is written.
+    settings
+        .edit_exclusions(ExclusionsRequest::Add(exe("notepad.exe")))
+        .unwrap();
+    assert_eq!(stored(&folders.config()).revision, 2);
+
+    settings
+        .edit_exclusions(ExclusionsRequest::Remove(exe("mstsc.exe")))
+        .unwrap();
+    let document = stored(&folders.config());
+    assert_eq!(document.revision, 3);
+    assert_eq!(
+        document.exclusions.apps,
+        exes(&["msrdc.exe", "rdcman.exe", "vmconnect.exe", "notepad.exe"])
+    );
+    assert!(policy_of(settings.runtime_snapshot(), "mstsc.exe", None).vietnamese_allowed);
+    settings
+        .edit_exclusions(ExclusionsRequest::Remove(exe("mstsc.exe")))
+        .unwrap();
+    assert_eq!(stored(&folders.config()).revision, 3, "not listed: nothing");
+
+    settings
+        .edit_exclusions(ExclusionsRequest::Defaults)
+        .unwrap();
+    let document = stored(&folders.config());
+    assert_eq!(document.revision, 4);
+    assert_eq!(document.exclusions.apps, defaults_and(&[]));
+    settings
+        .edit_exclusions(ExclusionsRequest::Defaults)
+        .unwrap();
+    assert_eq!(
+        stored(&folders.config()).revision,
+        4,
+        "the defaults already"
+    );
+    assert!(settings.poll().is_none());
+}
+
+/// Removing every application leaves an empty list, which is written as `apps = []`: it
+/// excludes nothing, also once the file is read again, and the rules of the app-rules file
+/// (here the D13 defaults) stay alone.
+#[test]
+fn removing_every_application_writes_an_empty_list() {
+    let folders = Folders::new();
+    let (mut settings, _) = folders.open();
+    for app in ExclusionsSection::default().apps {
+        settings
+            .edit_exclusions(ExclusionsRequest::Remove(app))
+            .unwrap();
+    }
+    assert!(settings.excluded_apps().is_empty());
+    assert!(
+        fs::read_to_string(folders.config())
+            .unwrap()
+            .contains("apps = []")
+    );
+    assert!(stored(&folders.config()).exclusions.apps.is_empty());
+    assert_eq!(
+        settings.runtime_snapshot().compatibility,
+        CompatibilityConfig::defaults_v1()
+    );
+    let (reopened, _) = folders.open();
+    assert!(reopened.excluded_apps().is_empty());
+}
+
+/// An edit that cannot be saved stays in effect, survives a hand edit that fixes the file (on
+/// top of it), and the retry writes it, as every change does.
+#[test]
+fn an_exclusion_edit_that_cannot_be_saved_is_kept_and_saved_by_a_retry() {
+    let folders = Folders::new();
+    fs::write(folders.config(), "[[[ damaged").unwrap();
+    let (mut settings, _) = folders.open();
+    assert_eq!(
+        settings.edit_exclusions(ExclusionsRequest::Add(exe("notepad.exe"))),
+        Err(ConfigError::Corrupt)
+    );
+    assert!(settings.has_unsaved());
+    assert_eq!(
+        settings.excluded_apps(),
+        &defaults_and(&["notepad.exe"])[..]
+    );
+    assert!(!policy_of(settings.runtime_snapshot(), "notepad.exe", None).vietnamese_allowed);
+    assert_eq!(settings.save_unsaved(), Err(ConfigError::Corrupt));
+    assert_eq!(fs::read(folders.config()).unwrap(), b"[[[ damaged");
+
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 3\n[exclusions]\napps = [\"putty.exe\"]\n",
+    )
+    .unwrap();
+    let runtime = settings.poll().unwrap().runtime.unwrap();
+    assert_eq!(
+        settings.excluded_apps(),
+        &exes(&["putty.exe", "notepad.exe"])[..]
+    );
+    assert_eq!(
+        runtime.compatibility,
+        with_exclusions(
+            &["putty.exe", "notepad.exe"],
+            CompatibilityConfig::defaults_v1()
+        )
+    );
+    assert_eq!(settings.save_unsaved(), Ok(true));
+    assert!(!settings.has_unsaved());
+    let document = stored(&folders.config());
+    assert_eq!(document.revision, 4);
+    assert_eq!(
+        document.exclusions.apps,
+        exes(&["putty.exe", "notepad.exe"])
+    );
+}
+
+/// Unsaved edits are kept per application, the last of each, and "Mặc định" replaces every
+/// edit before it; together with an unsaved setting, they end as the whole sequence did once
+/// they are applied again on a hand-edited file.
+#[test]
+fn unsaved_exclusion_edits_are_kept_per_application_in_their_order() {
+    let folders = Folders::new();
+    fs::write(folders.config(), "[[[ damaged").unwrap();
+    let (mut settings, _) = folders.open();
+    for request in [
+        ExclusionsRequest::Add(exe("a.exe")),
+        ExclusionsRequest::Add(exe("b.exe")),
+        ExclusionsRequest::Remove(exe("a.exe")),
+        ExclusionsRequest::Remove(exe("mstsc.exe")),
+    ] {
+        assert!(settings.edit_exclusions(request).is_err());
+    }
+    assert!(settings.apply(Change::SpellCheck(false)).is_err());
+    let in_effect = exes(&["msrdc.exe", "rdcman.exe", "vmconnect.exe", "b.exe"]);
+    assert_eq!(settings.excluded_apps(), &in_effect[..]);
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 1\n[exclusions]\napps = [\"mstsc.exe\", \"putty.exe\", \
+         \"a.exe\"]\n",
+    )
+    .unwrap();
+    settings.poll().unwrap();
+    assert_eq!(settings.excluded_apps(), &exes(&["putty.exe", "b.exe"])[..]);
+    assert!(!settings.runtime_snapshot().options.spell_check);
+    assert_eq!(settings.save_unsaved(), Ok(true));
+    let document = stored(&folders.config());
+    assert_eq!(document.exclusions.apps, exes(&["putty.exe", "b.exe"]));
+    assert!(!document.input.spell_check);
+
+    // "Mặc định" replaces the edits before it; an edit after it stays.
+    fs::write(folders.config(), "[[[ damaged").unwrap();
+    assert_eq!(
+        settings.poll().unwrap().runtime,
+        None,
+        "the last good settings stay"
+    );
+    for request in [
+        ExclusionsRequest::Add(exe("c.exe")),
+        ExclusionsRequest::Defaults,
+        ExclusionsRequest::Add(exe("d.exe")),
+    ] {
+        assert!(settings.edit_exclusions(request).is_err());
+    }
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 5\n[exclusions]\napps = [\"putty.exe\", \"c.exe\"]\n",
+    )
+    .unwrap();
+    settings.poll().unwrap();
+    assert_eq!(settings.excluded_apps(), &defaults_and(&["d.exe"])[..]);
+    assert_eq!(settings.save_unsaved(), Ok(true));
+    assert_eq!(
+        stored(&folders.config()).exclusions.apps,
+        defaults_and(&["d.exe"])
+    );
+}
+
+/// The file was edited by hand after the settings last saw it: the commit reports a conflict,
+/// the file is loaded again, and the edit is made again on what it holds.
+#[test]
+fn an_exclusion_edit_over_an_unseen_hand_edit_keeps_the_edit() {
+    let folders = Folders::new();
+    let (mut settings, _) = folders.open();
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 1\n[input]\nmodern_tone = true\n[exclusions]\n\
+         apps = [\"putty.exe\"]\n",
+    )
+    .unwrap();
+    settings
+        .edit_exclusions(ExclusionsRequest::Add(exe("notepad.exe")))
+        .unwrap();
+    let document = stored(&folders.config());
+    assert_eq!(document.revision, 2);
+    assert!(document.input.modern_tone);
+    assert_eq!(
+        document.exclusions.apps,
+        exes(&["putty.exe", "notepad.exe"])
+    );
+    assert_eq!(settings.document(), &document);
+    assert!(settings.poll().is_none());
+    // An edit that the hand edit holds already writes nothing more.
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 2\n[exclusions]\napps = [\"putty.exe\"]\n",
+    )
+    .unwrap();
+    settings
+        .edit_exclusions(ExclusionsRequest::Remove(exe("notepad.exe")))
+        .unwrap();
+    assert_eq!(settings.excluded_apps(), &exes(&["putty.exe"])[..]);
+    assert!(!settings.has_unsaved());
+}
+
+/// Without a folder the edits take effect in memory, and nothing is kept for a retry.
+#[test]
+fn exclusion_edits_without_a_folder_take_effect_in_memory() {
+    let (mut settings, report) = Settings::open(Path::new(""), None, &|_| true, &|_| false);
+    assert_eq!(report.location, Location::Unavailable);
+    assert_eq!(
+        settings.edit_exclusions(ExclusionsRequest::Add(exe("notepad.exe"))),
+        Err(ConfigError::NotFound)
+    );
+    assert!(!settings.has_unsaved());
+    assert_eq!(
+        settings.excluded_apps(),
+        &defaults_and(&["notepad.exe"])[..]
+    );
+    assert!(!policy_of(settings.runtime_snapshot(), "notepad.exe", None).vietnamese_allowed);
+    assert_eq!(
+        settings.edit_exclusions(ExclusionsRequest::Add(exe("notepad.exe"))),
+        Ok(()),
+        "in effect already"
+    );
 }
 
 /// A file that another program holds open for a moment: the change is saved by the retry once

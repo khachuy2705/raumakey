@@ -1,7 +1,7 @@
 //! The run mode on Windows: the [`Desktop`] of [`crate::run`] and the glue that carries out
 //! the [`Effect`]s of the tray state machine ([`crate::tray`]) on the real notification icon,
-//! popup menu, message boxes, settings panel, typing hook, and settings worker (plan §10.2,
-//! D38–D47; design §21, §22; matrix #58).
+//! popup menu, message boxes, settings panel, macro list editor, exclusions dialog, typing
+//! hook, and settings worker (plan §10.2, D38–D48; design §21, §22; matrix #58).
 //!
 //! This module is thin: every decision is made in `crate::run`, `crate::tray`,
 //! `crate::panel`, `crate::worker`, and `crate::notice`, which are tested on every host, and
@@ -86,6 +86,20 @@
 //!   inbox, then [`WAKE`] (the tray has the worker poll at once); its close needs no message.
 //!   An editor whose thread cannot start opens nothing, without a notice: choosing it again
 //!   tries again.
+//! - [`ShellTray`] also shows one exclusions dialog at a time (`crate::exclusions_dialog`, D48:
+//!   "Ứng dụng loại trừ…" of the panel), as it shows the panel: a dialog box without owner on
+//!   a thread of its own (`spawn_exclusions_with`, centered, its questions in message boxes
+//!   and its "Duyệt…" in the Open dialog, both owned by it, the running programs read with
+//!   `RunningPrograms`), sharing the state to show with the tray's thread (the same shared
+//!   state as the panel's: a mutex, never held across a Win32 call) and refreshed with its
+//!   private message ([`EXCLUSIONS_REFRESH`]); its `init` posts that message to itself, as the
+//!   panel's does. Its edits arrive as [`Event::Exclusions`] in the inbox, then [`WAKE`]; its
+//!   close as [`Event::ExclusionsClosed`] with the number of its latest opening, read and
+//!   marked together; it counts as closed from the moment its handler agrees to close, and
+//!   once it was up and its window takes no message any more, so an opening then starts a new
+//!   dialog; a new number is given to the open dialog only once a message reached it. A dialog
+//!   whose thread cannot start opens nothing, without a notice: the tray learns it as a close,
+//!   and choosing it again tries again.
 //!
 //! # Threads and messages
 //!
@@ -97,15 +111,16 @@
 //! | one per notice (`raumakey_windows::dialog::spawn_message_box`) | a message box without owner | a "yes" as [`Event::Answered`] into the inbox, then [`WAKE`] |
 //! | the settings panel, while it is open (`raumakey_windows::dialog_box::spawn_dialog`) | a dialog box without owner, its "Mặc định" question | requests as [`Event::Panel`] and its close as [`Event::PanelClosed`] into the inbox, then [`WAKE`]; the tray answers through the shared state and [`PANEL_REFRESH`] |
 //! | the macro list editor, while it is open (`crate::macro_dialog`) | a dialog box without owner, its message boxes, its own store of `raumakey-macros.toml` | each save as [`Event::MacrosSaved`] into the inbox, then [`WAKE`] |
+//! | the exclusions dialog, while it is open (`crate::exclusions_dialog`) | a dialog box without owner, its message boxes and Open dialog, its reads of the running programs and their version resources | edits as [`Event::Exclusions`] and its close as [`Event::ExclusionsClosed`] into the inbox, then [`WAKE`]; the tray answers through the shared state and [`EXCLUSIONS_REFRESH`] |
 //!
 //! The tray thread sends the worker numbered commands (`WorkerThread::send`) and hands the
 //! hook modes and runtime snapshots (`TypingHook::update`); the worker hands the hook macro
 //! snapshots. The window handler does no file, network, or engine work: `Settings::apply`,
-//! `poll`, and `recover` may wait up to two seconds for a store lock. Reading the application
-//! in front (a few window-manager reads and a query of the process's image name) takes no
-//! lock and waits for nothing. The observer runs
+//! `edit_exclusions`, `poll`, and `recover` may wait up to two seconds for a store lock.
+//! Reading the application in front (a few window-manager reads and a query of the process's
+//! image name) takes no lock and waits for nothing. The observer runs
 //! inside the hook callback and only sends into a channel and posts a message. The tray thread
-//! never waits for the panel or the editor.
+//! never waits for the panel, the editor, or the exclusions dialog.
 //!
 //! A posted message that arrives while the menu's modal loop runs inside the handler gets the
 //! default processing and is lost (`raumakey_windows::window`), so the events travel in the
@@ -119,19 +134,21 @@
 //! # Exit and failures
 //!
 //! Exit, `WM_CLOSE`, and the end of the session stop the hook first (typing is plain at
-//! once), close the open message boxes, the panel, and the macro list editor without waiting
-//! for them (the editor without saving, by design), save the hotkey changes left in the
+//! once), close the open message boxes, the panel, the macro list editor, and the exclusions
+//! dialog without waiting for them (the editor without saving, by design; the edits of the
+//! exclusions dialog went to the worker as they came), save the hotkey changes left in the
 //! inbox, let the worker finish the commands sent and save what is
 //! unsaved (at most [`WORKER_FINISH_TIMEOUT`], so a change made just before is saved), remove
 //! the icon, and end the loop with 0, all inside the message: after `WM_ENDSESSION` the
 //! process may end at any time. Any other way out stops the hook too: when the window is
 //! destroyed while the menu is open (a `WM_CLOSE` reaches `DefWindowProcW` during its modal
 //! loop), the handler takes the same steps when it is freed; when the tray cannot start, the
-//! run mode stops the hook. A box, panel, or editor that is still open when the process ends
-//! goes with it. A panic in the handler is contained by the window procedure's guard
-//! (`raumakey_windows::window`); one in the observer by the hook handler's guard; one in a
-//! worker command by the worker; one in a box's callback on its thread; one in the panel's or
-//! the editor's handler by the dialog procedure's guard (`raumakey_windows::dialog_box`).
+//! run mode stops the hook. A box, panel, editor, or exclusions dialog that is still open when
+//! the process ends goes with it. A panic in the handler is contained by the window
+//! procedure's guard (`raumakey_windows::window`); one in the observer by the hook handler's
+//! guard; one in a worker command by the worker; one in a box's callback on its thread; one in
+//! the handler of the panel, the editor, or the exclusions dialog by the dialog procedure's
+//! guard (`raumakey_windows::dialog_box`).
 //!
 //! If the icon cannot be added (Explorer has not created the taskbar yet, as may happen to the
 //! elevated logon task), or a change of it fails (Explorer went away without
@@ -148,12 +165,13 @@
 //! that a double-click on the icon opens the panel and keeps the mode, and that the glue reads
 //! the application in front at the start and at each [`FOREGROUND`] (the fake shell answers;
 //! the tests install no foreground watcher and post [`FOREGROUND`] themselves), and they run
-//! the real panel and the real macro list editor through [`ShellTray`] in its
-//! test variant ([`ShellTray::with_off_screen_dialogs`]: off every monitor, never activated
-//! or brought to the front, the editor's questions answered "no" without a box), driven with
+//! the real panel, the real macro list editor, and the real exclusions dialog through
+//! [`ShellTray`] in its test variant ([`ShellTray::with_off_screen_dialogs`]: off every
+//! monitor, never activated or brought to the front, the questions of the editor and of the
+//! exclusions dialog answered "no" without a box, no Open dialog), driven with
 //! `SendMessageW`. Nothing is broadcast in tests. A successful build and these tests are no
-//! evidence that the real icon, menu, panel, editor, hook, files, and broadcasts behave on
-//! Windows.
+//! evidence that the real icon, menu, panel, editor, exclusions dialog, hook, files, and
+//! broadcasts behave on Windows.
 //!
 //! # Manual check list
 //!
@@ -334,6 +352,38 @@
 //!     `"notepad.exe"` to `apps`, and save, Notepad staying in front: within about 2 s the
 //!     icon shows E with "trong notepad.exe", and typing in Notepad stays English. Remove it
 //!     and save: within about 2 s V again, and Vietnamese typing works in Notepad.
+//!
+//! The exclusions dialog (D48; its own check list is in `crate::exclusions_dialog`, items 1–7):
+//!
+//! 37. **From the panel:** "Ứng dụng loại trừ…" (under the check boxes of "Hệ thống", reached
+//!     with Tab, never with an arrow key from a check box) opens "Raumakey – Ứng dụng loại
+//!     trừ" with the four defaults; click it again (or with the dialog minimized or behind the
+//!     panel): the same dialog comes to the front, no second one. Close it and click again at
+//!     once: a new one opens. Then go through items 1–6 of the dialog's list.
+//! 38. **Typed name:** start Notepad; in the dialog type `notepad` and press Enter: the row
+//!     `notepad.exe` appears and is selected, and `raumakey.toml` (reload it in Notepad) has
+//!     `"notepad.exe"` in `apps`. Bring Notepad to the front: the icon shows E within a moment,
+//!     with "trong notepad.exe", and `tieengs` stays `tieengs`. Select the row and "Xoá": the
+//!     row goes, the file follows, and in Notepad the icon shows V again and Vietnamese typing
+//!     works.
+//! 39. **From the list and with "Duyệt…":** choose Notepad in the list of running
+//!     applications and "Thêm": the same as 38. "Duyệt…", go to `C:\Windows\System32`, choose
+//!     `mspaint.exe`: its path is in the edit; "Thêm" adds `mspaint.exe`.
+//! 40. **"Mặc định":** with a list changed, "Mặc định", "Có": the four defaults are back, in
+//!     the file too.
+//! 41. **Hand edit while open:** with the dialog open, add `"putty.exe"` to `apps` by hand and
+//!     save: within about 2 s the dialog lists it.
+//! 42. **No folder:** with no usable folder (item 29), the dialog says "Không có thư mục để lưu
+//!     cấu hình, nên thay đổi chỉ có hiệu lực tới khi Raumakey thoát."; an added application
+//!     takes effect (the icon shows E in it) and is gone after a restart.
+//! 43. **Exit with the dialog open:** with the dialog open, and with its question box or its
+//!     Open dialog open, choose "Thoát" and sign out: each time the dialog and its box close
+//!     at once with the controller; no hang, and every edit made before is in the file.
+//! 44. **Unsaved edit:** with `raumakey.toml` made read-only, add an application: one warning
+//!     box says it cannot be saved, the row is listed and the icon follows; make the file
+//!     writable again: within about 2 s the file has it.
+//! 45. **DPI:** at 150 % (and dragged between monitors of different scale) the dialog's texts
+//!     are sharp and whole, "Ứng dụng loại trừ…" of the panel included.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -369,6 +419,10 @@ use raumakey_windows::window::{
 };
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 
+use crate::exclusions::{ExclusionsRequest, ExclusionsState};
+use crate::exclusions_dialog::{
+    EXCLUSIONS_REFRESH, ExclusionsLink, RunningPrograms, spawn_exclusions_with,
+};
 use crate::macro_dialog::{MessageBoxes, Placement, Prompt, Prompter, spawn_macro_list_with};
 use crate::notice::{Notice, NoticeKind, panel_error_notice};
 use crate::panel::{
@@ -457,6 +511,7 @@ impl Desktop for WinDesktop {
             startup: system.startup,
             temporary_exe: is_temporary_path(&self.exe),
             show_panel_on_start: system.show_panel_on_start,
+            exclusions: settings.excluded_apps().to_vec(),
         };
         self.settings = Some(settings);
         opened
@@ -721,6 +776,18 @@ pub trait TrayShell {
     /// Closes the open macro list editor, if any, without waiting and without saving.
     fn close_macro_list(&mut self);
 
+    /// Opens the exclusions dialog showing `state` (D48), on a thread of its own; when one is
+    /// open, shows `state` in it and brings it to the front instead. The dialog open
+    /// afterwards carries `serial`: its close arrives in the inbox as
+    /// [`Event::ExclusionsClosed`] with it, and its edits as [`Event::Exclusions`].
+    fn open_exclusions(&mut self, serial: u64, state: ExclusionsState);
+
+    /// Shows `state` in the open exclusions dialog, if one is open, without waiting.
+    fn refresh_exclusions(&mut self, state: ExclusionsState);
+
+    /// Closes the open exclusions dialog, if any, without waiting.
+    fn close_exclusions(&mut self);
+
     /// The application of window `window` (`None`: of the window in the foreground now): the
     /// executable of its process and the class it is known by ([`ForegroundApp::new`]: of the
     /// window with the keyboard focus in its thread, else its own, as the typing hook knows
@@ -836,6 +903,11 @@ impl<S: TrayShell, V: TrayServices> TrayWindow<S, V> {
                 Effect::ClosePanel => self.shell.close_panel(),
                 Effect::OpenMacroList(folder) => self.shell.open_macro_list(folder),
                 Effect::CloseMacroList => self.shell.close_macro_list(),
+                Effect::OpenExclusions { serial, state } => {
+                    self.shell.open_exclusions(serial, state)
+                }
+                Effect::RefreshExclusions(state) => self.shell.refresh_exclusions(state),
+                Effect::CloseExclusions => self.shell.close_exclusions(),
             }
         }
     }
@@ -893,6 +965,7 @@ impl<S: TrayShell, V: TrayServices> Drop for TrayWindow<S, V> {
             self.shell.dismiss_notices();
             self.shell.close_panel();
             self.shell.close_macro_list();
+            self.shell.close_exclusions();
             let events = self.take_events();
             for effect in self.tray.flush_hotkeys(events) {
                 if let Effect::Worker { seq, command } = effect {
@@ -1085,21 +1158,23 @@ pub struct ShellTray<A: NotifyArea = WinNotifyArea> {
     /// The notices shown so far that may still be open.
     notices: Vec<DetachedMessageBox>,
     /// The panel opened last, which may still be open.
-    panel: Option<OpenPanel>,
+    panel: Option<OpenDialog<PanelState>>,
     /// The macro list editor opened last, which may still be open.
     macro_list: Option<OpenEditor>,
-    /// The panel and the editor open off every monitor, never activated, and the editor asks
-    /// nothing (tests).
+    /// The exclusions dialog opened last, which may still be open.
+    exclusions: Option<OpenDialog<ExclusionsState>>,
+    /// The panel, the editor, and the exclusions dialog open off every monitor, never
+    /// activated, and the editor and the exclusions dialog ask nothing (tests).
     off_screen_dialogs: bool,
-    /// Where a "yes" to a notice, the panel's requests, and the editor's saves go: the tray's
-    /// inbox, then [`WAKE`].
+    /// Where a "yes" to a notice, the requests of the panel and the exclusions dialog, and the
+    /// editor's saves go: the tray's inbox, then [`WAKE`].
     inbox: Sender<Event>,
     wake: WakeTarget,
 }
 
 impl ShellTray<WinNotifyArea> {
-    /// A shell showing `icons`, answering notices, the panel, and the editor into `inbox`
-    /// (then [`WAKE`] to `wake`).
+    /// A shell showing `icons`, answering notices, the panel, the editor, and the exclusions
+    /// dialog into `inbox` (then [`WAKE`] to `wake`).
     pub fn new(icons: ModeIcons, inbox: Sender<Event>, wake: WakeTarget) -> Self {
         Self::with_area(WinNotifyArea::new(icons), inbox, wake)
     }
@@ -1114,6 +1189,7 @@ impl<A: NotifyArea> ShellTray<A> {
             notices: Vec::new(),
             panel: None,
             macro_list: None,
+            exclusions: None,
             off_screen_dialogs: false,
             inbox,
             wake,
@@ -1121,10 +1197,11 @@ impl<A: NotifyArea> ShellTray<A> {
     }
 
     /// The same shell with the dialogs of the tests: the settings panel
-    /// ([`off_screen_panel_template`]) and the macro list editor ([`Placement::OffScreen`])
-    /// open off every monitor, are never activated or brought to the front (an open editor
-    /// gets a private message, `EDITOR_PROBE`, instead), the editor answers its own questions
-    /// "no" without showing a box, and a panel that cannot be opened shows no box either.
+    /// ([`off_screen_panel_template`]), the macro list editor, and the exclusions dialog
+    /// ([`Placement::OffScreen`]) open off every monitor, are never activated or brought to
+    /// the front (an open editor gets a private message, `EDITOR_PROBE`, instead), the editor
+    /// and the exclusions dialog answer their own questions "no" without showing a box (and
+    /// choose no file), and a panel that cannot be opened shows no box either.
     #[must_use]
     pub fn with_off_screen_dialogs(mut self) -> Self {
         self.off_screen_dialogs = true;
@@ -1133,13 +1210,8 @@ impl<A: NotifyArea> ShellTray<A> {
 
     /// Starts a panel showing `state` as opening `serial`; fails when its thread cannot start
     /// (or its template cannot be built).
-    fn spawn_panel(&self, serial: u64, state: PanelState) -> WinResult<OpenPanel> {
-        let shared = Arc::new(Mutex::new(PanelShared {
-            state,
-            serial,
-            closed: false,
-            up: false,
-        }));
+    fn spawn_panel(&self, serial: u64, state: PanelState) -> WinResult<OpenDialog<PanelState>> {
+        let shared = shown(state, serial);
         let template = if self.off_screen_dialogs {
             off_screen_panel_template()
         } else {
@@ -1152,34 +1224,82 @@ impl<A: NotifyArea> ShellTray<A> {
             off_screen: self.off_screen_dialogs,
             shown: None,
         };
-        let on_close = {
-            let shared = Arc::clone(&shared);
-            let inbox = self.inbox.clone();
-            let target = Arc::clone(&self.wake);
-            // On the panel's thread once the dialog is gone: the number is read together with
-            // the mark, so an opening that reuses this panel either renumbers it before (and
-            // the close names the new number) or finds it closed and starts another.
-            move |_result: Option<isize>| {
-                let serial = {
-                    let mut shared = lock(&shared);
-                    shared.closed = true;
-                    shared.serial
-                };
-                let _ = inbox.send(Event::PanelClosed(serial));
-                wake(&target);
-            }
-        };
-        let dialog = spawn_dialog(template.build()?, handler, on_close)?;
-        Ok(OpenPanel { dialog, shared })
+        let on_close = self.on_close(&shared, Event::PanelClosed);
+        let dialog = spawn_dialog(template.build()?, handler, move |_| on_close())?;
+        Ok(OpenDialog { dialog, shared })
     }
 
-    /// Shows `state` in the panel `open` as opening `serial`, and brings it to the front
-    /// (never the test dialogs). False, and the panel counts as closed, when it is closed or
-    /// closing (see [`PanelShared::closed`]), or when it was up and its window takes no
-    /// message any more: the caller starts a new panel then. The close of this one names an
-    /// earlier opening, which the tray ignores, since the number is set only once the panel
-    /// was reached.
-    fn reuse_panel(&self, open: &OpenPanel, serial: u64, state: &PanelState) -> bool {
+    /// Starts an exclusions dialog showing `state` as opening `serial`; fails when its thread
+    /// cannot start (or its template cannot be built).
+    fn spawn_exclusions(
+        &self,
+        serial: u64,
+        state: ExclusionsState,
+    ) -> WinResult<OpenDialog<ExclusionsState>> {
+        let shared = shown(state, serial);
+        let link = TrayLink {
+            shared: Arc::clone(&shared),
+            inbox: self.inbox.clone(),
+            wake: Arc::clone(&self.wake),
+        };
+        let on_close = self.on_close(&shared, Event::ExclusionsClosed);
+        let dialog = if self.off_screen_dialogs {
+            spawn_exclusions_with(
+                Placement::OffScreen,
+                SilentOffScreen,
+                RunningPrograms,
+                link,
+                on_close,
+            )
+        } else {
+            spawn_exclusions_with(
+                Placement::Centered,
+                MessageBoxes,
+                RunningPrograms,
+                link,
+                on_close,
+            )
+        }?;
+        Ok(OpenDialog { dialog, shared })
+    }
+
+    /// What runs on the thread of a dialog that shows `shared` once the dialog is gone: it is
+    /// marked closed, and its close (`closed` of its latest opening) goes into the inbox, then
+    /// [`WAKE`]. The number is read together with the mark, so an opening that reuses this
+    /// dialog either renumbers it before (and the close names the new number) or finds it
+    /// closed and starts another.
+    fn on_close<S: Send + 'static>(
+        &self,
+        shared: &SharedShown<S>,
+        closed: fn(u64) -> Event,
+    ) -> impl FnOnce() + Send + 'static {
+        let shared = Arc::clone(shared);
+        let inbox = self.inbox.clone();
+        let target = Arc::clone(&self.wake);
+        move || {
+            let serial = {
+                let mut shared = lock(&shared);
+                shared.closed = true;
+                shared.serial
+            };
+            let _ = inbox.send(closed(serial));
+            wake(&target);
+        }
+    }
+
+    /// Shows `state` in the dialog `open` as opening `serial` (posting it `refresh`), and
+    /// brings it to the front (never the test dialogs). False, and the dialog counts as
+    /// closed, when it is closed or closing (see [`Shown::closed`]), or when it was up and its
+    /// window takes no message any more: the caller starts a new one then. The close of this
+    /// one names an earlier opening, which the tray ignores, since the number is set only once
+    /// the dialog was reached.
+    fn reuse<S: Clone>(
+        &self,
+        open: &OpenDialog<S>,
+        serial: u64,
+        state: &S,
+        refresh: AppMessage,
+    ) -> bool {
         {
             let mut shared = lock(&open.shared);
             if shared.closed {
@@ -1187,10 +1307,10 @@ impl<A: NotifyArea> ShellTray<A> {
             }
             shared.state = state.clone();
         }
-        // Both fail while the panel is starting, before its window is published: it shows the
-        // shared state once it is up, and a new window comes to the front by itself. Both
+        // Both fail while the dialog is starting, before its window is published: it shows
+        // the shared state once it is up, and a new window comes to the front by itself. Both
         // also fail once its window is gone.
-        let reached = open.dialog.post(PANEL_REFRESH, 0, 0)
+        let reached = open.dialog.post(refresh, 0, 0)
             && (self.off_screen_dialogs || open.dialog.bring_to_front());
         let mut shared = lock(&open.shared);
         if shared.closed || (!reached && shared.up) {
@@ -1202,37 +1322,90 @@ impl<A: NotifyArea> ShellTray<A> {
     }
 }
 
-/// What the tray's thread and the panel's thread share.
+/// What the tray's thread and the thread of a dialog that shows the tray's state (the panel,
+/// the exclusions dialog) share.
 #[derive(Debug)]
-struct PanelShared {
-    /// What the panel shows.
-    state: PanelState,
-    /// The opening the panel belongs to ([`Effect::OpenPanel`]).
+struct Shown<S> {
+    /// What the dialog shows.
+    state: S,
+    /// The opening the dialog belongs to ([`Effect::OpenPanel`], [`Effect::OpenExclusions`]).
     serial: u64,
-    /// The panel is closed or closing, and an opening starts a new one. Set on its thread
+    /// The dialog is closed or closing, and an opening starts a new one. Set on its thread
     /// when its handler agrees to close (before the dialog ends, so an opening in the instant
     /// the dialog is going away does not reuse it) and once the dialog is gone; by the tray's
-    /// thread when the panel was up and its window took no message any more.
+    /// thread when the dialog was up and its window took no message any more.
     closed: bool,
-    /// The panel's window took a message after `init` (its handle was published by then): a
+    /// The dialog's window took a message after `init` (its handle was published by then): a
     /// message that cannot be posted to it any more means that it is gone, while one posted
     /// before is only early.
     up: bool,
 }
 
-type SharedPanel = Arc<Mutex<PanelShared>>;
+type SharedShown<S> = Arc<Mutex<Shown<S>>>;
 
-/// The shared panel data, also after a thread panicked while it held the lock (its data is
+/// The shared state of a new dialog showing `state` as opening `serial`.
+fn shown<S>(state: S, serial: u64) -> SharedShown<S> {
+    Arc::new(Mutex::new(Shown {
+        state,
+        serial,
+        closed: false,
+        up: false,
+    }))
+}
+
+/// The shared dialog data, also after a thread panicked while it held the lock (its data is
 /// plain and stays usable).
-fn lock(shared: &SharedPanel) -> MutexGuard<'_, PanelShared> {
+fn lock<S>(shared: &SharedShown<S>) -> MutexGuard<'_, Shown<S>> {
     shared.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The panel opened last.
+/// A panel or an exclusions dialog opened last.
 #[derive(Debug)]
-struct OpenPanel {
+struct OpenDialog<S> {
     dialog: DetachedDialog,
-    shared: SharedPanel,
+    shared: SharedShown<S>,
+}
+
+/// Shows `state` in the dialog `open`, if it is open, and posts it `refresh`, without waiting.
+fn refresh_open<S>(open: Option<&OpenDialog<S>>, state: S, refresh: AppMessage) {
+    if let Some(open) = open {
+        let mut shared = lock(&open.shared);
+        if shared.closed {
+            return;
+        }
+        shared.state = state;
+        drop(shared);
+        let _ = open.dialog.post(refresh, 0, 0);
+    }
+}
+
+/// How the exclusions dialog reaches the tray: the state the tray's thread shares with it,
+/// and its edits into the inbox, then [`WAKE`].
+struct TrayLink {
+    shared: SharedShown<ExclusionsState>,
+    inbox: Sender<Event>,
+    wake: WakeTarget,
+}
+
+impl ExclusionsLink for TrayLink {
+    fn state(&mut self) -> ExclusionsState {
+        lock(&self.shared).state.clone()
+    }
+
+    fn request(&mut self, request: ExclusionsRequest) {
+        // A tray that is gone loses only the request.
+        let _ = self.inbox.send(Event::Exclusions(request));
+        wake(&self.wake);
+    }
+
+    fn reached(&mut self) {
+        lock(&self.shared).up = true;
+    }
+
+    fn closing(&mut self) {
+        // Every edit took effect already; the dialog ends once its handler returns.
+        lock(&self.shared).closed = true;
+    }
 }
 
 /// Where the off-screen panel of the tests goes (screen coordinates), before Windows shows it.
@@ -1243,7 +1416,7 @@ const OFF_SCREEN_PIXELS: i32 = -32_000;
 /// requests ([`request`]) for the tray's inbox, then [`WAKE`]; the tray answers each with the
 /// whole state again ([`PANEL_REFRESH`]).
 struct PanelDialog {
-    shared: SharedPanel,
+    shared: SharedShown<PanelState>,
     inbox: Sender<Event>,
     wake: WakeTarget,
     /// Move the dialog off every monitor before it is shown (tests).
@@ -1293,7 +1466,7 @@ impl PanelDialog {
         wake(&self.wake);
     }
 
-    /// The panel's window took a message after `init` ([`PanelShared::up`]).
+    /// The panel's window took a message after `init` ([`Shown::up`]).
     fn mark_up(&self) {
         lock(&self.shared).up = true;
     }
@@ -1423,7 +1596,7 @@ impl<A: NotifyArea> TrayShell for ShellTray<A> {
 
     fn open_panel(&mut self, serial: u64, state: PanelState) {
         if let Some(open) = &self.panel
-            && self.reuse_panel(open, serial, &state)
+            && self.reuse(open, serial, &state, PANEL_REFRESH)
         {
             return;
         }
@@ -1452,19 +1625,42 @@ impl<A: NotifyArea> TrayShell for ShellTray<A> {
     }
 
     fn refresh_panel(&mut self, state: PanelState) {
-        if let Some(open) = &self.panel {
-            let mut shared = lock(&open.shared);
-            if shared.closed {
-                return;
-            }
-            shared.state = state;
-            drop(shared);
-            let _ = open.dialog.post(PANEL_REFRESH, 0, 0);
-        }
+        refresh_open(self.panel.as_ref(), state, PANEL_REFRESH);
     }
 
     fn close_panel(&mut self) {
         if let Some(open) = self.panel.take() {
+            open.dialog.dismiss();
+        }
+    }
+
+    fn open_exclusions(&mut self, serial: u64, state: ExclusionsState) {
+        if let Some(open) = &self.exclusions
+            && self.reuse(open, serial, &state, EXCLUSIONS_REFRESH)
+        {
+            return;
+        }
+        if let Some(old) = self.exclusions.take() {
+            // Gone or going already; this only makes sure that one dialog is left.
+            old.dialog.dismiss();
+        }
+        match self.spawn_exclusions(serial, state) {
+            Ok(open) => self.exclusions = Some(open),
+            Err(_) => {
+                // No dialog: the tray takes it as closed (the inbox is drained after this);
+                // choosing it again tries again.
+                let _ = self.inbox.send(Event::ExclusionsClosed(serial));
+                wake(&self.wake);
+            }
+        }
+    }
+
+    fn refresh_exclusions(&mut self, state: ExclusionsState) {
+        refresh_open(self.exclusions.as_ref(), state, EXCLUSIONS_REFRESH);
+    }
+
+    fn close_exclusions(&mut self) {
+        if let Some(open) = self.exclusions.take() {
             open.dialog.dismiss();
         }
     }
@@ -1600,9 +1796,10 @@ impl<P: Prompter> Prompter for Tracked<P> {
     }
 }
 
-/// The questions of the macro list editor of the tests ([`ShellTray::with_off_screen_dialogs`]):
-/// the editor goes off every monitor before it is shown, and every question is answered "no"
-/// without showing a box.
+/// The questions of the macro list editor and of the exclusions dialog of the tests
+/// ([`ShellTray::with_off_screen_dialogs`]): the dialog goes off every monitor before it is
+/// shown, every question is answered "no" without showing a box, and no file is chosen (no
+/// Open dialog is shown).
 #[derive(Debug)]
 struct SilentOffScreen;
 

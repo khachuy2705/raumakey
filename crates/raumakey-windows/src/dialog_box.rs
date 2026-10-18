@@ -17,9 +17,9 @@
 //!   the [`run_dialog`] call running on the thread installs a handler; a forged one (another
 //!   thread or process cannot know the pointer) is ignored.
 //! - The handler gets a [`Dialog`] in every callback: a view of the dialog window with helpers
-//!   for its controls (check boxes, texts, drop-down lists, list views, the icons of its title
-//!   bar and taskbar button, focus, message boxes owned by the dialog, ending it), and its
-//!   position ([`Dialog::move_to`]). Texts of several lines go through
+//!   for its controls (check boxes, texts, drop-down lists and editable combo boxes, list
+//!   views, the icons of its title bar and taskbar button, focus, message boxes and the Open
+//!   dialog owned by the dialog, ending it), and its position ([`Dialog::move_to`]). Texts of several lines go through
 //!   [`Dialog::set_text_wrapped`], which wraps them at spaces with the control's own font
 //!   (and again after a change of DPI), since Windows would cut a Vietnamese word.
 //! - [`spawn_dialog`] runs a dialog without owner on a thread of its own, the way
@@ -61,7 +61,8 @@
 //! handler runs with this dialog as owner, and closes the message box shown through
 //! [`Dialog::message_box`] with the command that closes a box of its kind
 //! ([`dismiss_command`](crate::dialog::MessageKind::dismiss_command); `message_box` then fails
-//! with `E_ABORT`). A dialog dismissed before its window handle is published (that happens
+//! with `E_ABORT`), and the Open dialog of [`Dialog::choose_file`] with `IDCANCEL` (which then
+//! fails the same way). A dialog dismissed before its window handle is published (that happens
 //! once `init` returned) ends during `WM_INITDIALOG` and is never shown. Until then nothing
 //! reaches the dialog's thread: a message box that `init` shows stays open until it is
 //! answered (and [`Dialog::message_box`] then fails with `E_ABORT`), while one asked after the
@@ -133,8 +134,13 @@ const REWRAP: u32 = WM_APP_LAST - 2;
 pub mod notifications {
     /// `BN_CLICKED`: a button was clicked (also a check box, which toggled itself).
     pub const BN_CLICKED: u16 = 0;
-    /// `CBN_SELCHANGE`: the user selected another item of a drop-down list.
+    /// `CBN_SELCHANGE`: the user selected another item of a drop-down list. The edit of an
+    /// editable combo box (`CBS_DROPDOWN`) shows the item's text only after this
+    /// notification.
     pub const CBN_SELCHANGE: u16 = 1;
+    /// `CBN_EDITCHANGE`: the user changed the text of the edit of an editable combo box
+    /// (`CBS_DROPDOWN`), by typing or pasting; a choice from its list sends none.
+    pub const CBN_EDITCHANGE: u16 = 5;
     /// `EN_CHANGE`: the text of an edit changed.
     pub const EN_CHANGE: u16 = 0x0300;
     /// `LVN_ITEMCHANGED`: an item of a list view changed, such as its selection; one change of
@@ -154,6 +160,7 @@ mod win {
     use core::fmt;
     use core::hash::BuildHasher;
     use std::collections::hash_map::RandomState;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
     use std::sync::{Arc, OnceLock};
 
@@ -171,14 +178,14 @@ mod win {
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
     use windows::Win32::UI::WindowsAndMessaging::{
-        BM_GETCHECK, BM_SETCHECK, CB_ADDSTRING, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL,
-        DLGTEMPLATE, DialogBoxIndirectParamW, EndDialog, EnumThreadWindows, GW_OWNER,
-        GetClassNameW, GetDlgCtrlID, GetDlgItem, GetLastActivePopup, GetWindow, ICON_BIG,
-        ICON_SMALL, IsChild, IsIconic, IsWindow, IsWindowVisible, MapDialogRect, PostMessageW,
-        SW_RESTORE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SendDlgItemMessageW, SendMessageW,
-        SetDlgItemTextW, SetForegroundWindow, SetWindowPos, ShowWindow, WINDOW_LONG_PTR_INDEX,
-        WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_GETTEXT, WM_GETTEXTLENGTH,
-        WM_INITDIALOG, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETICON,
+        BM_GETCHECK, BM_SETCHECK, CB_ADDSTRING, CB_GETCURSEL, CB_GETLBTEXT, CB_GETLBTEXTLEN,
+        CB_RESETCONTENT, CB_SETCURSEL, DLGTEMPLATE, DialogBoxIndirectParamW, EndDialog,
+        EnumThreadWindows, GW_OWNER, GetClassNameW, GetDlgCtrlID, GetDlgItem, GetLastActivePopup,
+        GetWindow, ICON_BIG, ICON_SMALL, IsChild, IsIconic, IsWindow, IsWindowVisible,
+        MapDialogRect, PostMessageW, SW_RESTORE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+        SendDlgItemMessageW, SendMessageW, SetDlgItemTextW, SetForegroundWindow, SetWindowPos,
+        ShowWindow, WINDOW_LONG_PTR_INDEX, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED,
+        WM_GETTEXT, WM_GETTEXTLENGTH, WM_INITDIALOG, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETICON,
     };
     use windows::core::{BOOL, PWSTR};
     // The helpers of the macro list editor: virtual list views, text limits, posting.
@@ -199,6 +206,7 @@ mod win {
     use crate::dialog_template::styles::LVS_OWNERDATA;
     use crate::dialog_template::{IDCANCEL, TemplateBytes};
     use crate::error::{E_ABORT, E_FAIL, E_INVALIDARG, ResultExt, WinError, WinResult};
+    use crate::file_dialog::{FileFilter, open_file};
     use crate::icon::{Icon, IconKind, icon_size, icon_size_for_dpi, icon_size_for_window};
     use crate::module::Module;
     use crate::panic::{guard_bool, guard_value};
@@ -520,6 +528,43 @@ mod win {
             usize::try_from(self.send_item(id, CB_GETCURSEL, 0, 0)).ok()
         }
 
+        /// The text of item `index` of combo box `id` (`CB_GETLBTEXTLEN`, `CB_GETLBTEXT`).
+        /// An editable combo box (`CBS_DROPDOWN`) reports a choice from its list
+        /// ([`notifications::CBN_SELCHANGE`](super::notifications::CBN_SELCHANGE)) before its
+        /// edit shows the item's text, so the handler reads the choice here; the edit itself
+        /// is read and set with [`text`](Self::text) and [`set_text`](Self::set_text). Fails
+        /// with `E_INVALIDARG` for an index past the last item (such as any above
+        /// `i32::MAX`), and when there is no such control. Unpaired surrogates become U+FFFD.
+        pub fn combo_item_text(&self, id: u16, index: usize) -> WinResult<String> {
+            let combo = self.item(id)?;
+            // USER reads the index as an `int`: one above `i32::MAX` would name another item.
+            if i32::try_from(index).is_err() {
+                return Err(WinError::new(E_INVALIDARG, "CB_GETLBTEXTLEN"));
+            }
+            // SAFETY: a control of this thread; no pointers.
+            let length =
+                unsafe { SendMessageW(combo, CB_GETLBTEXTLEN, Some(WPARAM(index)), None) }.0;
+            let length = usize::try_from(length)
+                .map_err(|_| WinError::new(E_INVALIDARG, "CB_GETLBTEXTLEN"))?;
+            let mut buffer = vec![0_u16; length + 1];
+            // SAFETY: the buffer holds the item's length and its NUL, as CB_GETLBTEXT writes,
+            // and outlives the call, which the control answers on this thread.
+            let copied = unsafe {
+                SendMessageW(
+                    combo,
+                    CB_GETLBTEXT,
+                    Some(WPARAM(index)),
+                    Some(LPARAM(buffer.as_mut_ptr() as isize)),
+                )
+            }
+            .0;
+            let copied =
+                usize::try_from(copied).map_err(|_| WinError::new(E_INVALIDARG, "CB_GETLBTEXT"))?;
+            Ok(String::from_utf16_lossy(
+                buffer.get(..copied.min(length)).unwrap_or(&[]),
+            ))
+        }
+
         /// Replaces the columns of list view `id` with `columns`: each a header text and a
         /// width in dialog units, converted to pixels for the dialog's font and DPI
         /// (`MapDialogRect`). Also turns on full-row selection (`LVS_EX_FULLROWSELECT`). Fails
@@ -804,13 +849,35 @@ mod win {
             if self.state.is_dismissed() {
                 return Err(WinError::new(E_ABORT, "MessageBoxW"));
             }
-            let previous = self.state.open_box.replace(Some(kind));
+            let previous = self.state.open_box.replace(Some(kind.dismiss_command()));
             let answer = message_box(Some(self.hwnd), text, PRODUCT_NAME, kind);
             self.state.open_box.set(previous);
             if self.state.is_dismissed() {
                 return Err(WinError::new(E_ABORT, "MessageBoxW"));
             }
             answer
+        }
+
+        /// Shows the Open dialog for one existing file of the types `filters`, owned by the
+        /// dialog ([`open_file`](crate::file_dialog::open_file)), and returns the path the
+        /// user chose, or `None` when the user cancelled. Its modal loop runs inside the
+        /// callback, as a message box's does (see "Re-entrancy" in the module documentation),
+        /// and a dismiss of the dialog closes it with `IDCANCEL`, as Esc does; the call then
+        /// fails with `E_ABORT`, as it does at once, without showing anything, once the
+        /// dialog was dismissed. Also fails for a filter that
+        /// [`filter_units`](crate::file_dialog::filter_units) refuses, and when the dialog
+        /// cannot be shown. The path is user content: never log it.
+        pub fn choose_file(&self, filters: &[FileFilter<'_>]) -> WinResult<Option<PathBuf>> {
+            if self.state.is_dismissed() {
+                return Err(WinError::new(E_ABORT, "GetOpenFileNameW"));
+            }
+            let previous = self.state.open_box.replace(Some(IDCANCEL));
+            let chosen = open_file(Some(self.hwnd), filters);
+            self.state.open_box.set(previous);
+            if self.state.is_dismissed() {
+                return Err(WinError::new(E_ABORT, "GetOpenFileNameW"));
+            }
+            chosen
         }
 
         /// Posts the private `message` to the dialog itself, for the handler's
@@ -951,8 +1018,10 @@ mod win {
         ended_unshown: Cell<bool>,
         /// [`Dialog::focus`] moved the focus (during `init`, the default focus is skipped).
         focus_moved: Cell<bool>,
-        /// The kind of the message box [`Dialog::message_box`] shows, while it is open.
-        open_box: Cell<Option<MessageKind>>,
+        /// While [`Dialog::message_box`] or [`Dialog::choose_file`] shows its box, the command
+        /// that closes it without an answer ([`MessageKind::dismiss_command`], `IDCANCEL` for
+        /// the Open dialog).
+        open_box: Cell<Option<u16>>,
         /// The icons set with [`Dialog::set_icons`]; the window uses them until it is
         /// destroyed, before this state is dropped.
         icons: RefCell<Option<Icons>>,
@@ -1919,14 +1988,15 @@ mod win {
     /// Ends the dialog with `IDCANCEL` without asking its handler, and closes what it shows:
     /// the dialogs of this module that it owns get the same reserved message, and the message
     /// box of [`Dialog::message_box`] the command that closes it
-    /// ([`MessageKind::dismiss_command`]).
+    /// ([`MessageKind::dismiss_command`]), as the Open dialog of [`Dialog::choose_file`] does
+    /// (`IDCANCEL`).
     fn dismiss(state: &DialogState, hwnd: HWND) {
         state.dismissed.set(true);
         // SAFETY: the dialog is a window of this thread run by DialogBoxIndirectParamW.
         let _ = unsafe { EndDialog(hwnd, CANCELLED) };
         let mut closing = Closing {
             owner: hwnd,
-            box_command: state.open_box.get().map(MessageKind::dismiss_command),
+            box_command: state.open_box.get(),
             open: OPEN.with(|open| {
                 open.try_borrow()
                     .map(|open| open.clone())
@@ -1948,8 +2018,8 @@ mod win {
     struct Closing {
         /// The dismissed dialog.
         owner: HWND,
-        /// The command that closes the message box it shows, if it shows one
-        /// ([`MessageKind::dismiss_command`]).
+        /// The command that closes the message box or the Open dialog it shows, if it shows
+        /// one ([`MessageKind::dismiss_command`], `IDCANCEL`).
         box_command: Option<u16>,
         /// The dialogs of this module on this thread, with their cookies.
         open: Vec<(isize, usize)>,

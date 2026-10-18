@@ -37,6 +37,7 @@ fn the_top_of_the_wm_app_range_is_reserved_for_the_dialog_procedure() {
 fn notification_codes_have_their_win32_values() {
     assert_eq!(notifications::BN_CLICKED, 0);
     assert_eq!(notifications::CBN_SELCHANGE, 1);
+    assert_eq!(notifications::CBN_EDITCHANGE, 5);
     assert_eq!(notifications::EN_CHANGE, 0x0300);
     assert_eq!(notifications::LVN_ITEMCHANGED, -101);
     assert_eq!(notifications::NM_DBLCLK, -3);

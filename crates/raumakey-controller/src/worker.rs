@@ -10,6 +10,7 @@
 //! | Command | What the worker does | Answer |
 //! |---|---|---|
 //! | [`WorkerCommand::Apply`] | [`Settings::apply`]: the change takes effect and is committed | [`Outcome::Applied`] with the commit's result and whether it wrote anything ([`Saved`]) |
+//! | [`WorkerCommand::Exclusions`] (the exclusions dialog, D48) | [`Settings::edit_exclusions`]: the edit of `[exclusions] apps` takes effect and is committed | [`Outcome::Exclusions`] with the commit's result and whether it wrote anything |
 //! | [`WorkerCommand::Poll`] (the tray's timer, every 2 s) | [`Settings::poll`], once more after [`REREAD_DELAY`] when a reloaded file looks half-written (it cannot be decoded, or has no `version`); new macros go to the typing hook ([`WorkerPorts::post_macros`]); a hand edit of `[system] startup` creates or removes the shortcut ([`ShortcutSync`]); changes not saved yet are retried ([`Settings::save_unsaved`]) | [`Outcome::Polled`] with a [`PollReport`] |
 //! | [`WorkerCommand::Startup`] `(true)` | creates `Raumakey.lnk` in the Startup folder (never for an exe in the temporary folder, [`StartupError::Temporary`]), then saves `startup = "shortcut"` | [`Outcome::Startup`] |
 //! | [`WorkerCommand::Startup`] `(false)` | removes the shortcut, then saves `startup = "none"` | [`Outcome::Startup`] |
@@ -25,7 +26,8 @@
 //!
 //! Every answer carries the number of its command ([`Answer::seq`]) and the settings in effect
 //! afterwards ([`SettingsState`]: the runtime snapshot, with the mode the worker last saved,
-//! the startup mode, and whether the settings panel opens at start). The tray takes them over
+//! the startup mode, whether the settings panel opens at start, and the excluded applications,
+//! which the exclusions dialog shows). The tray takes them over
 //! only from the answer to the last command it sent (`crate::tray`): an older answer does not
 //! know of a change still on its way, and the answer to the last command, whatever it was,
 //! brings everything the worker has, such as a reload answered before it.
@@ -53,9 +55,11 @@ use std::time::Duration;
 
 use raumakey_config::{ConfigError, IssueReason, StartupMode};
 use raumakey_ipc::message::{MacroSnapshot, RuntimeSnapshot};
+use raumakey_model::host::ExeName;
 use raumakey_windows::error::{WinError, WinResult};
 use raumakey_windows::panic::guard_value;
 
+use crate::exclusions::ExclusionsRequest;
 use crate::run::ShortcutState;
 use crate::settings::{Change, DocumentStatus, Recovery, Reloaded, Settings, Status};
 
@@ -63,10 +67,13 @@ use crate::settings::{Change, DocumentStatus, Recovery, Reloaded, Settings, Stat
 pub const THREAD_NAME: &str = "raumakey-settings";
 
 /// A command of the tray for the settings worker.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum WorkerCommand {
     /// Apply a change from the tray and commit it ([`Settings::apply`]).
     Apply(Change),
+    /// Make an edit of the exclusions dialog on `[exclusions] apps` and commit it
+    /// ([`Settings::edit_exclusions`], D48).
+    Exclusions(ExclusionsRequest),
     /// Look for files changed on disk ([`Settings::poll`]).
     Poll,
     /// Start with Windows through the Startup-folder shortcut (`true`), or not (`false`).
@@ -87,6 +94,9 @@ pub struct SettingsState {
     pub startup: StartupMode,
     /// `[system] show_panel_on_start` in effect.
     pub show_panel_on_start: bool,
+    /// `[exclusions] apps` in effect ([`Settings::excluded_apps`]), which the exclusions
+    /// dialog shows.
+    pub exclusions: Vec<ExeName>,
 }
 
 /// Whether a change that worked wrote `raumakey.toml`.
@@ -164,6 +174,15 @@ pub enum Outcome {
         /// The change.
         change: Change,
         /// The commit's result ([`Settings::apply`]), and whether it wrote anything.
+        result: Result<Saved, ConfigError>,
+    },
+    /// [`WorkerCommand::Exclusions`]: the edit is in effect; `result` says whether it was
+    /// saved.
+    Exclusions {
+        /// The edit.
+        request: ExclusionsRequest,
+        /// The commit's result ([`Settings::edit_exclusions`]), and whether it wrote
+        /// anything.
         result: Result<Saved, ConfigError>,
     },
     /// [`WorkerCommand::Poll`].
@@ -288,7 +307,11 @@ impl<P: WorkerPorts> SettingsWorker<P> {
         let outcome = match command {
             WorkerCommand::Apply(change) => Outcome::Applied {
                 change,
-                result: self.save(change),
+                result: self.save(|settings| settings.apply(change)),
+            },
+            WorkerCommand::Exclusions(request) => Outcome::Exclusions {
+                result: self.save(|settings| settings.edit_exclusions(request.clone())),
+                request,
             },
             WorkerCommand::Poll => Outcome::Polled(self.poll()),
             WorkerCommand::Startup(on) => Outcome::Startup {
@@ -316,13 +339,18 @@ impl<P: WorkerPorts> SettingsWorker<P> {
             runtime: self.settings.runtime_snapshot().clone(),
             startup: system.startup,
             show_panel_on_start: system.show_panel_on_start,
+            exclusions: self.settings.excluded_apps().to_vec(),
         }
     }
 
-    /// [`Settings::apply`], telling whether the file was written (its revision moved).
-    fn save(&mut self, change: Change) -> Result<Saved, ConfigError> {
+    /// `commit` ([`Settings::apply`] or [`Settings::edit_exclusions`]), telling whether the
+    /// file was written (its revision moved).
+    fn save(
+        &mut self,
+        commit: impl FnOnce(&mut Settings) -> Result<(), ConfigError>,
+    ) -> Result<Saved, ConfigError> {
         let revision = self.settings.document().revision;
-        self.settings.apply(change)?;
+        commit(&mut self.settings)?;
         Ok(if self.settings.document().revision == revision {
             Saved::Unchanged
         } else {
@@ -414,7 +442,8 @@ impl<P: WorkerPorts> SettingsWorker<P> {
                 .map_err(StartupError::Shortcut)?;
             StartupMode::None
         };
-        self.save(Change::Startup(mode)).map_err(StartupError::Save)
+        self.save(|settings| settings.apply(Change::Startup(mode)))
+            .map_err(StartupError::Save)
     }
 
     fn open_config(&mut self) -> Result<(), OpenError> {

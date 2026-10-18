@@ -29,6 +29,9 @@ pub use win::{
 };
 
 #[cfg(windows)]
+pub(crate) use win::process_image_units;
+
+#[cfg(windows)]
 pub use crate::sid::{current_process_is_elevated, process_is_elevated};
 
 #[cfg(windows)]
@@ -332,6 +335,15 @@ mod win {
     /// Lowercase executable basename of process `pid` (`QueryFullProcessImageNameW`). The full
     /// path is read but never returned.
     pub fn process_image_basename(pid: u32) -> WinResult<ExeName> {
+        let path = process_image_units(pid)?;
+        ExeName::from_path(&String::from_utf16_lossy(&path))
+            .map_err(|_| WinError::new(E_FAIL, "process image name"))
+    }
+
+    /// The full path of the image of process `pid` (`QueryFullProcessImageNameW`), as its
+    /// UTF-16 units without a NUL: for this crate only (`crate::programs` reads the version
+    /// resource of the image), never returned to its users.
+    pub(crate) fn process_image_units(pid: u32) -> WinResult<Vec<u16>> {
         // SAFETY: plain call; the handle is owned below.
         let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
             .context("OpenProcess")?;
@@ -351,9 +363,8 @@ mod win {
             };
             match result {
                 Ok(()) => {
-                    let path = String::from_utf16_lossy(buffer.get(..len as usize).unwrap_or(&[]));
-                    return ExeName::from_path(&path)
-                        .map_err(|_| WinError::new(E_FAIL, "process image name"));
+                    buffer.truncate((len as usize).min(buffer.len()));
+                    return Ok(buffer);
                 }
                 Err(error)
                     if error.code().0

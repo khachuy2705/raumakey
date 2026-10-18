@@ -1,10 +1,11 @@
-//! The controller's notification-area icon as a pure state machine (plan §10.2, D42–D47;
-//! design §21.5, §22; matrix #58): the settings that the icon, the menu, and the settings panel
-//! show, the icon and tooltip, the tray menu, and what to do with each message of the hidden
-//! window, each menu choice, each mode change of the hotkey, each request of the panel, each
-//! answer of the settings worker, and each application that comes to the foreground. The
-//! Windows glue in `crate::desktop` passes them in and carries out the [`Effect`]s on the real
-//! notification icon, popup menu, message boxes, settings panel, typing hook, and worker
+//! The controller's notification-area icon as a pure state machine (plan §10.2, D42–D48;
+//! design §21.5, §22; matrix #58): the settings that the icon, the menu, the settings panel,
+//! and the exclusions dialog show, the icon and tooltip, the tray menu, and what to do with
+//! each message of the hidden window, each menu choice, each mode change of the hotkey, each
+//! request of the panel and of the exclusions dialog, each answer of the settings worker, and
+//! each application that comes to the foreground. The Windows glue in `crate::desktop` passes
+//! them in and carries out the [`Effect`]s on the real notification icon, popup menu, message
+//! boxes, settings panel, macro list editor, exclusions dialog, typing hook, and worker
 //! thread; everything here is tested on every host.
 //!
 //! # Settings
@@ -66,7 +67,7 @@
 //! | [`TRAY_CALLBACK`] `WM_CONTEXTMENU` (right click, Shift+F10, menu key) | opens the menu at the anchor ([`Effect::OpenMenu`]) | 0 |
 //! | [`TRAY_CALLBACK`], other notifications or another icon id | nothing | 0 |
 //! | `WM_TIMER` of [`POLL_TIMER`] (every [`POLL_INTERVAL_MS`]) | forgets what the clicks left behind once its time has passed, makes sure the icon is shown ([`Effect::EnsureIcon`]: an add or a change that failed is tried again), reads the application in front again ([`Effect::ReadForeground`]), and asks the worker to poll unless a poll is on its way | 0 |
-//! | [`WAKE`] (the worker, the hook observer, a message box, the panel, or the macro list editor left something in the inbox) | nothing: the glue drains the inbox ([`Tray::on_event`]) | 0 |
+//! | [`WAKE`] (the worker, the hook observer, a message box, the panel, the macro list editor, or the exclusions dialog left something in the inbox) | nothing: the glue drains the inbox ([`Tray::on_event`]) | 0 |
 //! | [`FOREGROUND`] (the foreground watcher; `wParam`: the window that came to the front) | reads the application of that window ([`Effect::ReadForeground`]) | 0 |
 //! | `TaskbarCreated` (Explorer restarted) | adds the icon again with the current state (matrix #58) | 0 |
 //! | `Raumakey.<sidhash>.show-panel` ([`SHOW_PANEL_COMPONENT`], a second start, D45) | opens the panel or brings it to the front ([`Effect::OpenPanel`]) | 0 |
@@ -77,8 +78,10 @@
 //! registration failed is never matched, and the tray runs without it.
 //!
 //! Exiting is, in order, [`Effect::StopTyping`] (typing is plain at once),
-//! [`Effect::DismissNotices`], [`Effect::ClosePanel`], [`Effect::CloseMacroList`] (none of
-//! them waits; the editor closes without saving, by design), [`Effect::FlushHotkeys`]
+//! [`Effect::DismissNotices`], [`Effect::ClosePanel`], [`Effect::CloseMacroList`],
+//! [`Effect::CloseExclusions`] (none of them waits; the editor closes without saving, by
+//! design; the edits of the exclusions dialog went to the worker as they came, and one still
+//! in the inbox is dropped, like a request of the panel), [`Effect::FlushHotkeys`]
 //! (hotkey changes left in the inbox are saved),
 //! [`Effect::FinishWorker`] (the worker runs what was sent and saves what is unsaved, for a
 //! bounded time), [`Effect::RemoveIcon`], and [`Effect::EndLoop`] (the message loop ends with
@@ -189,9 +192,33 @@
 //! `none` makes the shortcut (from the temporary folder, the request to extract Raumakey
 //! first), off from `shortcut` removes it, off from `elevated-task` explains the elevated
 //! command line, and a request for the value in effect does nothing; a `Change::Startup`
-//! (without the shortcut) does nothing either. "Mở file cấu hình" goes to the worker, and
+//! (without the shortcut) does nothing either. "Mở file cấu hình" goes to the worker,
 //! "Danh sách gõ tắt…" opens the macro list editor of the data folder, or brings the open one
-//! to the front ([`Effect::OpenMacroList`]), when there is a folder.
+//! to the front ([`Effect::OpenMacroList`]), when there is a folder, and "Ứng dụng loại trừ…"
+//! opens the exclusions dialog, or brings the open one to the front
+//! ([`Effect::OpenExclusions`]), also without a folder.
+//!
+//! # Exclusions dialog (D48)
+//!
+//! The exclusions dialog (`crate::exclusions_dialog`) runs on a thread of its own like the
+//! panel, and the tray is the only source of its data ([`Tray::exclusions_state`]: the
+//! excluded applications in effect, `[exclusions] apps`, and whether its edits are saved). It
+//! opens from the panel's "Ứng dụng loại trừ…"; while it is open, that button shows the state
+//! in effect in it and brings it to the front. Its openings are numbered like the panel's
+//! ([`Effect::OpenExclusions`] `serial`, [`Event::ExclusionsClosed`]), and only one is open
+//! at a time.
+//!
+//! Each edit of the dialog ([`Event::Exclusions`]: add, remove, defaults) goes to the worker
+//! as it is ([`WorkerCommand::Exclusions`]); the tray does not try to work out the list or
+//! the compatibility rules that follow from it ([`with_change`] does not cover them, as an
+//! edit is no [`Change`]). The worker's answer brings both, the list in its
+//! [`SettingsState::exclusions`] and the rules in its runtime snapshot, and the tray takes
+//! them over as any settings it answers: the hook gets the snapshot, and the icon shows at
+//! once whether the application in front is excluded now. A commit that fails is told like a
+//! change's. While the dialog is open, [`Effect::RefreshExclusions`] follows every request of
+//! the dialog (it shows the list in effect again, whatever the worker answers later), and
+//! whatever else changes the list in effect: the answer to an edit, and a hand edit of
+//! `[exclusions]` taken over from the worker. Nothing is sent while no dialog is open.
 //!
 //! # Menu (D42, D43)
 //!
@@ -216,13 +243,14 @@
 //! messages to `DefWindowProcW` (see `raumakey_windows::window`); it answers a `WM_CLOSE`
 //! that arrives meanwhile by destroying the window. The handler is then freed when it
 //! returns, and [`Tray::ends_loop_when_dropped`] tells the glue that the loop must end anyway
-//! (after the steps of an exit). Message boxes, the panel, and the macro list editor run no
-//! loop on this thread.
+//! (after the steps of an exit). Message boxes, the panel, the macro list editor, and the
+//! exclusions dialog run no loop on this thread.
 //!
 //! Strings shown to the user are new Raumakey strings in Vietnamese (plan §10.2,
 //! `crate::notice`, `crate::panel`). Nothing here holds keystrokes, document text, or macro
-//! text; `Debug` of the tray shows its mode, method, startup mode, whether the panel is open,
-//! whether an excluded application is in front, and counters.
+//! text; `Debug` of the tray shows its mode, method, startup mode, whether the panel and the
+//! exclusions dialog are open, how many applications are excluded, whether an excluded
+//! application is in front, and counters.
 
 use core::fmt;
 use std::borrow::Cow;
@@ -241,6 +269,7 @@ use raumakey_windows::window::{
     WM_TIMER,
 };
 
+use crate::exclusions::{ExclusionsRequest, ExclusionsState};
 use crate::notice::{
     Notice, Question, about_notice, elevated_task_notice, open_error_notice, recovery_notice,
     save_error_notice, startup_error_notice, status_notice, temporary_exe_notice,
@@ -602,7 +631,9 @@ impl TrayCommand {
 /// default method, "Mặc định" ([`Change::TypingDefaults`]) on the default method and switches
 /// of [`EngineOptions::defaults_v1`] (the mode, the key map id, the normalization, and the
 /// context limit stay), and the startup mode and the panel at start, which the hook does not
-/// see, changing nothing.
+/// see, changing nothing. The edits of the exclusions dialog are no [`Change`] and are not
+/// worked out here: the runtime snapshot with their rules comes with the worker's answer
+/// ([`ExclusionsRequest`], see [the exclusions dialog](self#exclusions-dialog-d48)).
 pub fn with_change(runtime: &RuntimeSnapshot, change: Change) -> RuntimeSnapshot {
     let mut next = runtime.clone();
     let options = &mut next.options;
@@ -680,6 +711,9 @@ pub struct TrayStart {
     /// `[system] show_panel_on_start` in effect: the settings panel opens once the icon is
     /// added, and the panel's check box shows it.
     pub show_panel: bool,
+    /// `[exclusions] apps` in effect (`Settings::excluded_apps`), which the exclusions dialog
+    /// shows.
+    pub exclusions: Vec<ExeName>,
 }
 
 /// The registered messages the tray answers, as `RegisterWindowMessageW` numbered them for
@@ -721,6 +755,11 @@ pub enum Event {
     PanelClosed(u64),
     /// The macro list editor (D44) wrote `raumakey-macros.toml`.
     MacrosSaved,
+    /// An edit of the exclusions dialog (D48), which runs on a thread of its own.
+    Exclusions(ExclusionsRequest),
+    /// The exclusions dialog opened by [`Effect::OpenExclusions`] with this `serial` (or by a
+    /// later one that brought it to the front) was closed.
+    ExclusionsClosed(u64),
 }
 
 /// The events drained from the inbox, with the hotkey changes coalesced: only the last one
@@ -795,6 +834,19 @@ pub enum Effect {
     OpenMacroList(PathBuf),
     /// Close the open macro list editor, if any, without waiting for it and without saving.
     CloseMacroList,
+    /// Open the exclusions dialog (D48) showing `state`; when it is open, show `state` in it
+    /// and bring it to the front instead. The dialog open afterwards carries `serial`, which
+    /// its [`Event::ExclusionsClosed`] names, as for the panel.
+    OpenExclusions {
+        /// The number of this opening.
+        serial: u64,
+        /// What the dialog shows.
+        state: ExclusionsState,
+    },
+    /// Show this state in the open exclusions dialog, if one is open.
+    RefreshExclusions(ExclusionsState),
+    /// Close the open exclusions dialog, if any, without waiting for it.
+    CloseExclusions,
     /// Stop the typing hook (both hooks are removed; typing is plain at once).
     StopTyping,
     /// Close every open notice without waiting for it.
@@ -870,6 +922,12 @@ pub struct Tray {
     panel: Option<PanelState>,
     /// The number of the last [`Effect::OpenPanel`].
     panel_serial: u64,
+    /// `[exclusions] apps` in effect, as the worker last answered it.
+    exclusions: Vec<ExeName>,
+    /// The state last sent to the open exclusions dialog; `None` while none is open.
+    exclusions_dialog: Option<ExclusionsState>,
+    /// The number of the last [`Effect::OpenExclusions`].
+    exclusions_serial: u64,
     phase: Phase,
     /// The number of the last worker command sent.
     sent: u64,
@@ -949,6 +1007,9 @@ impl fmt::Debug for Tray {
             .field("show_panel_on_start", &self.show_panel_on_start)
             .field("panel_open", &self.panel.is_some())
             .field("panel_serial", &self.panel_serial)
+            .field("exclusions", &self.exclusions.len())
+            .field("exclusions_open", &self.exclusions_dialog.is_some())
+            .field("exclusions_serial", &self.exclusions_serial)
             .field("excluded", &self.excluded.is_some())
             .field("phase", &self.phase)
             .field("sent", &self.sent)
@@ -974,6 +1035,9 @@ impl Tray {
             show_panel_on_start: start.show_panel,
             panel: None,
             panel_serial: 0,
+            exclusions: start.exclusions,
+            exclusions_dialog: None,
+            exclusions_serial: 0,
             phase: Phase::Starting,
             sent: 0,
             polling: None,
@@ -1034,7 +1098,7 @@ impl Tray {
         if self.icon() != before {
             effects.push(Effect::UpdateIcon(self.icon()));
         }
-        self.follow_panel(&mut effects, false);
+        self.follow_dialogs(&mut effects);
         effects
     }
 
@@ -1068,6 +1132,12 @@ impl Tray {
             self.location,
             self.config_path.as_deref(),
         )
+    }
+
+    /// What the exclusions dialog (D48) shows: the excluded applications in effect, as the
+    /// worker last answered them, and whether its edits are saved.
+    pub fn exclusions_state(&self) -> ExclusionsState {
+        ExclusionsState::new(&self.exclusions, self.location, self.config_path.as_deref())
     }
 
     /// The tray menu for the settings in effect (D42, with "Bảng cấu hình…" first, D43).
@@ -1134,7 +1204,7 @@ impl Tray {
         now_ms: u32,
     ) -> Reply {
         let mut reply = self.message(message, wparam, lparam, now_ms);
-        self.follow_panel(&mut reply.effects, false);
+        self.follow_dialogs(&mut reply.effects);
         reply
     }
 
@@ -1183,7 +1253,7 @@ impl Tray {
     /// The effects of the command chosen in the menu (`None`: the menu was dismissed).
     pub fn menu_choice(&mut self, chosen: Option<u16>) -> Vec<Effect> {
         let mut effects = self.choice(chosen);
-        self.follow_panel(&mut effects, false);
+        self.follow_dialogs(&mut effects);
         effects
     }
 
@@ -1221,8 +1291,10 @@ impl Tray {
             return Vec::new();
         }
         // The panel's check boxes toggle themselves: whatever a request did (or refused), the
-        // panel is shown the state again.
+        // panel is shown the state again. The exclusions dialog is shown the list in effect
+        // after each of its edits too, whatever the worker will answer.
         let from_panel = matches!(event, Event::Panel(_));
+        let from_exclusions = matches!(event, Event::Exclusions(_));
         let mut effects = match event {
             Event::Hotkey(vietnamese) => self.set_mode(InputMode::from_vietnamese(vietnamese)),
             Event::Worker(answer) => self.on_answer(answer),
@@ -1235,8 +1307,17 @@ impl Tray {
                 Vec::new()
             }
             Event::MacrosSaved => self.poll_now(),
+            // Taken over from the worker's answer, never worked out here.
+            Event::Exclusions(request) => vec![self.command(WorkerCommand::Exclusions(request))],
+            Event::ExclusionsClosed(serial) => {
+                if serial == self.exclusions_serial {
+                    self.exclusions_dialog = None;
+                }
+                Vec::new()
+            }
         };
         self.follow_panel(&mut effects, from_panel);
+        self.follow_exclusions(&mut effects, from_exclusions);
         effects
     }
 
@@ -1250,7 +1331,9 @@ impl Tray {
             | Event::Answered(_)
             | Event::Panel(_)
             | Event::PanelClosed(_)
-            | Event::MacrosSaved => None,
+            | Event::MacrosSaved
+            | Event::Exclusions(_)
+            | Event::ExclusionsClosed(_) => None,
         });
         let Some(vietnamese) = last else {
             return Vec::new();
@@ -1267,7 +1350,7 @@ impl Tray {
         let mut effects = match question {
             Question::Recover => vec![self.command(WorkerCommand::Recover)],
         };
-        self.follow_panel(&mut effects, false);
+        self.follow_dialogs(&mut effects);
         effects
     }
 
@@ -1334,7 +1417,40 @@ impl Tray {
                 .map(|folder| Effect::OpenMacroList(folder.to_path_buf()))
                 .into_iter()
                 .collect(),
+            PanelRequest::Exclusions => self.open_exclusions(),
         }
+    }
+
+    /// While the exclusions dialog is open: appends [`Effect::RefreshExclusions`] to `effects`
+    /// when the state it shows is no longer the one last sent, or always when `force`d.
+    fn follow_exclusions(&mut self, effects: &mut Vec<Effect>, force: bool) {
+        let Some(sent) = &self.exclusions_dialog else {
+            return;
+        };
+        let now = self.exclusions_state();
+        if force || *sent != now {
+            self.exclusions_dialog = Some(now.clone());
+            effects.push(Effect::RefreshExclusions(now));
+        }
+    }
+
+    /// Opens the exclusions dialog, or brings the open one to the front, with the state in
+    /// effect.
+    fn open_exclusions(&mut self) -> Vec<Effect> {
+        self.exclusions_serial += 1;
+        let state = self.exclusions_state();
+        self.exclusions_dialog = Some(state.clone());
+        vec![Effect::OpenExclusions {
+            serial: self.exclusions_serial,
+            state,
+        }]
+    }
+
+    /// While a panel or the exclusions dialog is open, what they show follows `effects`
+    /// ([`Tray::follow_panel`], [`Tray::follow_exclusions`]).
+    fn follow_dialogs(&mut self, effects: &mut Vec<Effect>) {
+        self.follow_panel(effects, false);
+        self.follow_exclusions(effects, false);
     }
 
     /// Numbers `command` for the worker.
@@ -1570,11 +1686,13 @@ impl Tray {
         }
         self.phase = Phase::Exiting;
         self.panel = None;
+        self.exclusions_dialog = None;
         vec![
             Effect::StopTyping,
             Effect::DismissNotices,
             Effect::ClosePanel,
             Effect::CloseMacroList,
+            Effect::CloseExclusions,
             Effect::FlushHotkeys,
             Effect::FinishWorker,
             Effect::RemoveIcon,
@@ -1599,11 +1717,19 @@ impl Tray {
                 result: Ok(Saved::Written),
                 ..
             }
+            | Outcome::Exclusions {
+                result: Ok(Saved::Written),
+                ..
+            }
             | Outcome::Startup {
                 result: Ok(Saved::Written),
                 ..
             } => self.saved(),
             Outcome::Applied {
+                result: Ok(Saved::Unchanged),
+                ..
+            }
+            | Outcome::Exclusions {
                 result: Ok(Saved::Unchanged),
                 ..
             }
@@ -1614,6 +1740,9 @@ impl Tray {
             | Outcome::Opened(Ok(()))
             | Outcome::Failed => {}
             Outcome::Applied {
+                result: Err(error), ..
+            }
+            | Outcome::Exclusions {
                 result: Err(error), ..
             } => {
                 let notice = save_error_notice(path, error);
@@ -1691,6 +1820,7 @@ impl Tray {
         self.runtime = state.runtime;
         self.startup = state.startup;
         self.show_panel_on_start = state.show_panel_on_start;
+        self.exclusions = state.exclusions;
         if rules_changed {
             self.policy = policy_of(&self.runtime);
             self.excluded = self.exclusion();

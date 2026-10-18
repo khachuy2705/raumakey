@@ -52,6 +52,7 @@ use std::path::Path;
 
 use raumakey_config::StartupMode;
 use raumakey_ipc::message::RuntimeSnapshot;
+use raumakey_model::host::ExeName;
 use raumakey_windows::error::{WinError, WinErrorKind, WinResult};
 
 use crate::cli::{EXIT_FAILED, EXIT_OK};
@@ -73,6 +74,9 @@ pub struct Opened {
     pub temporary_exe: bool,
     /// `[system] show_panel_on_start` in effect: the tray opens the settings panel at start.
     pub show_panel_on_start: bool,
+    /// `[exclusions] apps` in effect (`Settings::excluded_apps`), which the exclusions dialog
+    /// shows (D48).
+    pub exclusions: Vec<ExeName>,
 }
 
 /// The shortcut `Raumakey.lnk` in the user's Startup folder ([`shortcut_state`]).
@@ -209,6 +213,7 @@ fn run_instance(desktop: &mut dyn Desktop) -> Result<i32, String> {
         startup,
         temporary_exe,
         show_panel_on_start,
+        exclusions,
     } = opened;
     let start = TrayStart {
         runtime,
@@ -219,6 +224,7 @@ fn run_instance(desktop: &mut dyn Desktop) -> Result<i32, String> {
         notices,
         temporary_exe,
         show_panel: show_panel_on_start,
+        exclusions,
     };
     let ran = desktop.run_tray(start);
     desktop.stop_typing();

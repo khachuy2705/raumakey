@@ -374,7 +374,9 @@ impl fmt::Debug for Prompt {
 }
 
 impl Prompt {
-    fn new(kind: PromptKind, text: String) -> Self {
+    /// A prompt of `kind` with `text` (the exclusions dialog, `crate::exclusions_dialog`,
+    /// asks through the same `Prompter`).
+    pub(crate) fn new(kind: PromptKind, text: String) -> Self {
         Self { kind, text }
     }
 
@@ -549,6 +551,7 @@ mod win {
     };
     use raumakey_windows::dialog_template::IDCANCEL;
     use raumakey_windows::error::WinResult;
+    use raumakey_windows::file_dialog::FileFilter;
     use raumakey_windows::module::Module;
     use raumakey_windows::panic::guard_value;
     use raumakey_windows::window::AppMessage;
@@ -566,8 +569,9 @@ mod win {
     /// list must be explained or asked about before the dialog is shown.
     const OPENING: u32 = 1;
 
-    /// How the editor tells and asks the user: [`MessageBoxes`] for real; the tests answer
-    /// from a script. Its methods run on the dialog's thread, inside the handler.
+    /// How the editor and the exclusions dialog (`crate::exclusions_dialog`) tell and ask the
+    /// user: [`MessageBoxes`] for real; the tests answer from a script. Its methods run on the
+    /// dialog's thread, inside the handler.
     pub trait Prompter: Send {
         /// The dialog was created and filled, and is not shown yet. Nothing by default; the
         /// tests move it off-screen here.
@@ -579,11 +583,24 @@ mod win {
         /// `false` for a warning or an error, and when no answer came (the box could not be
         /// shown, or the dialog was dismissed while it was open).
         fn ask(&mut self, dialog: &Dialog<'_>, prompt: &Prompt) -> bool;
+
+        /// Shows the Open dialog for one existing file of the types `filters`, owned by
+        /// `dialog`, and returns the path chosen; `None` when the user cancelled, the dialog
+        /// could not be shown, or `dialog` was dismissed meanwhile. `None` by default, without
+        /// showing anything (the tests answer from a script).
+        fn choose_file(
+            &mut self,
+            dialog: &Dialog<'_>,
+            filters: &[FileFilter<'_>],
+        ) -> Option<PathBuf> {
+            let _ = (dialog, filters);
+            None
+        }
     }
 
     /// The real [`Prompter`]: a message box owned by the dialog
-    /// ([`Dialog::message_box`]), whose modal loop runs inside the handler; dismissing the
-    /// dialog closes it.
+    /// ([`Dialog::message_box`]), and the Open dialog owned by it ([`Dialog::choose_file`]),
+    /// whose modal loops run inside the handler; dismissing the dialog closes them.
     #[derive(Clone, Copy, Debug, Default)]
     pub struct MessageBoxes;
 
@@ -593,6 +610,14 @@ mod win {
                 dialog.message_box(prompt.text(), prompt.kind().message_kind()),
                 Ok(MessageResponse::Yes)
             )
+        }
+
+        fn choose_file(
+            &mut self,
+            dialog: &Dialog<'_>,
+            filters: &[FileFilter<'_>],
+        ) -> Option<PathBuf> {
+            dialog.choose_file(filters).ok().flatten()
         }
     }
 

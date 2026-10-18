@@ -26,6 +26,7 @@ use raumakey_controller::startup::StartupSystem;
 use raumakey_controller::tray::TrayStart;
 use raumakey_converter::{ClipboardError, ClipboardPort, ClipboardText};
 use raumakey_ipc::message::RuntimeSnapshot;
+use raumakey_model::host::ExeName;
 use raumakey_model::identity::Guid;
 use raumakey_windows::error::{E_ACCESSDENIED, WinError, WinResult, win32};
 use raumakey_windows::names::SidHash;
@@ -246,6 +247,7 @@ pub fn opened_settings() -> Opened {
         startup: StartupMode::None,
         temporary_exe: false,
         show_panel_on_start: true,
+        exclusions: vec![ExeName::new("putty.exe").unwrap()],
     }
 }
 

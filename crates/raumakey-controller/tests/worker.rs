@@ -11,7 +11,10 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use raumakey_config::{ConfigDocument, ConfigError, IssueReason, StartupMode, StoreDocument};
+use raumakey_config::{
+    ConfigDocument, ConfigError, ExclusionsSection, IssueReason, StartupMode, StoreDocument,
+};
+use raumakey_controller::exclusions::ExclusionsRequest;
 use raumakey_controller::run::ShortcutState;
 use raumakey_controller::settings::{Change, DocumentStatus, Recovery, Settings};
 use raumakey_controller::worker::{
@@ -19,6 +22,7 @@ use raumakey_controller::worker::{
     StartupError, WorkerCommand, WorkerPorts, WorkerThread,
 };
 use raumakey_ipc::message::MacroSnapshot;
+use raumakey_model::host::ExeName;
 use raumakey_model::options::InputMethod;
 use raumakey_windows::error::{E_ACCESSDENIED, E_FAIL, WinError, WinResult};
 
@@ -195,6 +199,110 @@ fn every_answer_carries_whether_the_panel_opens_at_start() {
     fs::write(folder.config(), edited.encode().unwrap()).unwrap();
     let answer = worker.handle(3, WorkerCommand::Poll);
     assert!(state(&answer).show_panel_on_start);
+}
+
+fn exe(name: &str) -> ExeName {
+    ExeName::new(name).unwrap()
+}
+
+/// The default exclusions followed by `more`.
+fn defaults_and(more: &[&str]) -> Vec<ExeName> {
+    let mut apps = ExclusionsSection::default().apps;
+    apps.extend(more.iter().map(|name| exe(name)));
+    apps
+}
+
+/// An edit of the exclusions dialog (D48) is committed like a change and answered with whether
+/// it wrote anything; the answer carries the list in effect and the runtime snapshot with its
+/// rule.
+#[test]
+fn an_exclusion_edit_is_committed_and_answered_with_the_list_in_effect() {
+    let folder = Folder::new();
+    let log = Log::default();
+    let mut worker = worker(&folder, FakePorts::new(&log));
+    let first = worker.handle(1, WorkerCommand::Poll);
+    assert_eq!(state(&first).exclusions, defaults_and(&[]));
+
+    let add = ExclusionsRequest::Add(exe("notepad.exe"));
+    let answer = worker.handle(2, WorkerCommand::Exclusions(add.clone()));
+    assert_eq!(
+        answer.outcome,
+        Outcome::Exclusions {
+            request: add.clone(),
+            result: Ok(Saved::Written)
+        }
+    );
+    let state = state(&answer);
+    assert_eq!(state.exclusions, defaults_and(&["notepad.exe"]));
+    assert_eq!(state.runtime, *worker.settings().runtime_snapshot());
+    assert!(
+        state
+            .runtime
+            .compatibility
+            .rules
+            .iter()
+            .any(|rule| rule.exe == exe("notepad.exe")),
+        "{:?}",
+        state.runtime.compatibility
+    );
+    assert_eq!(
+        folder.stored().exclusions.apps,
+        defaults_and(&["notepad.exe"])
+    );
+
+    // Listed already: nothing written, and the answer says so.
+    assert_eq!(
+        worker
+            .handle(3, WorkerCommand::Exclusions(add.clone()))
+            .outcome,
+        Outcome::Exclusions {
+            request: add,
+            result: Ok(Saved::Unchanged)
+        }
+    );
+    let answer = worker.handle(4, WorkerCommand::Exclusions(ExclusionsRequest::Defaults));
+    assert_eq!(
+        answer.outcome,
+        Outcome::Exclusions {
+            request: ExclusionsRequest::Defaults,
+            result: Ok(Saved::Written)
+        }
+    );
+    assert_eq!(answer.state.unwrap().exclusions, defaults_and(&[]));
+    assert_eq!(calls(&log), []);
+}
+
+/// An edit that cannot be saved stays in effect, and the answer carries the error; a hand edit
+/// of `[exclusions]` reaches the next answer.
+#[test]
+fn an_exclusion_edit_that_cannot_be_saved_is_answered_with_the_error() {
+    let folder = Folder::new();
+    fs::write(folder.config(), "[[[ damaged").unwrap();
+    let mut worker = worker(&folder, FakePorts::new(&Log::default()));
+    let remove = ExclusionsRequest::Remove(exe("mstsc.exe"));
+    let answer = worker.handle(1, WorkerCommand::Exclusions(remove.clone()));
+    assert_eq!(
+        answer.outcome,
+        Outcome::Exclusions {
+            request: remove,
+            result: Err(ConfigError::Corrupt)
+        }
+    );
+    assert_eq!(
+        state(&answer).exclusions,
+        [exe("msrdc.exe"), exe("rdcman.exe"), exe("vmconnect.exe")]
+    );
+    assert_eq!(fs::read(folder.config()).unwrap(), b"[[[ damaged");
+
+    let edited = Folder::new();
+    let mut other = SettingsWorker::new(edited.open(), FakePorts::new(&Log::default()));
+    fs::write(
+        edited.config(),
+        "version = 1\nrevision = 1\n[exclusions]\napps = [\"putty\"]\n",
+    )
+    .unwrap();
+    let answer = other.handle(1, WorkerCommand::Poll);
+    assert_eq!(state(&answer).exclusions, [exe("putty.exe")]);
 }
 
 /// A change to the value in effect writes nothing, and says so: the tray does not take it for
