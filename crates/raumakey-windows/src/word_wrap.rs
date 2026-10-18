@@ -58,12 +58,15 @@ const MESSAGE_LINE_MIN_CHARS: i32 = 25;
 ///   a box with an icon showed lines of up to 318 pixels whole and wrapped those of 321, with
 ///   its box 426 pixels wide at most, the same box as on a 1,280-pixel work area; a box of
 ///   many lines only grows wider. Its text font is one pixel smaller than the message font
-///   that measures the lines here (Segoe UI -11 against -12), so 300 pixels leave about a
-///   sixth of room.
+///   that measures the lines here (Segoe UI -11 against -12), which makes hinted text only
+///   about 2 % narrower: a line of 300 pixels here draws 298 pixels wide in the box, so 300
+///   pixels leave about 20 pixels (some 6 %) of room at 96 DPI. Other scalings, mixed-DPI
+///   desktops, and a larger Windows text size are not measured (a manual check).
 /// - 50 average characters, for readability (also where the box's own limit shrinks with a
 ///   small font).
-/// - A quarter of the work area, but at least 25 average characters: on a small screen the
-///   box may have less room.
+/// - A quarter of the work area, but at least 25 average characters: a heuristic for small
+///   screens, where the box may have less room (the limit measured above did not depend on
+///   the work area; this only ever makes lines shorter).
 ///
 /// The result is at least 1.
 pub fn message_text_width(work_width: i32, dpi: u32, average_char_width: i32) -> i32 {

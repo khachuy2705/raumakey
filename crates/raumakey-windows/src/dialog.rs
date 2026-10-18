@@ -16,8 +16,12 @@
 //! (`IDCANCEL` to a box with OK only, as Esc does, `IDNO` to a question), and the callback
 //! gets [`MessageKind::dismiss_answer`].
 
+use crate::dialog_template::IDCANCEL;
 use crate::error::WinResult;
 use crate::strings::WideString;
+
+/// `IDNO`: the id of the No button of a message box.
+const IDNO: u16 = 7;
 
 /// `MessageBoxW` style bits used by [`MessageKind::style`].
 pub mod styles {
@@ -86,8 +90,8 @@ impl MessageKind {
     /// The box then answers [`dismiss_answer`](Self::dismiss_answer).
     pub const fn dismiss_command(self) -> u16 {
         match self {
-            Self::Question => 7,
-            Self::Information | Self::Warning | Self::Error => 2,
+            Self::Question => IDNO,
+            Self::Information | Self::Warning | Self::Error => IDCANCEL,
         }
     }
 }
@@ -258,6 +262,7 @@ mod detached {
         spawn_message_box_with(text, caption, kind, || (), on_close)
     }
 
+    #[doc(hidden)]
     /// [`spawn_message_box`], running `prepare` on the box's thread first, just before the box
     /// is shown (not when it was dismissed before); what `prepare` returns is dropped on that
     /// thread once the box closed. The tests hook the thread with it, so that their boxes stay
