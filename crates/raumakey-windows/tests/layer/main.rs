@@ -9,9 +9,10 @@
 //! dialog boxes without a taskbar button (`WS_EX_NOACTIVATE`) that are moved far off-screen
 //! before Windows shows them (some under an activation context of Common Controls 6 made from a
 //! temporary manifest, active on the test's own threads only), whose controls may paint
-//! themselves into memory bitmaps (`WM_PRINTCLIENT`), one message box that hooks of its own
-//! fresh thread (`WH_CALLWNDPROCRET`, `WH_CBT`) read once it is laid out, move off-screen, end
-//! before Windows first shows it, and never let activate, menus that are never shown,
+//! themselves into memory bitmaps (`WM_PRINTCLIENT`), message boxes that hooks of their own
+//! thread (`WH_CALLWNDPROCRET`, `WH_CBT`) read once they are laid out, move off-screen without
+//! a taskbar button, never let activate, and end before Windows first shows them or keep
+//! off-screen until the test dismisses them, menus that are never shown,
 //! in-process COM objects that are never registered, system DLLs
 //! mapped as data, a uniquely named temporary copy of a data-only DLL (no code runs),
 //! impersonation on a fresh test thread (which reverts before it ends) of tokens that exist only

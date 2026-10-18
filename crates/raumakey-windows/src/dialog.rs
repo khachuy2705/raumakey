@@ -12,8 +12,9 @@
 //! processing (see [`crate::window`]). A window thread that must go on handling its messages
 //! while a box is open shows it with `spawn_message_box` instead: the box runs on a thread of
 //! its own, its answer goes to a callback, and `DetachedMessageBox::dismiss` closes it
-//! without waiting (`dismiss_message_boxes` posts the button of
-//! [`MessageKind::dismiss_answer`] to the box).
+//! without waiting: `dismiss_message_boxes` posts [`MessageKind::dismiss_command`] to the box
+//! (`IDCANCEL` to a box with OK only, as Esc does, `IDNO` to a question), and the callback
+//! gets [`MessageKind::dismiss_answer`].
 
 use crate::error::WinResult;
 use crate::strings::WideString;
@@ -62,12 +63,31 @@ impl MessageKind {
         buttons_and_icon | styles::MB_SETFOREGROUND
     }
 
-    /// The button that closes a box of this kind without an answer of the user: No for a
-    /// question (it has no Cancel button, so `WM_CLOSE` and Esc do not close it), OK otherwise.
+    /// The answer of a box of this kind that was closed without an answer of the user, with
+    /// [`dismiss_command`](Self::dismiss_command): what `MessageBoxW` returns, and so what
+    /// the callback of `spawn_message_box` gets. No for a question, OK otherwise.
     pub const fn dismiss_answer(self) -> MessageResponse {
         match self {
             Self::Question => MessageResponse::No,
             Self::Information | Self::Warning | Self::Error => MessageResponse::Ok,
+        }
+    }
+
+    /// The command (the `WM_COMMAND` id) that closes a box of this kind without an answer of
+    /// the user, and that `dismiss_message_boxes` posts to it:
+    ///
+    /// - `IDNO` (7) for a question: it has no Cancel button, so Esc, the close box,
+    ///   `WM_CLOSE`, and `IDCANCEL` do not close it.
+    /// - `IDCANCEL` (2) for the boxes with OK only, as Esc sends it: `MessageBoxW` closes a box
+    ///   with only an OK button on Esc and answers `IDOK` (its documentation). `IDOK` would not
+    ///   do: on Windows 11 the single button of such a box has the id `IDCANCEL`, and the box
+    ///   ignores a command `IDOK`.
+    ///
+    /// The box then answers [`dismiss_answer`](Self::dismiss_answer).
+    pub const fn dismiss_command(self) -> u16 {
+        match self {
+            Self::Question => 7,
+            Self::Information | Self::Warning | Self::Error => 2,
         }
     }
 }
@@ -157,7 +177,9 @@ pub fn message_box(
 }
 
 #[cfg(windows)]
-pub use detached::{DetachedMessageBox, dismiss_message_boxes, spawn_message_box};
+pub use detached::{
+    DetachedMessageBox, dismiss_message_boxes, spawn_message_box, spawn_message_box_with,
+};
 
 #[cfg(windows)]
 mod detached {
@@ -208,15 +230,16 @@ mod detached {
             self.shared.closed.load(Ordering::Acquire)
         }
 
-        /// Closes the box without waiting: posts the button of
-        /// [`MessageKind::dismiss_answer`] to it ([`dismiss_message_boxes`]). A box whose
-        /// thread has not shown it yet is not shown at all. A box that its thread is creating
-        /// at this very moment may stay open; it closes with the process.
+        /// Closes the box without waiting: posts [`MessageKind::dismiss_command`] to it
+        /// ([`dismiss_message_boxes`]), and `on_close` gets
+        /// [`MessageKind::dismiss_answer`]. A box whose thread has not shown it yet is not
+        /// shown at all. A box that its thread is creating at this very moment may stay open;
+        /// it closes with the process.
         pub fn dismiss(&self) {
             self.shared.dismissed.store(true, Ordering::Release);
             let thread_id = self.shared.thread_id.load(Ordering::Acquire);
             if thread_id != 0 && !self.is_closed() {
-                dismiss_message_boxes(thread_id, self.shared.kind.dismiss_answer());
+                dismiss_message_boxes(thread_id, self.shared.kind);
             }
         }
     }
@@ -230,6 +253,21 @@ mod detached {
         text: &str,
         caption: &str,
         kind: MessageKind,
+        on_close: impl FnOnce(Option<MessageResponse>) + Send + 'static,
+    ) -> WinResult<DetachedMessageBox> {
+        spawn_message_box_with(text, caption, kind, || (), on_close)
+    }
+
+    /// [`spawn_message_box`], running `prepare` on the box's thread first, just before the box
+    /// is shown (not when it was dismissed before); what `prepare` returns is dropped on that
+    /// thread once the box closed. The tests hook the thread with it, so that their boxes stay
+    /// off every monitor and never take the foreground. A panic in `prepare` or in the drop is
+    /// contained: the box is not shown, or its answer stays.
+    pub fn spawn_message_box_with<G: 'static>(
+        text: &str,
+        caption: &str,
+        kind: MessageKind,
+        prepare: impl FnOnce() -> G + Send + 'static,
         on_close: impl FnOnce(Option<MessageResponse>) + Send + 'static,
     ) -> WinResult<DetachedMessageBox> {
         message_box_texts(text, caption)?;
@@ -251,7 +289,14 @@ mod detached {
                 let answer = if on_thread.dismissed.load(Ordering::Acquire) {
                     None
                 } else {
-                    guard_value(None, || message_box(None, &text, &caption, kind).ok())
+                    let mut prepared = None;
+                    let answer = guard_value(None, || {
+                        prepared = Some(prepare());
+                        message_box(None, &text, &caption, kind).ok()
+                    });
+                    // Once the box closed; a panic in the drop leaves the answer.
+                    guard_value((), move || drop(prepared));
+                    answer
                 };
                 on_thread.closed.store(true, Ordering::Release);
                 guard_value((), || on_close(answer));
@@ -266,11 +311,12 @@ mod detached {
         posted: usize,
     }
 
-    /// Posts the button `answer` (`WM_COMMAND`) to every dialog window (class `#32770`, as a
-    /// message box is) of thread `thread_id`, and returns how many it posted to. Never waits.
-    pub fn dismiss_message_boxes(thread_id: u32, answer: MessageResponse) -> usize {
+    /// Posts the command that closes a box of `kind` ([`MessageKind::dismiss_command`], as
+    /// `WM_COMMAND`) to every dialog window (class `#32770`, as a message box is) of thread
+    /// `thread_id`, and returns how many it posted to. Never waits.
+    pub fn dismiss_message_boxes(thread_id: u32, kind: MessageKind) -> usize {
         let mut dismissal = Dismissal {
-            command: answer.id() as usize,
+            command: usize::from(kind.dismiss_command()),
             posted: 0,
         };
         // SAFETY: the callback runs during the call only and receives a pointer to

@@ -59,8 +59,8 @@
 //! procedure answers itself with `EndDialog(IDCANCEL)`, without asking the handler (and
 //! nothing else can send it; see "Forged messages"). It also dismisses the dialogs that the
 //! handler runs with this dialog as owner, and closes the message box shown through
-//! [`Dialog::message_box`] with its
-//! [`dismiss_answer`](crate::dialog::MessageKind::dismiss_answer) (`message_box` then fails
+//! [`Dialog::message_box`] with the command that closes a box of its kind
+//! ([`dismiss_command`](crate::dialog::MessageKind::dismiss_command); `message_box` then fails
 //! with `E_ABORT`). A dialog dismissed before its window handle is published (that happens
 //! once `init` returned) ends during `WM_INITDIALOG` and is never shown. Until then nothing
 //! reaches the dialog's thread: a message box that `init` shows stays open until it is
@@ -1918,14 +1918,15 @@ mod win {
 
     /// Ends the dialog with `IDCANCEL` without asking its handler, and closes what it shows:
     /// the dialogs of this module that it owns get the same reserved message, and the message
-    /// box of [`Dialog::message_box`] its dismiss answer.
+    /// box of [`Dialog::message_box`] the command that closes it
+    /// ([`MessageKind::dismiss_command`]).
     fn dismiss(state: &DialogState, hwnd: HWND) {
         state.dismissed.set(true);
         // SAFETY: the dialog is a window of this thread run by DialogBoxIndirectParamW.
         let _ = unsafe { EndDialog(hwnd, CANCELLED) };
         let mut closing = Closing {
             owner: hwnd,
-            box_answer: state.open_box.get().map(|kind| kind.dismiss_answer()),
+            box_command: state.open_box.get().map(MessageKind::dismiss_command),
             open: OPEN.with(|open| {
                 open.try_borrow()
                     .map(|open| open.clone())
@@ -1947,8 +1948,9 @@ mod win {
     struct Closing {
         /// The dismissed dialog.
         owner: HWND,
-        /// The answer that closes the message box it shows, if it shows one.
-        box_answer: Option<MessageResponse>,
+        /// The command that closes the message box it shows, if it shows one
+        /// ([`MessageKind::dismiss_command`]).
+        box_command: Option<u16>,
         /// The dialogs of this module on this thread, with their cookies.
         open: Vec<(isize, usize)>,
     }
@@ -1969,10 +1971,10 @@ mod win {
                 .find(|&&(dialog, _)| dialog == hwnd.0 as isize);
             let (message, wparam) = if let Some(&(_, cookie)) = open {
                 (DISMISS, cookie)
-            } else if let Some(answer) = closing.box_answer
+            } else if let Some(command) = closing.box_command
                 && is_dialog_class(hwnd)
             {
-                (WM_COMMAND, answer.id() as usize)
+                (WM_COMMAND, usize::from(command))
             } else {
                 return true;
             };
