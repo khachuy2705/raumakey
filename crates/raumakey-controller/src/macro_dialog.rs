@@ -15,7 +15,9 @@
 //!   [`LINE_BREAK_MARK`], control characters replaced, long texts cut to [`CELL_SCALARS`]: for
 //!   display only), [`edit_text`] and [`entered_text`] (the edits hold line breaks as `\r\n`,
 //!   the model as `\n`), and the edits' limits ([`TRIGGER_LIMIT`], [`REPLACEMENT_LIMIT`]),
-//!   which every valid trigger and replacement fits, typed decomposed or not.
+//!   which every valid trigger and replacement fits, typed decomposed or not. So a `\r\n` or a
+//!   lone `\r` that the file holds (written by hand) comes back as `\n` once its row is put
+//!   again with "Thêm / Sửa", by design: the edits cannot tell the line breaks apart.
 //! - What the buttons do, over a [`MacroList`] and an `ask` callback that shows a [`Prompt`]
 //!   and returns whether the user answered "yes" (the dialog shows them in message boxes it
 //!   owns): [`open_list`] (a load error is shown and the editor does not open; values the
@@ -29,8 +31,8 @@
 //!
 //! - **Opening.** `init` sets the icon of `raumakey.exe` ([`APP_ICON_ID`]; a failure is
 //!   ignored), the columns and the edits' limits, and loads the list: file I/O on the
-//!   dialog's own thread, as design §22.2 has it (a load or a save may wait up to two seconds
-//!   for another writer's commit; nothing else waits for that thread). When the load failed
+//!   dialog's own thread, as design §22.2 has it (see `MacroListDialog` for how long the
+//!   editor may then stop answering; nothing else waits for that thread). When the load failed
 //!   or left values it could not read, `init` posts itself a private message, which arrives
 //!   before the dialog is first shown (a dialog box shows itself once its queue first runs
 //!   empty): the box is shown then, owned by the hidden dialog, so that dismissing the dialog
@@ -41,7 +43,12 @@
 //!   while a message box is open. Selecting a row (or double-clicking it) fills the two edits
 //!   with it and enables "Xoá"; "Thêm / Sửa" selects the row it added or edited; "Xoá" removes
 //!   the selected row and leaves its texts in the edits, so that "Thêm / Sửa" puts it back
-//!   (as a new row, with the default settings).
+//!   (as a new row, with the default settings). Only a selection that the user changes fills
+//!   the edits: those the handler makes itself do not reach it. Typing into the list selects
+//!   the next row whose trigger starts with the letters typed, ignoring case (the dialog
+//!   answers the list view's search, `LVN_ODFINDITEMW`, from the rows it keeps), and so fills
+//!   the edits as a click on that row would; letters that lead to no other row keep the
+//!   selection, and so what the user typed into the edits.
 //! - **Saving.** After each write ("Lưu", or "yes" to writing over a changed file),
 //!   `on_saved` runs on the dialog's thread (the tray then asks the worker to poll at once,
 //!   so the typing hook gets the new macros). After every message box, the controls are
@@ -71,6 +78,10 @@
 //! 2. Click a row: both edits show it, line breaks as lines; "Xoá" is enabled. Edit the
 //!    replacement, add a line with Enter, press "Thêm / Sửa": the row changes in place.
 //!    Type a new trigger and press Enter in it: a row is added at the end and selected.
+//!    Change the replacement without pressing "Thêm / Sửa", click into the list, and type a
+//!    letter that no trigger starts with: the selection and the edits stay as they were (the
+//!    list never jumps to its first row). Type the first letter of another row's trigger
+//!    (in either case): that row is selected and shown in the edits.
 //! 3. A trigger with a space, or empty edits: a warning box owned by the editor, in
 //!    Vietnamese; nothing changes.
 //! 4. "Lưu": "Đã lưu."; within a moment the new macro expands in Notepad. "Lưu" again:
@@ -80,11 +91,18 @@
 //! 6. "Đóng" (and Esc, and the close box) with unsaved rows: the discard question; "Không"
 //!    keeps the editor open.
 //! 7. Break the TOML of `raumakey-macros.toml` and open the editor: only an error box, no
-//!    editor, and the file is unchanged.
-//! 8. With 20,000 macros the editor opens within about a second and scrolls smoothly; adding,
-//!    removing, and saving stay quick.
+//!    editor, and the file is unchanged. Give an entry an `enabled` that is no boolean and
+//!    open the editor: first the question about the values it cannot read; "Không" opens
+//!    nothing and leaves the file as it is. Both boxes are owned by the editor, which is not
+//!    shown yet and has no taskbar button, so neither has one either: click another window,
+//!    then bring the box back with Alt+Tab, or with "Danh sách gõ tắt…" of the panel (which
+//!    brings the editor that is opening, and so its box, to the front).
+//! 8. With 20,000 macros the editor opens within about a second and scrolls smoothly; adding
+//!    and removing stay quick, and "Lưu" leaves the editor unresponsive for at most a second
+//!    or two.
 //! 9. With a box of the editor open, choose "Thoát" in the tray menu: the box and the editor
-//!    close, and nothing is saved.
+//!    close, and nothing is saved. The same while the question about unreadable values is
+//!    open, before the editor was ever shown: the question goes, and no editor appears.
 
 use core::fmt;
 
@@ -296,7 +314,8 @@ pub fn edit_text(text: &str) -> String {
 }
 
 /// The text of an edit as the model takes it: each line break (`\r\n`, or a lone `\r`) as
-/// `\n`.
+/// `\n`. With [`edit_text`], a replacement whose file holds `\r\n` or a lone `\r` comes back
+/// with `\n` once its row is put again, by design.
 pub fn entered_text(text: &str) -> String {
     let mut entered = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -576,6 +595,13 @@ mod win {
     /// The handler of the editor (see the [module documentation](super)): it owns the
     /// [`MacroList`] of the data folder, loaded at `init`, and fills the controls from it
     /// after every change and every prompt.
+    ///
+    /// It reads and writes `raumakey-macros.toml` on the dialog's own UI thread, inside its
+    /// callbacks (the load in `init`; "Lưu", and "yes" to writing over a changed file), which
+    /// design §22.2 accepts: the editor stops answering meanwhile, for the store's wait for
+    /// its lock (up to two seconds while another writer commits) plus the read or the write (a
+    /// save of 20,000 rows takes about 1.5–1.7 s in a debug build). Only the editor waits:
+    /// nothing else waits for its thread, and the tray only posts to it.
     pub struct MacroListDialog<P: Prompter> {
         folder: PathBuf,
         /// The list, once loaded; `None` when it could not be, or the user declined to open

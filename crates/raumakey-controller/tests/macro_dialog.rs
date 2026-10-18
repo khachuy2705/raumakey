@@ -24,6 +24,12 @@ use raumakey_macro::{EntryError, MAX_TRIGGER_SCALARS, normalize_replacement, nor
 use raumakey_windows::dialog::MessageKind;
 use raumakey_windows::dialog_template::{ControlClass, IDCANCEL, styles};
 
+/// Common Controls 6 for the editor, as `raumakey.exe`'s manifest asks for it; shared with the
+/// tests of `raumakey-windows`.
+#[cfg(windows)]
+#[path = "../../raumakey-windows/tests/layer/common_controls_v6.rs"]
+mod common_controls_v6;
+
 fn macros_path(dir: &Path) -> PathBuf {
     dir.join("raumakey-macros.toml")
 }
@@ -254,6 +260,9 @@ fn edits_show_line_breaks_as_crlf_and_entered_texts_use_lf() {
     for text in ["", "không", "dòng một\ndòng hai\n", "\n\n", "Việt\tNam"] {
         assert_eq!(entered_text(&edit_text(text)), text, "{text:?}");
     }
+    // By design, a `\r\n` or a lone `\r` of the file comes back as `\n` once its row is put
+    // again: the edit holds every line break as `\r\n`.
+    assert_eq!(entered_text(&edit_text("a\r\nb\rc")), "a\nb\nc");
 }
 
 /// The edits take every valid trigger and replacement, also typed decomposed or full of line
@@ -568,6 +577,7 @@ mod win {
     use raumakey_macro::EntryError;
     use raumakey_windows::dialog_box::{DetachedDialog, Dialog};
     use raumakey_windows::dialog_template::IDCANCEL;
+    use raumakey_windows::strings::until_nul;
     use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
     use windows::Win32::UI::Controls::{
         LVIS_SELECTED, LVITEMW, LVM_GETITEMCOUNT, LVM_GETITEMTEXTW, LVM_GETNEXTITEM,
@@ -576,10 +586,12 @@ mod win {
     use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
     use windows::Win32::UI::WindowsAndMessaging::{
         BM_CLICK, GetDlgItem, IsWindow, IsWindowVisible, SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOSIZE,
-        SWP_NOZORDER, SendMessageTimeoutW, SetWindowPos, WM_GETTEXT, WM_GETTEXTLENGTH, WM_SETTEXT,
+        SWP_NOZORDER, SendMessageTimeoutW, SetWindowPos, WM_CHAR, WM_GETTEXT, WM_GETTEXTLENGTH,
+        WM_SETTEXT,
     };
     use windows::core::PWSTR;
 
+    use super::common_controls_v6::{CCM_GETVERSION, CommonControls6};
     use super::{LOSSY_FILE, macros_file, macros_path};
 
     const WAIT: Duration = Duration::from_secs(30);
@@ -790,6 +802,10 @@ mod win {
         send(item(dialog, ID_LIST), LVM_GETITEMCOUNT, 0, 0)
     }
 
+    /// The text of a cell, as the list view copies it into a buffer of 256 units
+    /// (`LVM_GETITEMTEXTW`; every cell fits, see `CELL_SCALARS`). The answer is not the length
+    /// copied: Common Controls 6 answers the length of the whole cell, so the copy ends at its
+    /// NUL.
     fn cell(dialog: HWND, row: usize, column: i32) -> String {
         let mut buffer = [0_u16; 256];
         let mut cell = LVITEMW {
@@ -799,8 +815,8 @@ mod win {
             ..Default::default()
         };
         let list = item(dialog, ID_LIST);
-        let copied = send(list, LVM_GETITEMTEXTW, row, &raw mut cell as isize) as usize;
-        String::from_utf16(&buffer[..copied]).unwrap()
+        send(list, LVM_GETITEMTEXTW, row, &raw mut cell as isize);
+        String::from_utf16(until_nul(&buffer)).unwrap()
     }
 
     fn selected(dialog: HWND) -> isize {
@@ -825,6 +841,30 @@ mod win {
             row,
             &raw mut state as isize,
         );
+    }
+
+    /// Types `typed` into the list as the keyboard would (`WM_CHAR`).
+    fn type_into_list(dialog: HWND, typed: &str) {
+        for unit in typed.encode_utf16() {
+            send(item(dialog, ID_LIST), WM_CHAR, usize::from(unit), 1);
+        }
+    }
+
+    /// Opens the editor on `dir` under Common Controls 6, as `raumakey.exe` shows it (only
+    /// version 6 searches the list as the user types into it), and waits until it is shown.
+    fn spawn_v6(dir: &Path) -> (Editor, HWND) {
+        let editor = {
+            // The editor's thread inherits the context; the guard may go once it started.
+            let _v6 = CommonControls6::activate();
+            spawn(dir, &[])
+        };
+        let hwnd = editor.shown();
+        assert_eq!(
+            send(item(hwnd, ID_LIST), CCM_GETVERSION, 0, 0),
+            6,
+            "Common Controls 6"
+        );
+        (editor, hwnd)
     }
 
     fn asked(kind: PromptKind, text: &str, visible: bool) -> Event {
@@ -937,6 +977,47 @@ mod win {
         assert_eq!(row_count(hwnd), 2);
         assert_eq!(cell(hwnd, 1, 1), "Việt Nam");
         assert_eq!(selected(hwnd), 1);
+        assert_eq!(editor.waiting(), []);
+    }
+
+    /// Typing into the list selects the next row whose trigger starts with the letters typed,
+    /// which fills the edits as a click on it would; letters that lead to no other row change
+    /// neither the selection nor what the user typed into the edits. Never the first row by
+    /// accident.
+    #[test]
+    fn typing_into_the_list_selects_the_matching_row_and_keeps_the_edits_otherwise() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            macros_path(dir.path()),
+            macros_file(&[
+                (1, "ab", "một", true),
+                (2, "vn", "Việt Nam", true),
+                (3, "ko", "không", true),
+            ]),
+        )
+        .unwrap();
+
+        let (editor, hwnd) = spawn_v6(dir.path());
+        assert_eq!(selected(hwnd), -1);
+        type_into_list(hwnd, "k");
+        assert_eq!(selected(hwnd), 2);
+        assert_eq!(label(hwnd, ID_TRIGGER), "ko");
+        assert_eq!(label(hwnd, ID_REPLACEMENT), "không");
+        assert!(is_enabled(hwnd, ID_REMOVE));
+        assert_eq!(editor.waiting(), []);
+        drop(editor);
+
+        let (editor, hwnd) = spawn_v6(dir.path());
+        select(hwnd, 1);
+        type_into(hwnd, ID_REPLACEMENT, "Việt Nam đang gõ dở");
+        // "v" finds the selected row again, and "vq" (typed quickly) no row.
+        for typed in ["v", "q"] {
+            type_into_list(hwnd, typed);
+            assert_eq!(selected(hwnd), 1, "{typed}");
+            assert_eq!(label(hwnd, ID_TRIGGER), "vn");
+            assert_eq!(label(hwnd, ID_REPLACEMENT), "Việt Nam đang gõ dở");
+        }
+        assert_eq!(row_count(hwnd), 3);
         assert_eq!(editor.waiting(), []);
     }
 

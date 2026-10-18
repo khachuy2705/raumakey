@@ -7,8 +7,9 @@
 //! is broadcast), `WH_CBT` hooks of such a thread or of a test dialog's thread only (they see
 //! only that thread's windows),
 //! dialog boxes without a taskbar button (`WS_EX_NOACTIVATE`) that are moved far off-screen
-//! before Windows shows them, menus that are never shown, in-process COM objects that are never
-//! registered, system DLLs
+//! before Windows shows them (some under an activation context of Common Controls 6 made from a
+//! temporary manifest, active on the test's own threads only), menus that are never shown,
+//! in-process COM objects that are never registered, system DLLs
 //! mapped as data, a uniquely named temporary copy of a data-only DLL (no code runs),
 //! impersonation on a fresh test thread (which reverts before it ends) of tokens that exist only
 //! in this process (a low-integrity copy of the process token, an AppContainer "lowbox" token
@@ -21,6 +22,8 @@
 //! The quiet panic hook is tested in its own binary (`tests/panic_hook.rs`) because installing
 //! it would silence the failure messages of this suite.
 
+#[cfg(windows)]
+mod common_controls_v6;
 mod support;
 
 // Pure modules (every platform); Windows-only cases inside are gated individually.

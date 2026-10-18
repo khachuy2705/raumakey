@@ -83,11 +83,17 @@
 //!   processes nor refuses to post, so a forged one may point anywhere: the dialog procedure
 //!   copies the header with `ReadProcessMemory`, which fails instead of faulting on memory that
 //!   cannot be read, and hands it to the handler only when it names a control of the dialog by
-//!   its handle and id. The one request the procedure answers itself, `LVN_GETDISPINFOW` of a
-//!   virtual list view ([`Dialog::list_set_virtual_rows`]), passes the same check and is
-//!   answered by setting the request's own `pszText` field with `WriteProcessMemory` (which
-//!   fails instead of faulting) to a text the dialog keeps: nothing is written through a
-//!   pointer the request carries.
+//!   its handle and id. The two requests of a virtual list view that the procedure answers
+//!   itself ([`Dialog::list_set_virtual_rows`]) pass the same check and are copied the same
+//!   way, and so is the text of a search, block by block within pages, up to its NUL and at
+//!   most 1,024 units: a text that cannot be read finds nothing. A search (`LVN_ODFINDITEMW`)
+//!   is answered with its result alone (`DWLP_MSGRESULT`). A cell request (`LVN_GETDISPINFOW`)
+//!   is answered by setting the request's own `pszText` field to a text the dialog keeps, with
+//!   `WriteProcessMemory`, and only when `VirtualQuery` reports that field in committed
+//!   read-write memory: `WriteProcessMemory` fails instead of faulting where it cannot write,
+//!   but it makes a read-only executable page writable for the write (and restores it), so a
+//!   forged request could otherwise patch code. Nothing is written through a pointer a request
+//!   carries.
 //!
 //! **Panics.** The dialog procedure runs inside [`guard_value`](crate::panic::guard_value): a
 //! panicking callback leaves its message unhandled (`FALSE`), the handler is not left borrowed,
@@ -172,8 +178,12 @@ mod win {
     // The helpers of the macro list editor: virtual list views, text limits, posting.
     use windows::Win32::Graphics::Gdi::InvalidateRect;
     use windows::Win32::System::Diagnostics::Debug::WriteProcessMemory;
+    use windows::Win32::System::Memory::{
+        MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_READWRITE, PAGE_WRITECOPY, VirtualQuery,
+    };
     use windows::Win32::UI::Controls::{
-        EM_SETLIMITTEXT, LVM_SETITEMCOUNT, LVN_GETDISPINFOW, LVSICF_NOSCROLL, NMLVDISPINFOW,
+        EM_SETLIMITTEXT, LVFI_PARTIAL, LVFI_STRING, LVFI_SUBSTRING, LVFI_WRAP, LVM_SETITEMCOUNT,
+        LVN_GETDISPINFOW, LVN_ODFINDITEMW, LVSICF_NOSCROLL, NMLVDISPINFOW, NMLVFINDITEMW,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GWL_STYLE, GetWindowLongW};
 
@@ -193,6 +203,10 @@ mod win {
     const TRUE: isize = 1;
     /// What a dialog procedure answers for a message left to the default dialog processing.
     const FALSE: isize = 0;
+
+    /// `DWLP_MSGRESULT`: the slot of the dialog's extra bytes that holds the result of a
+    /// message its procedure handled (returned `TRUE` for), such as a `WM_NOTIFY`.
+    const DWLP_MSGRESULT: WINDOW_LONG_PTR_INDEX = WINDOW_LONG_PTR_INDEX(0);
 
     /// `DWLP_USER`: the slot of the dialog's extra bytes that belongs to the application, after
     /// `DWLP_MSGRESULT` (an `LRESULT`) and `DWLP_DLGPROC` (a pointer).
@@ -214,9 +228,15 @@ mod win {
     /// documentation for which messages reach which method). Every method does nothing by
     /// default, and [`close_requested`](Self::close_requested) agrees.
     ///
-    /// The dialog's thread is a UI thread: a handler returns quickly and does not block on
-    /// files, the network, or IPC (design §11). Slow work belongs to another thread, which
-    /// posts its result back to the dialog ([`DetachedDialog::post`]).
+    /// The dialog's thread is a UI thread: while a callback runs, the dialog neither repaints
+    /// nor answers the user, so a handler returns quickly. Slow work belongs to another thread,
+    /// which posts its result back to the dialog ([`DetachedDialog::post`]). A dialog that
+    /// shares its thread with other windows (a modal [`run_dialog`] runs on its owner's
+    /// thread) never blocks on files, the network, or IPC, which would stop those windows too
+    /// (design §11). A detached dialog ([`spawn_dialog`]) has its thread to itself and may do
+    /// bounded work there, at the cost of its own responsiveness only: the macro list editor
+    /// reads and writes its file on its thread, and may stop answering for a second or two
+    /// (design §22.2).
     pub trait DialogHandler {
         /// The dialog was created (`WM_INITDIALOG`) and is not shown yet: fill the controls.
         /// The changes made here notify nobody.
@@ -236,7 +256,9 @@ mod win {
         /// Control `id` sent notification `code` (`WM_NOTIFY`), such as
         /// [`LVN_ITEMCHANGED`](super::notifications::LVN_ITEMCHANGED) or
         /// [`NM_DBLCLK`](super::notifications::NM_DBLCLK). The dialog answers 0, the default
-        /// for every notification.
+        /// for every notification. The requests of a virtual list view that the dialog answers
+        /// itself (`LVN_GETDISPINFOW`, `LVN_ODFINDITEMW`; see
+        /// [`Dialog::list_set_virtual_rows`]) never arrive here.
         fn notify(&mut self, dialog: &Dialog<'_>, id: u16, code: i32) {
             let _ = (dialog, id, code);
         }
@@ -798,6 +820,17 @@ mod win {
         /// (`LVM_SETITEMCOUNT`, then the list view redraws what it shows); the scroll position
         /// is kept where it can be, and nothing is selected afterwards (`LVN_ITEMCHANGED`
         /// does not reach the busy handler).
+        ///
+        /// The dialog also answers the list view's searches (`LVN_ODFINDITEMW`, which never
+        /// reaches the handler either), so that typing into the list view selects a row as in
+        /// any list view: the first row from the one the search names (or, with `LVFI_WRAP`,
+        /// from the first row on) whose first cell equals the text, or starts with it for
+        /// `LVFI_PARTIAL` (`LVFI_SUBSTRING`), ignoring case; a search by `lParam` or by
+        /// position finds nothing. Common Controls 6 (the version `raumakey.exe` uses) searches
+        /// that way as the user types, from the row after the focused one, and selects the row
+        /// found, which the handler learns from `LVN_ITEMCHANGED`, or keeps the selection when
+        /// nothing matches; it also reports `LVN_INCREMENTALSEARCHW` first, which reaches the
+        /// handler and changes nothing.
         ///
         /// Fails with `E_INVALIDARG`, before anything changes, for a cell with a NUL, for more
         /// than `i32::MAX` rows, and for a list view without `LVS_OWNERDATA`; fails when there
@@ -1384,7 +1417,14 @@ mod win {
                 state.reload_icons(hwnd, u32::from(low_word(wparam.0)));
                 return FALSE;
             }
-            WM_NOTIFY if lend_cell(state, hwnd, lparam) => return FALSE,
+            WM_NOTIFY => match answer_virtual_list(state, hwnd, lparam) {
+                Some(VirtualAnswer::InPlace) => return FALSE,
+                Some(VirtualAnswer::Result(result)) => {
+                    write_long(hwnd, DWLP_MSGRESULT, result);
+                    return TRUE;
+                }
+                None => {}
+            },
             _ => {}
         }
         if state.destroyed.get() {
@@ -1435,24 +1475,8 @@ mod win {
     /// for anything else, including a pointer to memory that cannot be read (see "Forged
     /// messages" in the module documentation).
     fn notify_header(dialog: HWND, lparam: LPARAM) -> Option<NMHDR> {
-        let mut header = NMHDR::default();
-        let mut copied = 0_usize;
-        // SAFETY: copies from this process's own memory into `header`, which is writable for
-        // the size passed; the call fails instead of faulting where the source is not
-        // readable, and no reference to the source is ever made.
-        unsafe {
-            ReadProcessMemory(
-                GetCurrentProcess(),
-                lparam.0 as *const c_void,
-                (&raw mut header).cast(),
-                size_of::<NMHDR>(),
-                Some(&mut copied),
-            )
-        }
-        .ok()?;
-        if copied != size_of::<NMHDR>() {
-            return None;
-        }
+        // SAFETY: `NMHDR` holds a window handle and integers: any bytes make a valid one.
+        let header = unsafe { read_memory::<NMHDR>(lparam.0 as usize) }?;
         // SAFETY: queries about window handles, which USER validates.
         let (child, id) = unsafe {
             (
@@ -1464,16 +1488,77 @@ mod win {
         (child && id as isize as usize == header.idFrom).then_some(header)
     }
 
-    /// How many lent texts [`VirtualRows`] keeps: a list view may use the text of an answer
-    /// to `LVN_GETDISPINFOW` until it has sent two more requests.
+    /// How many lent texts each virtual list view keeps ([`VirtualList`]): a list view may use
+    /// the text of an answer to `LVN_GETDISPINFOW` until it has sent two more requests for
+    /// itself (those of another list view of the dialog do not count).
     const LENT_TEXTS: usize = 3;
 
-    /// The rows of a dialog's virtual list views, and the copies of cells lent to them.
+    /// The most UTF-16 units of a search text (`LVN_ODFINDITEMW`) that the dialog reads; a
+    /// longer text finds nothing.
+    const SEARCH_TEXT_UNITS: usize = 1024;
+
+    /// The block size in which a search text is read: a block never crosses a page boundary
+    /// (pages are 4 KiB or a multiple of it), so a text that ends before memory that cannot be
+    /// read is still read whole.
+    const READ_BLOCK: usize = 4096;
+
+    /// The `LVFINDINFOW` flags of the searches the dialog answers: by text (`LVFI_STRING`), for
+    /// a prefix (`LVFI_PARTIAL`, `LVFI_SUBSTRING`), going on from the first row (`LVFI_WRAP`,
+    /// which alone asks for a search by text too).
+    const TEXT_SEARCH: u32 = LVFI_STRING.0 | LVFI_PARTIAL.0 | LVFI_SUBSTRING.0 | LVFI_WRAP.0;
+
+    /// The rows of a dialog's virtual list views ([`Dialog::list_set_virtual_rows`]).
     #[derive(Default)]
     struct VirtualRows {
-        /// Each virtual list view's control id and rows, in the order first set.
-        lists: Vec<(u16, Vec<Vec<WideString>>)>,
-        /// The texts of the last answers, which the list views may still read: an answer points
+        /// Each virtual list view, in the order its rows were first set.
+        lists: Vec<VirtualList>,
+    }
+
+    impl VirtualRows {
+        fn set(&mut self, id: u16, rows: Vec<Vec<WideString>>) {
+            match self.list_mut(id) {
+                Some(list) => list.rows = rows,
+                None => self.lists.push(VirtualList {
+                    id,
+                    rows,
+                    lent: Default::default(),
+                    next: 0,
+                }),
+            }
+        }
+
+        /// The virtual list view `id`; `None` when `id` names no virtual list view of the
+        /// dialog.
+        fn list_mut(&mut self, id: u16) -> Option<&mut VirtualList> {
+            self.lists.iter_mut().find(|list| list.id == id)
+        }
+
+        /// [`VirtualList::lend`] of list `id`.
+        #[cfg(test)]
+        fn lend(&mut self, id: u16, row: i32, column: i32) -> Option<PWSTR> {
+            self.list_mut(id)?.lend(row, column)
+        }
+
+        /// True while `text`, lent for list `id`, is still kept.
+        #[cfg(test)]
+        fn keeps(&self, id: u16, text: PWSTR) -> bool {
+            self.lists.iter().any(|list| {
+                list.id == id
+                    && list
+                        .lent
+                        .iter()
+                        .flatten()
+                        .any(|kept| kept.as_pcwstr().0 == text.0.cast_const())
+            })
+        }
+    }
+
+    /// The rows of one virtual list view, and the copies of cells lent to it.
+    struct VirtualList {
+        /// The list view's control id.
+        id: u16,
+        rows: Vec<Vec<WideString>>,
+        /// The texts of the last answers, which the list view may still read: an answer points
         /// the request at one of these instead of writing through the request's buffer, so
         /// rows may be replaced at any time.
         lent: [Option<WideString>; LENT_TEXTS],
@@ -1481,23 +1566,15 @@ mod win {
         next: usize,
     }
 
-    impl VirtualRows {
-        fn set(&mut self, id: u16, rows: Vec<Vec<WideString>>) {
-            match self.lists.iter_mut().find(|(list, _)| *list == id) {
-                Some((_, kept)) => *kept = rows,
-                None => self.lists.push((id, rows)),
-            }
-        }
-
-        /// A copy of the cell of list `id` at `row` and `column` (empty when the row is
-        /// shorter or there is no such row), kept until [`LENT_TEXTS`] more answers, and the
-        /// pointer to lend; `None` when `id` is no virtual list view of the dialog.
-        fn lend(&mut self, id: u16, row: i32, column: i32) -> Option<PWSTR> {
-            let (_, rows) = self.lists.iter().find(|(list, _)| *list == id)?;
+    impl VirtualList {
+        /// A copy of the cell at `row` and `column` (empty when the row is shorter or there is
+        /// no such row), kept until this list view got [`LENT_TEXTS`] more answers, and the
+        /// pointer to lend.
+        fn lend(&mut self, row: i32, column: i32) -> Option<PWSTR> {
             let cell = usize::try_from(row)
                 .ok()
                 .zip(usize::try_from(column).ok())
-                .and_then(|(row, column)| rows.get(row)?.get(column))
+                .and_then(|(row, column)| self.rows.get(row)?.get(column))
                 .cloned()
                 .or_else(|| WideString::new("").ok())?;
             let slot = self.lent.get_mut(self.next % LENT_TEXTS)?;
@@ -1505,58 +1582,110 @@ mod win {
             let text = slot.insert(cell);
             Some(PWSTR(text.as_pcwstr().0.cast_mut()))
         }
+
+        /// The first row from row `start` on (from the first row when `start` is negative, from
+        /// none when it is past the last row) whose first cell equals `text`, or starts with it
+        /// for a `prefix` search, ignoring case ([`matches_text`]); with `wrap`, the search goes
+        /// on from the first row up to `start`. Common Controls 6 searches from the row after
+        /// the focused one, which may be one past the last, with `wrap`, as the user types.
+        fn find(&self, start: i32, text: &[u16], prefix: bool, wrap: bool) -> Option<usize> {
+            let count = self.rows.len();
+            let start = usize::try_from(start).unwrap_or(0).min(count);
+            let wrapped = if wrap { 0..start } else { 0..0 };
+            (start..count).chain(wrapped).find(|&row| {
+                let cell = self
+                    .rows
+                    .get(row)
+                    .and_then(|cells| cells.first())
+                    .map_or(&[][..], WideString::as_units);
+                matches_text(cell, text, prefix)
+            })
+        }
     }
 
-    /// Answers the `LVN_GETDISPINFOW` request that the `WM_NOTIFY` argument `lparam` points to
-    /// when it names a virtual list view of `dialog` by its handle and id ([`notify_header`]):
-    /// lends the cell asked for ([`VirtualRows::lend`]) by setting the request's `pszText`.
-    /// True when the request named such a list view (it is then not handed to the handler).
+    /// `units` as the search compares them: decoded (ill-formed UTF-16 as U+FFFD) and in lower
+    /// case (`char::to_lowercase`).
+    fn folded(units: &[u16]) -> impl Iterator<Item = char> + '_ {
+        char::decode_utf16(units.iter().copied())
+            .map(|decoded| decoded.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .flat_map(char::to_lowercase)
+    }
+
+    /// True when `cell` equals `text`, or starts with it for a `prefix` search, ignoring case
+    /// ([`folded`]).
+    fn matches_text(cell: &[u16], text: &[u16], prefix: bool) -> bool {
+        let (mut cell, mut text) = (folded(cell), folded(text));
+        loop {
+            match (text.next(), cell.next()) {
+                (None, None) => return true,
+                (None, Some(_)) => return prefix,
+                (Some(wanted), Some(found)) if wanted == found => {}
+                _ => return false,
+            }
+        }
+    }
+
+    /// What the dialog procedure answers itself to a request of a virtual list view.
+    enum VirtualAnswer {
+        /// The request was answered in place (or could not be read): the dialog answers 0, as
+        /// for any notification left to the default processing.
+        InPlace,
+        /// The notification's result (`DWLP_MSGRESULT`).
+        Result(isize),
+    }
+
+    /// Answers the request of a virtual list view of `dialog`
+    /// ([`Dialog::list_set_virtual_rows`]) that the `WM_NOTIFY` argument `lparam` points to,
+    /// when it names that list view by its handle and id ([`notify_header`]):
+    /// `LVN_GETDISPINFOW` ([`lend_cell`]) and `LVN_ODFINDITEMW` ([`find_row`]). `None` for
+    /// anything else, which goes to the handler.
+    fn answer_virtual_list(
+        state: &DialogState,
+        dialog: HWND,
+        lparam: LPARAM,
+    ) -> Option<VirtualAnswer> {
+        let header = notify_header(dialog, lparam)?;
+        if header.code != LVN_GETDISPINFOW && header.code != LVN_ODFINDITEMW {
+            return None;
+        }
+        // Never borrowed while a helper runs, which is when list views ask.
+        let mut rows = state.virtual_rows.try_borrow_mut().ok()?;
+        let list = rows.list_mut(low_word(header.idFrom))?;
+        Some(if header.code == LVN_GETDISPINFOW {
+            lend_cell(list, lparam);
+            VirtualAnswer::InPlace
+        } else {
+            let found = find_row(list, lparam).and_then(|row| isize::try_from(row).ok());
+            VirtualAnswer::Result(found.unwrap_or(-1))
+        })
+    }
+
+    /// Answers the `LVN_GETDISPINFOW` request at `lparam` for `list`: lends the cell asked for
+    /// ([`VirtualList::lend`]) by setting the request's `pszText`.
     ///
-    /// Only that one field of the request is written, with `WriteProcessMemory`, which fails
-    /// instead of faulting: nothing is written through a pointer the request carries, so a
-    /// forged request (see "Forged messages" in the module documentation) can at most change a
-    /// pointer-sized field of memory of this process that holds a notification of this list.
-    fn lend_cell(state: &DialogState, dialog: HWND, lparam: LPARAM) -> bool {
-        let Some(header) = notify_header(dialog, lparam) else {
-            return false;
-        };
-        if header.code != LVN_GETDISPINFOW {
-            return false;
-        }
-        let Ok(mut rows) = state.virtual_rows.try_borrow_mut() else {
-            return false;
-        };
-        let id = low_word(header.idFrom);
-        if !rows.lists.iter().any(|(list, _)| *list == id) {
-            return false;
-        }
-        let mut request = NMLVDISPINFOW::default();
-        let mut copied = 0_usize;
-        // SAFETY: as in `notify_header`: copies from this process's own memory into
-        // `request`, failing instead of faulting where the source cannot be read.
-        let read = unsafe {
-            ReadProcessMemory(
-                GetCurrentProcess(),
-                lparam.0 as *const c_void,
-                (&raw mut request).cast(),
-                size_of::<NMLVDISPINFOW>(),
-                Some(&mut copied),
-            )
-        };
-        if read.is_err()
-            || copied != size_of::<NMLVDISPINFOW>()
-            || !request.item.mask.contains(LVIF_TEXT)
-        {
-            return true;
-        }
-        let Some(lent) = rows.lend(id, request.item.iItem, request.item.iSubItem) else {
-            return true;
+    /// Only that one field of the request is written, with `WriteProcessMemory`, and only when
+    /// it lies in committed read-write memory ([`is_read_write`]): nothing is written through a
+    /// pointer the request carries, so a forged request (see "Forged messages" in the module
+    /// documentation) can at most change a pointer-sized field of writable memory of this
+    /// process that holds a notification of this list.
+    fn lend_cell(list: &mut VirtualList, lparam: LPARAM) {
+        // SAFETY: `NMLVDISPINFOW` holds integers, handles, and pointers that are never
+        // followed: any bytes make a valid one.
+        let Some(request) = (unsafe { read_memory::<NMLVDISPINFOW>(lparam.0 as usize) }) else {
+            return;
         };
         let offset =
             core::mem::offset_of!(NMLVDISPINFOW, item) + core::mem::offset_of!(LVITEMW, pszText);
         let field = (lparam.0 as usize).wrapping_add(offset);
-        // SAFETY: writes the pointer-sized `pszText` field of the request, whose header was
-        // read above; the call fails instead of faulting where it cannot write.
+        if !request.item.mask.contains(LVIF_TEXT) || !is_read_write(field, size_of::<PWSTR>()) {
+            return;
+        }
+        let Some(lent) = list.lend(request.item.iItem, request.item.iSubItem) else {
+            return;
+        };
+        // SAFETY: writes the pointer-sized `pszText` field of the request, which lies in
+        // committed read-write memory of this process (checked just above); the call fails
+        // instead of faulting should another thread have changed that meanwhile.
         let _ = unsafe {
             WriteProcessMemory(
                 GetCurrentProcess(),
@@ -1566,7 +1695,116 @@ mod win {
                 None,
             )
         };
-        true
+    }
+
+    /// Answers the `LVN_ODFINDITEMW` request at `lparam` for `list`: the row that
+    /// [`VirtualList::find`] finds for its `iStart`, text, and flags, or `None` (the answer
+    /// -1) when nothing matches, when the request or its text cannot be read ([`read_text`]),
+    /// and for flags other than [`TEXT_SEARCH`] (searches by `lParam` or by position).
+    fn find_row(list: &VirtualList, lparam: LPARAM) -> Option<usize> {
+        // SAFETY: `NMLVFINDITEMW` holds integers, handles, and pointers that are never
+        // followed: any bytes make a valid one.
+        let request = unsafe { read_memory::<NMLVFINDITEMW>(lparam.0 as usize) }?;
+        let flags = request.lvfi.flags.0;
+        if flags == 0 || flags & !TEXT_SEARCH != 0 {
+            return None;
+        }
+        let text = read_text(request.lvfi.psz.0 as usize)?;
+        let prefix = flags & (LVFI_PARTIAL.0 | LVFI_SUBSTRING.0) != 0;
+        list.find(request.iStart, &text, prefix, flags & LVFI_WRAP.0 != 0)
+    }
+
+    /// A copy of the `T` at `address` in this process's memory, or `None` when any of its
+    /// bytes cannot be read: `ReadProcessMemory` fails instead of faulting, and no reference to
+    /// the source is ever made (see "Forged messages" in the module documentation).
+    ///
+    /// # Safety
+    ///
+    /// Any bytes must make a valid `T` (a C structure of integers, handles, and pointers).
+    unsafe fn read_memory<T: Default>(address: usize) -> Option<T> {
+        let mut value = T::default();
+        let mut copied = 0_usize;
+        // SAFETY: copies from this process's own memory into `value`, which is writable for the
+        // size passed, and which any bytes leave valid (the caller's promise); the call fails
+        // instead of faulting where the source cannot be read.
+        unsafe {
+            ReadProcessMemory(
+                GetCurrentProcess(),
+                address as *const c_void,
+                (&raw mut value).cast(),
+                size_of::<T>(),
+                Some(&mut copied),
+            )
+        }
+        .ok()?;
+        (copied == size_of::<T>()).then_some(value)
+    }
+
+    /// The NUL-terminated UTF-16 text at `address` in this process's memory, without its NUL,
+    /// read without trusting the pointer: [`READ_BLOCK`] by block with `ReadProcessMemory`, at
+    /// most [`SEARCH_TEXT_UNITS`] units. `None` when the text runs into memory that cannot be
+    /// read before its NUL, or has no NUL within the bound.
+    fn read_text(address: usize) -> Option<Vec<u16>> {
+        let limit = (SEARCH_TEXT_UNITS + 1) * size_of::<u16>();
+        let mut bytes: Vec<u8> = Vec::with_capacity(limit);
+        while bytes.len() < limit {
+            let start = bytes.len();
+            let at = address.checked_add(start)?;
+            let block = (READ_BLOCK - at % READ_BLOCK).min(limit - start);
+            bytes.resize(start + block, 0);
+            let target = bytes.get_mut(start..)?;
+            let mut copied = 0_usize;
+            // SAFETY: copies from this process's own memory into the new tail of `bytes`,
+            // which is writable for the size passed; the call fails instead of faulting where
+            // the source cannot be read.
+            unsafe {
+                ReadProcessMemory(
+                    GetCurrentProcess(),
+                    at as *const c_void,
+                    target.as_mut_ptr().cast(),
+                    block,
+                    Some(&mut copied),
+                )
+            }
+            .ok()?;
+            if copied != block {
+                return None;
+            }
+            let (pairs, _) = bytes.as_chunks::<2>();
+            let mut units: Vec<u16> = pairs.iter().map(|&pair| u16::from_ne_bytes(pair)).collect();
+            if let Some(end) = units.iter().position(|&unit| unit == 0) {
+                units.truncate(end);
+                return Some(units);
+            }
+        }
+        None
+    }
+
+    /// True when the `size` bytes at `address` lie in committed memory of this process that
+    /// is plainly readable and writable (`PAGE_READWRITE` or `PAGE_WRITECOPY`, without
+    /// `PAGE_GUARD` or any other modifier), as `VirtualQuery` reports it.
+    /// `WriteProcessMemory` fails instead of faulting on memory it cannot write, but makes a
+    /// read-only executable page writable for the write (and restores it afterwards), so a
+    /// forged request could otherwise patch code. Hardening, not a boundary: another thread
+    /// may change the protection between the query and the write.
+    fn is_read_write(address: usize, size: usize) -> bool {
+        let mut info = MEMORY_BASIC_INFORMATION::default();
+        // SAFETY: queries this process's address space (any address may be asked about) into
+        // a valid out buffer of the size passed.
+        let answered = unsafe {
+            VirtualQuery(
+                Some(address as *const c_void),
+                &mut info,
+                size_of::<MEMORY_BASIC_INFORMATION>(),
+            )
+        };
+        let base = info.BaseAddress as usize;
+        let end = base.saturating_add(info.RegionSize);
+        answered == size_of::<MEMORY_BASIC_INFORMATION>()
+            && info.State == MEM_COMMIT
+            && (info.Protect == PAGE_READWRITE || info.Protect == PAGE_WRITECOPY)
+            && address >= base
+            && address.checked_add(size).is_some_and(|after| after <= end)
     }
 
     /// Asks the handler whether the dialog may close, and ends it with `IDCANCEL` if so.
@@ -1684,17 +1922,56 @@ mod win {
         (unsafe { GetWindowLongW(hwnd, DWLP_USER) }) as isize
     }
 
-    #[cfg(target_pointer_width = "64")]
     fn write_slot(hwnd: HWND, value: isize) {
+        write_long(hwnd, DWLP_USER, value);
+    }
+
+    /// Writes slot `index` of the extra bytes of a dialog of this thread: `DWLP_USER`, or
+    /// `DWLP_MSGRESULT` (what the dialog answers when its procedure returns `TRUE`).
+    #[cfg(target_pointer_width = "64")]
+    fn write_long(hwnd: HWND, index: WINDOW_LONG_PTR_INDEX, value: isize) {
         use windows::Win32::UI::WindowsAndMessaging::SetWindowLongPtrW;
-        // SAFETY: writes the DWLP_USER slot of a dialog of this thread.
-        unsafe { SetWindowLongPtrW(hwnd, DWLP_USER, value) };
+        // SAFETY: writes a slot of the extra bytes that the dialog class reserves.
+        unsafe { SetWindowLongPtrW(hwnd, index, value) };
     }
 
     #[cfg(target_pointer_width = "32")]
-    fn write_slot(hwnd: HWND, value: isize) {
+    fn write_long(hwnd: HWND, index: WINDOW_LONG_PTR_INDEX, value: isize) {
         use windows::Win32::UI::WindowsAndMessaging::SetWindowLongW;
         // SAFETY: as above; on 32-bit Windows `isize` is 32 bits wide.
-        unsafe { SetWindowLongW(hwnd, DWLP_USER, value as i32) };
+        unsafe { SetWindowLongW(hwnd, index, value as i32) };
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{LENT_TEXTS, VirtualRows};
+        use crate::strings::WideString;
+
+        fn one_cell(text: &str) -> Vec<Vec<WideString>> {
+            vec![vec![WideString::new(text).unwrap()]]
+        }
+
+        /// A list view may use a lent text until it asked for `LENT_TEXTS - 1` more cells: the
+        /// cells another list view of the dialog asks for meanwhile do not count.
+        #[test]
+        fn each_virtual_list_keeps_the_texts_lent_to_it() {
+            let mut rows = VirtualRows::default();
+            rows.set(1, one_cell("một"));
+            rows.set(2, one_cell("hai"));
+            let first = rows.lend(1, 0, 0).unwrap();
+            for _ in 0..2 * LENT_TEXTS {
+                rows.lend(2, 0, 0).unwrap();
+            }
+            assert!(rows.keeps(1, first));
+            // Replacing the rows keeps what was lent.
+            rows.set(1, one_cell("ba"));
+            assert!(rows.keeps(1, first));
+            for _ in 1..LENT_TEXTS {
+                rows.lend(1, 0, 0).unwrap();
+            }
+            assert!(rows.keeps(1, first));
+            rows.lend(1, 0, 0).unwrap();
+            assert!(!rows.keeps(1, first));
+        }
     }
 }

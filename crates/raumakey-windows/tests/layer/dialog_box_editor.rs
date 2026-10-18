@@ -2,12 +2,17 @@
 //! boxes: a private message that the handler posts to its own dialog (from `init`, it arrives
 //! before the dialog is shown), the text limit of an edit, multi-line edits, and virtual list
 //! views (`LVS_OWNERDATA`) whose cells the dialog keeps and hands to the list view itself
-//! (`Dialog::list_set_virtual_rows`), also while the handler is busy.
+//! (`Dialog::list_set_virtual_rows`), also while the handler is busy, and searches when the
+//! user types into the list view.
 //!
 //! The dialogs stay out of the way as in `dialog_box`: `WS_EX_NOACTIVATE`, an explicit
 //! position, and a move to (-32000, -32000) in `init`, before Windows shows them. They are
-//! driven from the test thread with `SendMessageTimeoutW`, and every wait has a timeout.
+//! driven from the test thread with `SendMessageTimeoutW`, and every wait has a timeout. The
+//! tests of typing run their dialogs under Common Controls 6, as `raumakey.exe` does
+//! (`CommonControls6`). Forged notifications point into pages of this process's memory that
+//! the tests allocate with the protection they need (`VirtualAlloc`) and release.
 
+use core::ffi::c_void;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -18,18 +23,29 @@ use raumakey_windows::dialog_template::{
     Control, DialogRect, DialogTemplate, IDCANCEL, TemplateBytes, styles,
 };
 use raumakey_windows::error::WinErrorKind;
+use raumakey_windows::strings::until_nul;
 use raumakey_windows::window::AppMessage;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::System::Memory::{
+    MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, MEMORY_BASIC_INFORMATION, PAGE_EXECUTE_READ,
+    PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, PAGE_READONLY, PAGE_READWRITE, VirtualAlloc, VirtualFree,
+    VirtualProtect, VirtualQuery,
+};
+use windows::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 use windows::Win32::UI::Controls::{
-    EM_GETLIMITTEXT, LVIF_TEXT, LVIS_SELECTED, LVITEMW, LVM_GETITEMCOUNT, LVM_GETITEMTEXTW,
-    LVM_GETNEXTITEM, LVM_SETITEMSTATE, LVN_GETDISPINFOW, LVNI_SELECTED, NMHDR, NMLVDISPINFOW,
+    EM_GETLIMITTEXT, LVFI_NEARESTXY, LVFI_PARAM, LVFI_PARTIAL, LVFI_STRING, LVFI_SUBSTRING,
+    LVFI_WRAP, LVFINDINFOW, LVFINDINFOW_FLAGS, LVIF_TEXT, LVIS_SELECTED, LVITEMW, LVM_GETITEMCOUNT,
+    LVM_GETITEMTEXTW, LVM_GETNEXTITEM, LVM_SETITEMSTATE, LVN_GETDISPINFOW, LVN_ODFINDITEMW,
+    LVNI_SELECTED, NMHDR, NMLVDISPINFOW, NMLVFINDITEMW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BM_CLICK, GWL_STYLE, GetDlgItem, GetWindowLongW, IsWindowVisible, SMTO_NORMAL, SWP_NOACTIVATE,
-    SWP_NOSIZE, SWP_NOZORDER, SendMessageTimeoutW, SendMessageW, SetWindowPos, WM_NOTIFY, WM_NULL,
-    WM_SETTEXT,
+    SWP_NOSIZE, SWP_NOZORDER, SendMessageTimeoutW, SendMessageW, SetWindowPos, WM_CHAR, WM_NOTIFY,
+    WM_NULL, WM_SETTEXT,
 };
-use windows::core::PWSTR;
+use windows::core::{PCWSTR, PWSTR};
+
+use crate::common_controls_v6::{CCM_GETVERSION, CommonControls6};
 
 const WAIT: Duration = Duration::from_secs(10);
 /// Milliseconds a sent message may take before the test fails.
@@ -219,7 +235,10 @@ fn item(dialog: HWND, id: u16) -> HWND {
     unsafe { GetDlgItem(Some(dialog), i32::from(id)) }.unwrap()
 }
 
-/// The text of a cell, as the list view hands it out (`LVM_GETITEMTEXTW`).
+/// The text of a cell, as the list view copies it into a buffer of 128 units
+/// (`LVM_GETITEMTEXTW`): a longer cell is cut to 127. The answer is not the length copied:
+/// Common Controls 6 answers the length of the whole cell (and also hands over the text lent
+/// to it, which this never reads), so the copy ends at its NUL.
 fn list_cell(list: HWND, row: usize, column: i32) -> String {
     let mut buffer = [0_u16; 128];
     let mut cell = LVITEMW {
@@ -228,8 +247,20 @@ fn list_cell(list: HWND, row: usize, column: i32) -> String {
         cchTextMax: buffer.len() as i32,
         ..Default::default()
     };
-    let copied = send(list, LVM_GETITEMTEXTW, row, &raw mut cell as isize) as usize;
-    String::from_utf16(&buffer[..copied]).unwrap()
+    send(list, LVM_GETITEMTEXTW, row, &raw mut cell as isize);
+    String::from_utf16(until_nul(&buffer)).unwrap()
+}
+
+/// The selected row of a list view, or -1 (`LVM_GETNEXTITEM`).
+fn selection(list: HWND) -> isize {
+    send(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize)
+}
+
+/// Types `typed` into a window of the dialog's thread as the keyboard would (`WM_CHAR`).
+fn type_into(window: HWND, typed: &str) {
+    for unit in typed.encode_utf16() {
+        send(window, WM_CHAR, usize::from(unit), 1);
+    }
 }
 
 /// Selects row `row` of a list view the way a click does, so that it notifies the dialog.
@@ -521,17 +552,17 @@ fn the_dialog_hands_out_the_cells_while_its_handler_is_busy() {
                 ..Default::default()
             };
             // SAFETY: the item and its buffer outlive the call, which the list view (a window
-            // of this thread) answers before it returns.
-            let copied = unsafe {
+            // of this thread) answers before it returns. The answer is not the length copied
+            // (see `list_cell`).
+            unsafe {
                 SendMessageW(
                     list,
                     LVM_GETITEMTEXTW,
                     Some(WPARAM(2)),
                     Some(LPARAM(&raw mut cell as isize)),
                 )
-            }
-            .0 as usize;
-            let _ = seen.send(Seen::Text(String::from_utf16_lossy(&buffer[..copied])));
+            };
+            let _ = seen.send(Seen::Text(String::from_utf16_lossy(until_nul(&buffer))));
         })),
     );
     send(item(running.hwnd, ID_BUTTON), BM_CLICK, 0, 0);
@@ -629,9 +660,380 @@ fn a_display_info_request_is_answered_only_for_the_list_view_it_names() {
         &raw mut info as isize,
     );
     assert_ne!(info.item.pszText.0, buffer.as_mut_ptr());
-    // SAFETY: the dialog lent a NUL-terminated string that lives until its rows are replaced
-    // twice; they are not replaced.
-    let lent = unsafe { info.item.pszText.to_string() }.unwrap();
-    assert_eq!(lent, "không");
     assert_eq!(buffer, [0x55; 8]);
+    // The lent text is the dialog's, which it may drop as soon as it lent a few more (the list
+    // view asks for cells whenever it paints): it is never read here. The list view copies the
+    // same cell into a buffer of the caller's.
+    assert_eq!(list_cell(list, 2, 1), "không");
+}
+
+/// Pages of this process's memory for forged notifications, committed read-write until a test
+/// changes their protection, and released when dropped.
+struct Pages {
+    base: *mut u8,
+    page: usize,
+    count: usize,
+}
+
+impl Pages {
+    fn new(count: usize) -> Self {
+        let mut info = SYSTEM_INFO::default();
+        // SAFETY: a valid out pointer.
+        unsafe { GetSystemInfo(&mut info) };
+        let page = info.dwPageSize as usize;
+        // SAFETY: reserves and commits new pages; no pointers.
+        let base =
+            unsafe { VirtualAlloc(None, page * count, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) };
+        assert!(!base.is_null(), "VirtualAlloc");
+        Self {
+            base: base.cast(),
+            page,
+            count,
+        }
+    }
+
+    /// The address `offset` bytes into the pages.
+    fn at(&self, offset: usize) -> *mut u8 {
+        assert!(offset < self.page * self.count);
+        self.base.wrapping_add(offset)
+    }
+
+    /// Copies the bytes of `value` to `offset` (any alignment) and returns their address; the
+    /// pages there must still be writable.
+    fn write<T: Copy>(&self, offset: usize, value: &T) -> *mut u8 {
+        let at = self.at(offset);
+        assert!(offset + size_of::<T>() <= self.page * self.count);
+        // SAFETY: the pages are this test's own, committed and writable over the whole range
+        // (checked above), and `value` is plain data.
+        unsafe {
+            core::ptr::copy_nonoverlapping((&raw const *value).cast::<u8>(), at, size_of::<T>())
+        };
+        at
+    }
+
+    /// Reads a `T` from `offset` (any alignment); the pages there must be readable.
+    fn read<T: Copy>(&self, offset: usize) -> T {
+        assert!(offset + size_of::<T>() <= self.page * self.count);
+        // SAFETY: the pages are this test's own and readable over the whole range, and `T` is
+        // plain data that was written there.
+        unsafe { core::ptr::read_unaligned(self.at(offset).cast::<T>()) }
+    }
+
+    fn protect(&self, page: usize, protection: PAGE_PROTECTION_FLAGS) {
+        let mut previous = PAGE_PROTECTION_FLAGS::default();
+        // SAFETY: changes the protection of one of this test's own pages; a valid out pointer.
+        unsafe {
+            VirtualProtect(
+                self.at(page * self.page).cast::<c_void>(),
+                self.page,
+                protection,
+                &mut previous,
+            )
+        }
+        .unwrap();
+    }
+
+    fn protection(&self, page: usize) -> PAGE_PROTECTION_FLAGS {
+        let mut info = MEMORY_BASIC_INFORMATION::default();
+        // SAFETY: queries this test's own page into a valid out buffer of the size passed.
+        let size = unsafe {
+            VirtualQuery(
+                Some(self.at(page * self.page).cast::<c_void>().cast_const()),
+                &mut info,
+                size_of::<MEMORY_BASIC_INFORMATION>(),
+            )
+        };
+        assert_ne!(size, 0, "VirtualQuery");
+        info.Protect
+    }
+}
+
+impl Drop for Pages {
+    fn drop(&mut self) {
+        // SAFETY: releases the whole reservation made in `new`; nothing points into it any
+        // more (the dialog answered every message sent with it before `send` returned).
+        let _ = unsafe { VirtualFree(self.base.cast(), 0, MEM_RELEASE) };
+    }
+}
+
+/// The dialog writes its answer to a cell request only into committed read-write memory: a
+/// request in a page that is read-only, or executable and read-only (which
+/// `WriteProcessMemory` would make writable for the write, and which a forged request could
+/// otherwise use to patch code), stays as it was, and so does the page's protection.
+#[test]
+fn a_cell_request_in_memory_that_is_not_writable_stays_as_it_was() {
+    let running = started(
+        Some(Box::new(|dialog, _| {
+            let _ = dialog.list_set_virtual_rows(ID_LIST, &three_rows());
+        })),
+        None,
+    );
+    let list = running.list();
+    let mut buffer = [0x55_u16; 8];
+    let request = NMLVDISPINFOW {
+        hdr: NMHDR {
+            hwndFrom: list,
+            idFrom: usize::from(ID_LIST),
+            code: LVN_GETDISPINFOW,
+        },
+        item: LVITEMW {
+            mask: LVIF_TEXT,
+            iItem: 2,
+            iSubItem: 1,
+            pszText: PWSTR(buffer.as_mut_ptr()),
+            cchTextMax: buffer.len() as i32,
+            ..Default::default()
+        },
+    };
+    for (protection, answered) in [
+        (PAGE_READWRITE, true),
+        (PAGE_READONLY, false),
+        (PAGE_EXECUTE_READ, false),
+    ] {
+        let pages = Pages::new(1);
+        let at = pages.write(0, &request);
+        pages.protect(0, protection);
+        send(running.hwnd, WM_NOTIFY, usize::from(ID_LIST), at as isize);
+        assert_eq!(pages.protection(0), protection, "{protection:?}");
+        let after: NMLVDISPINFOW = pages.read(0);
+        assert_eq!(
+            after.item.pszText.0 != buffer.as_mut_ptr(),
+            answered,
+            "{protection:?}"
+        );
+    }
+    assert_eq!(buffer, [0x55; 8]);
+}
+
+/// Rows whose first cells start alike, to see where a search lands.
+fn search_rows() -> Vec<Vec<String>> {
+    rows(&[
+        &["ab", "một"],
+        &["hcm", "Hồ Chí Minh"],
+        &["ko", "không"],
+        &["vn", "Việt Nam"],
+        &["Kx", "khác"],
+    ])
+}
+
+/// `text` and a NUL.
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain([0]).collect()
+}
+
+/// A search request (`LVN_ODFINDITEMW`, which the list view sends for `LVM_FINDITEMW` and when
+/// the user types into it) for a virtual list view is answered by the dialog, without the
+/// handler, from the rows it keeps: a case-insensitive search of the first cells, from row
+/// `iStart` on, for a cell equal to the text or, with `LVFI_PARTIAL` (or `LVFI_SUBSTRING`),
+/// starting with it, going on from the first row with `LVFI_WRAP`. The request and its text
+/// are read without trusting their pointers: a text that cannot be read, or that has no NUL
+/// within the bound, finds nothing (-1), as do searches by `lParam` or by position, which the
+/// dialog cannot answer. A request for another control reaches the handler and gets the
+/// default answer, 0.
+#[test]
+fn a_search_request_is_answered_from_the_rows_without_trusting_its_pointer() {
+    let running = started(
+        Some(Box::new(|dialog, _| {
+            let _ = dialog.list_set_virtual_rows(ID_LIST, &search_rows());
+        })),
+        None,
+    );
+    let list = running.list();
+    let search = |from: HWND, id: u16, flags: LVFINDINFOW_FLAGS, start: i32, text: *const u8| {
+        let request = NMLVFINDITEMW {
+            hdr: NMHDR {
+                hwndFrom: from,
+                idFrom: usize::from(id),
+                code: LVN_ODFINDITEMW,
+            },
+            iStart: start,
+            lvfi: LVFINDINFOW {
+                flags,
+                psz: PCWSTR(text.cast()),
+                ..Default::default()
+            },
+        };
+        send(
+            running.hwnd,
+            WM_NOTIFY,
+            usize::from(id),
+            &raw const request as isize,
+        )
+    };
+    let find = |flags: LVFINDINFOW_FLAGS, start: i32, text: &str| {
+        let text = wide(text);
+        search(list, ID_LIST, flags, start, text.as_ptr().cast())
+    };
+    let prefix = LVFI_STRING | LVFI_PARTIAL;
+    assert_eq!(find(prefix, 0, "K"), 2);
+    assert_eq!(find(prefix, 2, "k"), 2);
+    assert_eq!(find(prefix, 3, "k"), 4);
+    assert_eq!(find(LVFI_PARTIAL, 3, "K"), 4);
+    assert_eq!(find(LVFI_SUBSTRING, 0, "Hc"), 1);
+    assert_eq!(find(prefix, 0, "việt"), -1);
+    // Past the last match: nothing, unless the search wraps.
+    assert_eq!(find(prefix, 1, "a"), -1);
+    assert_eq!(find(prefix | LVFI_WRAP, 1, "a"), 0);
+    assert_eq!(find(prefix | LVFI_WRAP, 3, "z"), -1);
+    // Without LVFI_PARTIAL the whole first cell must match (LVFI_WRAP alone is such a search).
+    assert_eq!(find(LVFI_STRING, 0, "k"), -1);
+    assert_eq!(find(LVFI_STRING, 0, "kX"), 4);
+    assert_eq!(find(LVFI_WRAP, 3, "KO"), 2);
+    // A negative start searches from the first row; one past the last row (as when the last
+    // row has the focus) only when the search wraps.
+    assert_eq!(find(prefix, -1, "k"), 2);
+    assert_eq!(find(prefix, 5, "k"), -1);
+    assert_eq!(find(prefix | LVFI_WRAP, 5, "k"), 2);
+    assert_eq!(find(prefix | LVFI_WRAP, i32::MAX, "k"), 2);
+    // What Common Controls 6 sends as the user types.
+    assert_eq!(find(LVFI_STRING | LVFI_SUBSTRING | LVFI_WRAP, 3, "k"), 4);
+    // Searches the dialog cannot answer.
+    assert_eq!(find(LVFI_PARAM, 0, "k"), -1);
+    assert_eq!(find(LVFI_NEARESTXY | prefix, 0, "k"), -1);
+    assert_eq!(find(LVFINDINFOW_FLAGS(0), 0, "k"), -1);
+
+    // Texts that cannot be read, or that never end.
+    assert_eq!(search(list, ID_LIST, prefix, 0, core::ptr::null()), -1);
+    assert_eq!(search(list, ID_LIST, prefix, 0, 0x10 as *const u8), -1);
+    let endless = vec![u16::from(b'k'); 100_000];
+    assert_eq!(
+        search(list, ID_LIST, prefix, 0, endless.as_ptr().cast()),
+        -1
+    );
+    // Each case ends just before a page that cannot be read.
+    let pages = Pages::new(8);
+    let page = pages.page;
+    let k = u16::from(b'k');
+    let at_end = pages.write(page - 4, &[k, 0]);
+    let odd = pages.write(3 * page - 7, &[k, u16::from(b'O'), 0]);
+    let unended = pages.write(5 * page - 8, &[k; 4]);
+    let header = NMHDR {
+        hwndFrom: list,
+        idFrom: usize::from(ID_LIST),
+        code: LVN_ODFINDITEMW,
+    };
+    let cut = pages.write(
+        7 * page - size_of::<NMHDR>(),
+        &NMLVFINDITEMW {
+            hdr: header,
+            iStart: 0,
+            lvfi: LVFINDINFOW {
+                flags: prefix,
+                psz: PCWSTR(at_end.cast()),
+                ..Default::default()
+            },
+        },
+    );
+    for unreadable in [1, 3, 5, 7] {
+        pages.protect(unreadable, PAGE_NOACCESS);
+    }
+    assert_eq!(search(list, ID_LIST, prefix, 0, at_end), 2);
+    assert_eq!(search(list, ID_LIST, LVFI_STRING, 0, odd), 2);
+    // The letters run into the page that cannot be read.
+    assert_eq!(search(list, ID_LIST, prefix, 0, unended), -1);
+    // So does the request after its header.
+    assert_eq!(
+        send(running.hwnd, WM_NOTIFY, usize::from(ID_LIST), cut as isize),
+        -1
+    );
+
+    // Another control's request reaches the handler, which cannot answer it.
+    let plain = item(running.hwnd, ID_PLAIN_LIST);
+    let text = wide("k");
+    assert_eq!(
+        search(plain, ID_PLAIN_LIST, prefix, 0, text.as_ptr().cast()),
+        0
+    );
+    let seen = running.settle();
+    let searches: Vec<u16> = seen
+        .iter()
+        .filter_map(|seen| match seen {
+            Seen::Notify { id, code } if *code == LVN_ODFINDITEMW as i32 => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(searches, [ID_PLAIN_LIST]);
+}
+
+/// Opens the test dialog under Common Controls 6, as `raumakey.exe` runs it, with `rows` in
+/// the virtual list view, row `selected` selected, and the keyboard focus in the list view.
+fn started_v6(rows: Vec<Vec<String>>, selected: Option<usize>) -> Running {
+    // The dialog's thread inherits the context; the guard may go once it started.
+    let _v6 = CommonControls6::activate();
+    let running = started(
+        Some(Box::new(move |dialog, seen| {
+            report(
+                seen,
+                "rows",
+                dialog
+                    .list_set_virtual_rows(ID_LIST, &rows)
+                    .map_err(|error| error.kind()),
+            );
+            report(
+                seen,
+                "select",
+                dialog
+                    .list_select(ID_LIST, selected)
+                    .map_err(|error| error.kind()),
+            );
+            dialog.focus(ID_LIST);
+        })),
+        None,
+    );
+    assert_eq!(
+        send(running.list(), CCM_GETVERSION, 0, 0),
+        6,
+        "Common Controls 6"
+    );
+    running
+}
+
+/// Typing into a virtual list view selects the next row (after the selected one, else from the
+/// first) whose first cell starts with the letters typed, in any case, going on from the first
+/// row; when no row does, the selection stays. Never the first row merely because the search
+/// went unanswered.
+#[test]
+fn typing_into_a_virtual_list_selects_the_next_row_that_starts_with_the_letters() {
+    for (selected, typed, expected) in [
+        (None, "k", 2),
+        (None, "K", 2),
+        (None, "hc", 1),
+        (None, "z", -1),
+        (Some(2), "k", 4),
+        (Some(4), "k", 2),
+        (Some(3), "z", 3),
+    ] {
+        let running = started_v6(search_rows(), selected);
+        let list = running.list();
+        type_into(list, typed);
+        assert_eq!(selection(list), expected, "{selected:?} {typed:?}");
+        let seen = running.settle();
+        assert_eq!(
+            results(&seen),
+            [
+                ("list_set_columns", Ok(())),
+                ("rows", Ok(())),
+                ("select", Ok(()))
+            ]
+        );
+        // The dialog answered the search itself.
+        assert!(
+            !seen.iter().any(|seen| matches!(
+                seen,
+                Seen::Notify { code, .. } if *code == LVN_ODFINDITEMW as i32
+            )),
+            "{seen:?}"
+        );
+    }
+}
+
+/// Common Controls 6 answers `LVM_GETITEMTEXTW` with the length of the whole cell, which may
+/// exceed the caller's buffer, and copies into the buffer what fits.
+#[test]
+fn a_long_cell_is_cut_to_the_callers_buffer_under_common_controls_6() {
+    let long = "ệ".repeat(300);
+    let running = started_v6(vec![vec!["dài".to_owned(), long]], None);
+    let list = running.list();
+    assert_eq!(list_cell(list, 0, 0), "dài");
+    assert_eq!(list_cell(list, 0, 1), "ệ".repeat(127));
 }
