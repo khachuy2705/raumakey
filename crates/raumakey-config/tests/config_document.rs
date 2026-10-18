@@ -1331,3 +1331,25 @@ fn quotes_copied_with_a_path_are_dropped() {
     );
     assert_eq!(loaded.document.exclusions.apps, exe_names(&["mstsc.exe"]));
 }
+
+/// The normalization of `[exclusions] apps` is public, so that the dialog that edits the list
+/// reads a typed or pasted name exactly as a hand-edited file is read.
+#[test]
+fn a_typed_application_is_read_as_an_element_of_the_list_is() {
+    use raumakey_config::normalize_excluded_app;
+    for (typed, read) in [
+        ("mstsc", Some("mstsc.exe")),
+        (r#""C:\Windows\System32\MSTSC.EXE""#, Some("mstsc.exe")),
+        ("RDCMan.exe . ", Some("rdcman.exe")),
+        ("", None),
+        ("C:", None),
+    ] {
+        assert_eq!(
+            normalize_excluded_app(typed)
+                .as_ref()
+                .map(|name| name.as_str()),
+            read,
+            "{typed:?}"
+        );
+    }
+}

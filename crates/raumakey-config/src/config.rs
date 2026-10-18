@@ -550,7 +550,7 @@ fn decode_conversion(root: &mut TomlFields<'_>) -> ConversionSection {
 /// file name), with `.exe` added when it has no `.` at all, and validated by [`ExeName`].
 /// `None` when no valid name is left, or when the name would not read back as itself (the
 /// session core reads every name again and refuses such a name).
-fn excluded_app(raw: &str) -> Option<ExeName> {
+pub fn normalize_excluded_app(raw: &str) -> Option<ExeName> {
     let base = ExeName::from_path(&raw.replace('"', "")).ok()?;
     let stem = base
         .as_str()
@@ -567,13 +567,13 @@ fn excluded_app(raw: &str) -> Option<ExeName> {
     (ExeName::new(name.as_str()).as_ref() == Ok(&name)).then_some(name)
 }
 
-/// Decodes `[exclusions]`: each element is normalized by [`excluded_app`], and names that are
+/// Decodes `[exclusions]`: each element is normalized by [`normalize_excluded_app`], and names that are
 /// equal once normalized are kept once (see [`ExclusionsSection::apps`]).
 fn decode_exclusions(root: &mut TomlFields<'_>) -> ExclusionsSection {
     let defaults = ExclusionsSection::default();
     let table = root.table(EXCLUSIONS_KEY).unwrap_or_default();
     let mut f = root.child(table, EXCLUSIONS_KEY);
-    let listed = f.string_list("apps", defaults.apps, excluded_app);
+    let listed = f.string_list("apps", defaults.apps, normalize_excluded_app);
     let mut seen = BTreeSet::new();
     let apps = listed
         .into_iter()

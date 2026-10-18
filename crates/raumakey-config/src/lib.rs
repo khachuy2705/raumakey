@@ -48,7 +48,7 @@ pub mod store;
 pub use app_rules::{ACTION_KEY, AppRulesDocument, RuleIdentity};
 pub use config::{
     BINDINGS_KEY, CaseTransform, ConfigDocument, ConversionSection, ExclusionsSection, HOTKEYS_KEY,
-    InputSection, MacroSection, StartupMode, SystemSection,
+    InputSection, MacroSection, StartupMode, SystemSection, normalize_excluded_app,
 };
 pub use data_root::{DataRoot, WRITE_PROBE_FILE, is_writable_dir};
 pub use diagnostics::DiagnosticsLog;
