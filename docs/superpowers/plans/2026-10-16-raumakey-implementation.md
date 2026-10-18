@@ -1,9 +1,11 @@
 # Kế hoạch triển khai Raumakey
 
-**Ngày:** 2026-10-16 (cập nhật lần cuối 2026-10-17: hợp đồng bằng chứng cho cổng phát hành ở §12,
-trạng thái triển khai ở §14, các quyết định ở §15, bản portable một tệp ở D38–D42 và §16)
-**Trạng thái:** Đang áp dụng; việc triển khai đang được tiến hành (xem §14 và §16). D38–D42 thay
-thế các phần nói về TIP, installer và thư mục dữ liệu (thiết kế §21).
+**Ngày:** 2026-10-16 (cập nhật lần cuối 2026-10-18: hợp đồng bằng chứng cho cổng phát hành ở §12,
+trạng thái triển khai ở §14, các quyết định ở §15, bản portable một tệp ở D38–D42 và §16, bảng
+cấu hình và danh sách gõ tắt ở D43–D45 và §17)
+**Trạng thái:** Đang áp dụng; việc triển khai đang được tiến hành (xem §14, §16 và §17). D38–D42
+thay thế các phần nói về TIP, installer và thư mục dữ liệu (thiết kế §21); D43–D45 thêm bảng cấu
+hình (thiết kế §22).
 **Đầu vào:** `docs/superpowers/specs/2026-10-16-raumakey-design.md` (thiết kế, có thẩm quyền),
 `docs/reference/evkey_clean_room_spec.md` (tài liệu tham chiếu hành vi clean-room),
 `docs/reference/evkey_compatibility_test_matrix.md` (các vector tương thích).
@@ -1391,7 +1393,31 @@ merge, code vẫn có thể theo văn bản trước đó.
   - "Thoát".
 
   Mỗi thay đổi được ghi ngay vào `raumakey.toml`. Bảng cài đặt của §10.2 được hoãn lại (thiết kế
-  §21.5).
+  §21.5). Từ 2026-10-18, D43 thêm "Bảng cấu hình…" ở đầu menu.
+
+Các quyết định ngày 2026-10-18 (thiết kế §22):
+
+- **D43 — Bảng cấu hình.** Một hộp thoại một trang, dựng từ template trong bộ nhớ và chạy trên
+  luồng riêng. Bảng chỉnh các khoá của nhóm "Cách gõ" (`method`, `modern_tone`, `free_marking`,
+  `spell_check`, `auto_restore_invalid`), nhóm "Gõ tắt" (`[macros] enabled`, `when_disabled`,
+  `auto_case`), "Khởi động cùng Windows" và `show_panel_on_start`, cùng chế độ Việt/Anh.
+  - Bảng mở từ mục menu đầu tiên "Bảng cấu hình…", khi chạy lại exe (D45), và lúc khởi động khi
+    `show_panel_on_start = true`. Khi bảng mở lúc khởi động, hộp thoại chào lần đầu không hiện.
+  - Thay đổi có hiệu lực và được lưu ngay; không có nút Lưu hay Huỷ.
+  - Bảng gửi yêu cầu mang giá trị đích. Tray luôn gửi lại toàn bộ trạng thái cho bảng, nên bảng
+    luôn khớp với menu, phím tắt và tệp sửa tay.
+  - "Mặc định" đặt lại hai nhóm "Cách gõ" và "Gõ tắt".
+  - Phím tắt, dạng Unicode, giới hạn ngữ cảnh, key map và chẩn đoán vẫn chỉ sửa được trong tệp.
+- **D44 — Danh sách gõ tắt.** Hộp thoại thêm, sửa và xoá mục của `raumakey-macros.toml`, kiểm tra
+  theo D29 và D30, rồi ghi bằng một commit của store riêng trên luồng của hộp thoại.
+  - Khoá lạ, mục không giải mã được, id và các cờ của từng mục được giữ.
+  - Tệp hỏng không bao giờ bị ghi đè. Khi tệp bị sửa ở nơi khác, Raumakey hỏi trước khi ghi đè.
+  - Sau khi lưu, tray yêu cầu worker kiểm tra tệp ngay để hook nhận bảng macro mới. `Settings` vẫn
+    không ghi tệp macro.
+- **D45 — Chạy lại exe mở bảng cấu hình.** Khi controller đã chạy, lần chạy mới gọi
+  `AllowSetForegroundWindow(ASFW_ANY)`, gửi thông điệp đăng ký `Raumakey.<sidhash>.show-panel` tới
+  các cửa sổ cấp cao nhất, rồi thoát với mã 0. Bản đang chạy mở bảng hoặc đưa bảng lên trước.
+  Controller chạy quyền quản trị cho thông điệp này qua UIPI.
 
 ---
 
@@ -1456,3 +1482,28 @@ thật được cài:
 Chưa kiểm chứng: việc gõ trong ứng dụng thật. Smoke test không gửi phím nào. Các danh sách kiểm tra
 thủ công ở module `typing` và `desktop` của controller, và `GUIDE.md` §5.6, chưa được chạy. Không
 điều nào ở trên là bằng chứng về hành vi khi chạy thật.
+
+---
+
+## 17. Bảng cấu hình và danh sách gõ tắt (2026-10-18)
+
+Mục này theo dõi các task của D43–D45 (thiết kế §22). Mỗi task được làm trong một Git worktree
+riêng, theo TDD, được review độc lập rồi mới merge.
+
+### 17.1 Task
+
+| # | Task | Phạm vi |
+|---|---|---|
+| S1 | Khối dựng hộp thoại | `raumakey-windows`: template hộp thoại trong bộ nhớ (thuần, test trên mọi host); hộp thoại modal với `DialogHandler`, chạy trên luồng riêng (`spawn_dialog`), đóng không cần chờ, chống gọi lồng vào handler, chặn panic; thông điệp đăng ký theo người dùng, gửi tới các cửa sổ cấp cao nhất, `AllowSetForegroundWindow` |
+| S2 | Bảng cấu hình | `raumakey-controller`: các `Change` mới; trạng thái bảng và yêu cầu của bảng (thuần); tray mở, cập nhật và đóng bảng; mục menu "Bảng cấu hình…"; mở bảng lúc khởi động theo `show_panel_on_start`; chạy lại exe mở bảng (D45); glue Windows của bảng |
+| S3 | Danh sách gõ tắt | Mô hình danh sách (thuần): kiểm tra theo D29 và D30, giữ khoá lạ; hộp thoại có list view; đọc và ghi trên luồng của hộp thoại; kiểm tra tệp ngay sau khi lưu |
+| S4 | Tài liệu và bản phát hành | Thiết kế §22, kế hoạch §15 và §17, `GUIDE.md`, `README.md`, ghi chép task, bản build trong `release\` |
+
+### 17.2 Trạng thái
+
+| Task | Trạng thái | Commit | Review |
+|---|---|---|---|
+| S1 | Đang làm | — | — |
+| S2 | Chưa bắt đầu | — | — |
+| S3 | Chưa bắt đầu | — | — |
+| S4 | Thiết kế §22 và kế hoạch D43–D45 đã viết | — | — |

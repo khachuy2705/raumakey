@@ -1,10 +1,11 @@
 # Thiết kế viết lại Raumakey bằng Rust
 
-**Ngày:** 2026-10-16 (cập nhật lần cuối 2026-10-17: bổ sung trạng thái triển khai thành §20;
-chuyển sang bản portable một file ở §21)
+**Ngày:** 2026-10-16 (cập nhật lần cuối 2026-10-18: bổ sung trạng thái triển khai thành §20;
+chuyển sang bản portable một file ở §21; bảng cấu hình và danh sách gõ tắt ở §22)
 
 **Trạng thái:** Đã được duyệt; đang triển khai (xem §20). §21 thay thế các phần nói về TIP TSF,
-installer và thư mục dữ liệu; khi có mâu thuẫn, §21 thắng.
+installer và thư mục dữ liệu; khi có mâu thuẫn, §21 thắng. §22 bổ sung bảng cấu hình cho §21 và
+thắng §21 ở những chỗ hai mục khác nhau.
 
 **Sản phẩm:** Raumakey
 
@@ -191,6 +192,9 @@ Wire codec cũ (legacy) của EVKey là một Cargo feature tuỳ chọn tên `e
 
 > **Thay đổi ngày 2026-10-17 (D42, §21.5):** release đầu tiên chỉnh tuỳ chọn bằng menu khay; bảng
 > cài đặt và các tab được hoãn lại.
+>
+> **Thay đổi ngày 2026-10-18 (D43–D45, §22):** có bảng cấu hình một trang, không có tab, và hộp
+> thoại danh sách gõ tắt. Các tab quy tắc ứng dụng, chuyển đổi và phím tắt vẫn được hoãn lại.
 
 Controller dùng một cửa sổ Win32 ẩn, một icon tray, và các hộp thoại native dạng modeless/modal. Bảng thu gọn hiển thị chế độ tiếng Việt, kiểu gõ, kiểu đặt dấu, và nút mở rộng/thu gọn. Các tab mở rộng bao gồm nhập liệu, phím tắt, macro, quy tắc ứng dụng, chuyển đổi, hành vi hệ thống, và thông tin sản phẩm.
 
@@ -697,7 +701,8 @@ phím vật lý
   - "Mở file cấu hình", mở `raumakey.toml` bằng Notepad;
   - "Giới thiệu", hiện phiên bản và đường dẫn của tệp cấu hình;
   - "Thoát".
-- Bảng cài đặt và các tab của §11 được hoãn lại.
+- Bảng cài đặt và các tab của §11 được hoãn lại. (Từ 2026-10-18, §22 thêm bảng cấu hình và mục
+  "Bảng cấu hình…" ở đầu menu.)
 
 ### 21.6 Những phần bị thay thế hoặc hoãn
 
@@ -707,8 +712,158 @@ phím vật lý
 | §5.3 Đường dự phòng | Chỉ cho host đặc biệt | Đường gõ duy nhất (D39) |
 | §8 Thư mục dữ liệu | `%LOCALAPPDATA%\Raumakey`, portable bằng tệp đánh dấu | Thư mục của exe (D40) |
 | §10 IPC giữa TIP và controller | Kênh điều khiển có kiểu | Không cần khi không có TIP; hoãn lại |
-| §11 Bảng cài đặt | Bảng thu gọn và các tab | Menu khay (D42); bảng hoãn lại |
+| §11 Bảng cài đặt | Bảng thu gọn và các tab | Menu khay (D42); từ 2026-10-18 có bảng cấu hình một trang và danh sách gõ tắt (D43–D45, §22) |
 | §12 Đăng ký COM/TSF | Bước cài đặt | Không phát hành |
 | §13 Installer, MSI, script | Có | Không có (D38); khởi động cùng Windows qua menu (D41) |
 | §2 tiêu chí 5 | Đăng ký danh tính COM/TSF mới | Hoãn lại cùng TIP |
 | Kế hoạch D9, D26, D33 | Thư mục dữ liệu, hook chỉ đọc phím tắt, nội dung package | Thay bởi D40, D39, D38 |
+
+## 22. Bảng cấu hình và danh sách gõ tắt (thay đổi thiết kế ngày 2026-10-18)
+
+Chủ dự án yêu cầu một hộp thoại để chọn cấu hình, thay vì chỉ sửa tệp. Ảnh chụp giao diện EVKey mà
+chủ dự án gửi kèm chỉ được dùng để hiểu nhu cầu: người dùng quen với một bảng cấu hình mở từ khay
+hệ thống. Theo quy định clean-room, bố cục, câu chữ và icon của các hộp thoại Raumakey do Raumakey
+tự thiết kế; không chép bố cục, chuỗi, tài nguyên hay cấu trúc tab của EVKey. Kế hoạch §15 ghi các
+quyết định D43–D45, kế hoạch §17 ghi task và trạng thái.
+
+### 22.1 Bảng cấu hình (D43)
+
+- **Cách mở:**
+  - mục đầu tiên của menu khay, "Bảng cấu hình…";
+  - chạy lại `raumakey.exe` khi Raumakey đang chạy (D45, §22.3);
+  - lúc khởi động, khi `[system] show_panel_on_start = true`. Đây là giá trị mặc định của schema,
+    nên lần chạy đầu luôn mở bảng.
+- **Dạng hộp thoại:** một hộp thoại Win32 dựng từ template trong bộ nhớ, vì toolchain không có
+  trình biên dịch `.rc`. Font Segoe UI 9 pt, co giãn theo DPI của màn hình (manifest đã khai báo
+  PerMonitorV2 và Common Controls v6). Hộp thoại có nút riêng trên thanh tác vụ và mang icon của
+  Raumakey. Tiêu đề: "Raumakey <phiên bản> – Bảng cấu hình".
+- **Bố cục:** một trang, hai cột, không có tab:
+
+```text
+[x] Gõ tiếng Việt          Bật/tắt nhanh: Ctrl+Shift hoặc nhấp biểu tượng V/E
++- Cách gõ -------------------------+  +- Gõ tắt ----------------------------+
+| Kiểu gõ: [Telex             v]    |  | [x] Bật gõ tắt                      |
+| [ ] Đặt dấu kiểu mới (oà, uý)     |  | [ ] Gõ tắt cả khi đang gõ tiếng Anh |
+| [x] Cho gõ dấu sau phụ âm cuối    |  | [x] Viết hoa theo cách gõ           |
+|     (toans -> toán)               |  |     (Ko -> Không, KO -> KHÔNG)      |
+| [x] Kiểm tra chính tả             |  | [Danh sách gõ tắt…]                 |
+| [x] Giữ nguyên phím đã gõ khi từ  |  +-------------------------------------+
+|     không phải tiếng Việt         |  +- Hệ thống --------------------------+
++-----------------------------------+  | [ ] Khởi động cùng Windows          |
+                                       | [x] Mở bảng này khi Raumakey chạy   |
+                                       +-------------------------------------+
+Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml (cạnh raumakey.exe)
+Mọi thay đổi có hiệu lực và được lưu ngay.
+[Mở file cấu hình]  [Mặc định]                                          [Đóng]
+```
+
+- **Mục và khoá tương ứng:**
+
+| Mục trong bảng | Khoá |
+|---|---|
+| Gõ tiếng Việt | `[input] enabled` (cũng là Ctrl+Shift và click biểu tượng) |
+| Kiểu gõ | `[input] method`: Telex, VNI, VIQR; mục "Kiểu gõ riêng" chỉ hiện khi tệp cấu hình có key map dùng được cho `user_keymap` |
+| Đặt dấu kiểu mới (oà, uý) | `[input] modern_tone` |
+| Cho gõ dấu sau phụ âm cuối | `[input] free_marking` |
+| Kiểm tra chính tả | `[input] spell_check` |
+| Giữ nguyên phím đã gõ khi từ không phải tiếng Việt | `[input] auto_restore_invalid` |
+| Bật gõ tắt | `[macros] enabled` |
+| Gõ tắt cả khi đang gõ tiếng Anh | `[macros] when_disabled` |
+| Viết hoa theo cách gõ | `[macros] auto_case` |
+| Khởi động cùng Windows | `[system] startup` và shortcut `Raumakey.lnk` (D41) |
+| Mở bảng này khi Raumakey chạy | `[system] show_panel_on_start` |
+
+- **Không có nút Lưu hay Huỷ.** Mỗi thay đổi có hiệu lực ngay như một lựa chọn trong menu, và worker
+  ghi nó ngay vào `raumakey.toml`.
+- **Tray là nguồn dữ liệu duy nhất.** Bảng gửi yêu cầu mang giá trị đích (ví dụ "kiểm tra chính tả
+  = tắt"), không gửi lệnh "đảo". Sau mỗi yêu cầu của bảng, tray gửi lại toàn bộ trạng thái, và bảng
+  hiện đúng trạng thái đó. Tray cũng gửi lại trạng thái mỗi khi cấu hình đổi theo đường khác:
+  Ctrl+Shift, click biểu tượng, menu khay, tệp sửa tay, lệnh `raumakey startup`. Một yêu cầu bị từ
+  chối, ví dụ "Khởi động cùng Windows" khi exe nằm trong `%TEMP%`, làm ô đó trở về giá trị cũ, kèm
+  hộp thông báo như khi chọn từ menu.
+- **"Mặc định"** hỏi lại người dùng, rồi đặt các mục của nhóm "Cách gõ" và "Gõ tắt" về giá trị mặc
+  định của schema. Nút này không đổi chế độ Việt/Anh, việc khởi động cùng Windows, mục "Mở bảng này
+  khi Raumakey chạy", danh sách gõ tắt, hay các khoá chỉ sửa được trong tệp.
+- **Chỉ sửa được trong tệp:** `[input] normalization`, `context_limit`, `user_keymap` và
+  `[[keymaps]]`, `[hotkeys]`, `[system] diagnostics`, `[conversion]`. Lý do không đưa phím tắt vào
+  bảng: một phím tắt có phím thường như Alt+Z làm cửa sổ đang gõ mở menu, vì hook chặn Z nhưng Alt
+  vẫn tới ứng dụng. Lý do không đưa dạng Unicode vào bảng: dạng tổ hợp (NFD) chưa được kiểm chứng
+  với cách sửa mù bằng Backspace. Cả hai cần thêm việc ở hook. Bảng hiện phím bật/tắt đang dùng,
+  chỉ để đọc.
+- **Khi không có thư mục lưu** (`Location::Unavailable`): dòng tệp cấu hình nói các thay đổi không
+  được lưu; nút "Mở file cấu hình" và "Danh sách gõ tắt…" bị tắt.
+- **Luồng:**
+  - Bảng chạy trên một luồng riêng, là một hộp thoại modal không có owner, như các hộp thông báo
+    (§21.3). Luồng của tray không bao giờ chờ bảng.
+  - Yêu cầu của bảng đi vào inbox của tray, kèm `WAKE`. Trạng thái mới đi tới bảng qua một biến dùng
+    chung và một thông điệp riêng.
+  - Mỗi lúc chỉ có một bảng: mở lại thì bảng đang mở được đưa lên trước.
+  - Thoát Raumakey, đóng tiến trình hay đăng xuất đều đóng bảng mà không chờ.
+- **Lần chạy đầu:** khi bảng mở lúc khởi động, hộp thoại chào không hiện nữa, vì bảng đã cho biết
+  tệp cấu hình nằm ở đâu và cách bật/tắt nhanh. Các cảnh báo về tệp cấu hình vẫn hiện như trước.
+
+### 22.2 Danh sách gõ tắt (D44)
+
+- Nút "Danh sách gõ tắt…" trong bảng mở hộp thoại sửa `raumakey-macros.toml`. Hộp thoại có:
+  - một danh sách hai cột, "Gõ tắt" và "Thay bằng";
+  - hai ô nhập cho từ gõ tắt và nội dung thay thế;
+  - các nút "Thêm / Sửa", "Xoá", "Lưu", "Đóng".
+- Chọn một dòng thì hai ô nhập hiện nội dung của dòng đó. "Thêm / Sửa" sửa mục có cùng từ gõ tắt
+  nếu đã có, hoặc thêm một mục mới. Raumakey kiểm tra theo đúng quy tắc của `raumakey-macro` (D29,
+  D30):
+  - từ gõ tắt có 1–32 ký tự sau chuẩn hoá NFC, không có khoảng trắng hay ký tự điều khiển;
+  - nội dung thay thế không rỗng, không có ký tự NUL, và vừa một lần chèn của engine;
+  - không quá `MAX_MACROS` (20.000) mục.
+
+  Lỗi hiện bằng tiếng Việt trong hộp thoại.
+- **Lưu:**
+  - "Lưu" ghi cả danh sách trong một commit của store: ghi nguyên tử, có khoá và kiểm tra revision.
+  - Id và các trường `enabled`, `boundary`, `case` của mỗi mục được giữ. Mục mới được bật, với các
+    giá trị mặc định.
+  - Các khoá lạ và các mục không giải mã được cũng được giữ (ma trận #45).
+  - Khi chưa có `raumakey-macros.toml`, lần lưu đầu tạo tệp.
+  - Nếu tệp bị sửa ở nơi khác trong lúc hộp thoại mở, Raumakey hỏi có ghi danh sách đang sửa đè lên
+    không.
+- **Tệp hỏng:** hộp thoại không mở, và một hộp thông báo đề nghị người dùng sửa tệp bằng tay.
+  Raumakey không bao giờ ghi đè một tệp hỏng.
+- **Luồng:**
+  - Hộp thoại đọc và ghi tệp trên luồng của chính nó, bằng một store riêng.
+  - Sau khi lưu, tray yêu cầu worker kiểm tra tệp ngay, nên hook nhận bảng macro mới sau một lượt
+    kiểm tra, không phải chờ nhịp 2 giây.
+  - `Settings` vẫn không bao giờ ghi `raumakey-macros.toml`.
+- Văn bản của macro không bao giờ được ghi log và không đi qua answer của worker.
+- Đóng hộp thoại khi còn thay đổi chưa lưu thì Raumakey hỏi lại. Thoát Raumakey đóng hộp thoại mà
+  không lưu.
+
+### 22.3 Chạy lại exe khi Raumakey đang chạy (D45)
+
+- Khi controller của cùng người dùng trong cùng phiên đang chạy, lần chạy mới làm ba việc rồi thoát
+  với mã 0:
+  1. gọi `AllowSetForegroundWindow(ASFW_ANY)`, để bản đang chạy được đưa bảng lên trước;
+  2. gửi thông điệp đăng ký `Raumakey.<sidhash>.show-panel` tới mọi cửa sổ cấp cao nhất;
+  3. thoát.
+
+  Bản đang chạy mở bảng cấu hình, hoặc đưa bảng đang mở lên trước. Cách này giống UniKey và EVKey:
+  bấm lại vào exe thì bảng cấu hình hiện ra.
+- Controller chạy bằng quyền quản trị cho thông điệp này đi qua UIPI, như `TaskbarCreated`.
+- D45 thay câu "không báo cho bản đang chạy" ở bước 1 của chế độ chạy.
+
+### 22.4 Menu khay (sửa D42)
+
+- Thêm "Bảng cấu hình…" ở đầu menu, ngăn với "Gõ tiếng Việt (Ctrl+Shift)" bằng một separator. Các
+  mục còn lại giữ nguyên.
+- Click vào biểu tượng vẫn đổi chế độ Việt/Anh. Double-click không mở bảng, vì cú click đầu đã đổi
+  chế độ.
+
+### 22.5 Kiểm thử
+
+- Test không phụ thuộc host:
+  - các byte của template hộp thoại;
+  - trạng thái bảng được dựng từ cấu hình;
+  - yêu cầu ứng với từng thao tác trên bảng;
+  - effect của tray khi mở, cập nhật và đóng bảng;
+  - mô hình danh sách gõ tắt và việc giữ khoá lạ khi lưu.
+- Test trên Windows: hộp thoại thật chạy trên luồng riêng, được điều khiển bằng `SendMessageW` từ
+  luồng test. Hộp thoại test nằm ngoài màn hình và không lấy focus.
+- Danh sách kiểm tra thủ công nằm ở module `desktop` của controller và ở `GUIDE.md` §5.6. Một test
+  tự động thành công không phải bằng chứng về giao diện khi chạy thật.
