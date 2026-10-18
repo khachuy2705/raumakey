@@ -9,6 +9,7 @@
 
 mod support;
 
+mod exclusions;
 mod failures;
 mod gates;
 mod health;

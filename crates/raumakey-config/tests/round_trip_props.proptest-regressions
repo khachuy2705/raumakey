@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b71c23f854fd2d63141d68dd69afc79485db4743c6e8a92f8811b046f4d46e35 # shrinks to table = {"exclusions": Table({"apps": Array([String("mstsc")])}), "keymaps": Array([]), "version": Integer(1)}

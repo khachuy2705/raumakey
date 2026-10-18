@@ -206,9 +206,11 @@ fn problems(
             DocumentStatus::Unusable(_) => lines.push(format!(
                 "{config} có giá trị mà bộ gõ không dùng được; Raumakey dùng cấu hình mặc định."
             )),
+            // A field takes its default; a list element (`exclusions.apps[2]`) is left out,
+            // and so are the elements beyond the limit of a list that is cut.
             DocumentStatus::Loaded { issues } => lines.push(format!(
                 "Một số giá trị trong raumakey.toml không dùng được và được thay bằng giá trị \
-                 mặc định: {}.",
+                 mặc định hoặc bị bỏ qua: {}.",
                 paths(issues)
             )),
             DocumentStatus::Missing => {}

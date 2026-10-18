@@ -38,7 +38,23 @@
 //!   and macro validation. The engine options come from
 //!   [`ConfigDocument::engine_options`], the live mode from `[input] enabled`, the hotkeys from
 //!   `[hotkeys]` (default toggle `Ctrl+Shift`, D5), diagnostics from `[system] diagnostics`,
-//!   and the compatibility rules from `raumakey-app-rules.toml` (the D13 defaults without it).
+//!   and the compatibility rules from `raumakey-app-rules.toml` (the D13 defaults without it)
+//!   after the rules of the excluded applications.
+//! - **Excluded applications (D47).** Each application of `[exclusions] apps` in
+//!   `raumakey.toml` (by default
+//!   [`ExclusionsSection::DEFAULT_APPS`](raumakey_config::ExclusionsSection::DEFAULT_APPS),
+//!   the Remote Desktop and Hyper-V clients) becomes a rule for its executable, without a
+//!   window class, that sets `vietnamese = false` and `macros = false`, placed before the rules
+//!   of `raumakey-app-rules.toml`. The policy reads the rules narrowed to the host's window
+//!   class first, then the other rules of the executable in order, then the named sets, and
+//!   the first that sets a field decides it: an exclusion wins over every rule without a
+//!   window class and every named set of that file, while a window-class rule there for the
+//!   same executable still decides, in windows of its class, the fields it sets. So in an
+//!   excluded application nothing is transformed and no macro expands, whatever the mode
+//!   (`[macros] when_disabled` included), and the mode hotkey still switches the global mode.
+//!   A hand edit of `[exclusions]` takes effect through [`Settings::poll`] like any other, and
+//!   changes from the tray menu and the panel keep the list, since a commit writes the whole
+//!   document.
 //! - **Changes from the tray menu and the settings panel** ([`Change`], [`Settings::apply`])
 //!   are committed at once. When the commit reports a conflict, because the file was edited
 //!   by hand or by another writer since it was loaded, the file is loaded again, the change is
@@ -77,12 +93,15 @@
 //! defaults ([`FieldIssue`]: schema paths and reason codes, never values), unreadable, or
 //! unusable, and which macro entries were left out ([`EntryIssue`]: positions, ids, and error
 //! codes). Lists longer than the channel's limits ([`MAX_KEYMAPS`], [`MAX_HOTKEYS`],
-//! [`MAX_MACROS`]) are cut for the snapshot and reported on their path
-//! ([`IssueReason::OutOfRange`] on `keymaps`, `hotkeys.toggle_mode`, `hotkeys.hard_reset`, or
-//! `macro`); the documents keep every element. Beyond [`MAX_KEYMAPS`] key maps, only the key
-//! map that the input method uses (if any) is carried, as it is the only one the engine reads.
-//! Compatibility rules that the session core would refuse make `raumakey-app-rules.toml`
-//! [`DocumentStatus::Unusable`], with the D13 defaults in effect. After a commit, the status
+//! [`MAX_MACROS`], [`MAX_APP_RULES`]) are cut for the snapshot and reported on their path
+//! ([`IssueReason::OutOfRange`] on `keymaps`, `hotkeys.toggle_mode`, `hotkeys.hard_reset`,
+//! `macro`, `exclusions.apps`, or `rule`); the documents keep every element. Beyond
+//! [`MAX_KEYMAPS`] key maps, only the key map that the input method uses (if any) is carried,
+//! as it is the only one the engine reads. The excluded applications take the first of the
+//! [`MAX_APP_RULES`] rules, so the last rules of `raumakey-app-rules.toml` are cut when they
+//! no longer fit after them, and `rule` is reported on that file. Compatibility rules that
+//! the session core would refuse make `raumakey-app-rules.toml` [`DocumentStatus::Unusable`],
+//! with the D13 defaults in effect (after the exclusions, as always). After a commit, the status
 //! of `raumakey.toml` is what a load of the written file reports: fields that took their
 //! defaults were written with them and are not reported any more. A commit writes the
 //! canonical encoding, so comments and the layout of a hand-edited file are not kept.
@@ -100,10 +119,13 @@ use raumakey_config::{
     IssueReason, Loaded, MacroDocument, StartupMode, StoreDocument, is_writable_dir,
 };
 use raumakey_ipc::error::IpcError;
-use raumakey_ipc::message::{MAX_HOTKEYS, MAX_KEYMAPS, MAX_MACROS, MacroSnapshot, RuntimeSnapshot};
+use raumakey_ipc::message::{
+    MAX_APP_RULES, MAX_HOTKEYS, MAX_KEYMAPS, MAX_MACROS, MacroSnapshot, RuntimeSnapshot,
+};
 use raumakey_macro::{EntryIssue, MacroStore};
+use raumakey_model::host::ExeName;
 use raumakey_model::options::InputMethod;
-use raumakey_model::policy::CompatibilityConfig;
+use raumakey_model::policy::{AppRule, CompatibilityConfig, RuleAction};
 
 use crate::system::is_inside_folder;
 
@@ -961,6 +983,13 @@ impl Settings {
         };
         self.status.app_rules = match (&self.app_rules_read, built.app_rules_error) {
             (DocumentStatus::Loaded { .. }, Some(error)) => DocumentStatus::Unusable(error),
+            (DocumentStatus::Loaded { issues }, None) => DocumentStatus::Loaded {
+                issues: issues
+                    .iter()
+                    .cloned()
+                    .chain(built.app_rules_issues)
+                    .collect(),
+            },
             (other, _) => other.clone(),
         };
     }
@@ -1001,6 +1030,46 @@ struct Built {
     config_error: Option<IpcError>,
     /// The compatibility rules could not make a valid snapshot.
     app_rules_error: Option<IpcError>,
+    /// Lists of `raumakey-app-rules.toml` cut to a snapshot limit (`rule`, after the
+    /// exclusions).
+    app_rules_issues: Vec<FieldIssue>,
+}
+
+/// The rule of an application of `[exclusions]` (D47): neither Vietnamese nor macros.
+fn exclusion_rule(exe: &ExeName) -> AppRule {
+    AppRule {
+        exe: exe.clone(),
+        window_class: None,
+        action: RuleAction {
+            vietnamese: Some(false),
+            macros: Some(false),
+            ..RuleAction::default()
+        },
+    }
+}
+
+/// Puts the rule of each application of `apps` before the rules of `compatibility`, keeping at
+/// most [`MAX_APP_RULES`]: the exclusions first (beyond the limit, `exclusions.apps` is cut and
+/// reported in `config_issues`), then as many rules of the app-rules file as still fit (when
+/// some do not, `rule` is reported in `app_rules_issues`).
+fn put_exclusions_first(
+    compatibility: &mut CompatibilityConfig,
+    apps: &[ExeName],
+    config_issues: &mut Vec<FieldIssue>,
+    app_rules_issues: &mut Vec<FieldIssue>,
+) {
+    let excluded = apps.get(..MAX_APP_RULES).unwrap_or(apps);
+    if excluded.len() < apps.len() {
+        config_issues.push(out_of_range("exclusions.apps"));
+    }
+    let room = MAX_APP_RULES - excluded.len();
+    if compatibility.rules.len() > room {
+        compatibility.rules.truncate(room);
+        app_rules_issues.push(out_of_range("rule"));
+    }
+    let mut rules: Vec<AppRule> = excluded.iter().map(exclusion_rule).collect();
+    rules.append(&mut compatibility.rules);
+    compatibility.rules = rules;
 }
 
 /// Builds the runtime snapshot of `config` with `compatibility`, so that it passes
@@ -1049,11 +1118,29 @@ fn build_runtime(config: &ConfigDocument, compatibility: &CompatibilityConfig) -
         app_rules_error = Some(error);
         snapshot.compatibility = defaults;
     }
+    let mut app_rules_issues = Vec::new();
+    let without_exclusions = snapshot.compatibility.clone();
+    put_exclusions_first(
+        &mut snapshot.compatibility,
+        &config.exclusions.apps,
+        &mut config_issues,
+        &mut app_rules_issues,
+    );
+    if snapshot.validate().is_err() {
+        // Not expected: every name of a decoded document reads back as itself.
+        snapshot.compatibility = without_exclusions;
+        app_rules_issues.clear();
+        config_issues.push(FieldIssue {
+            path: "exclusions.apps".to_owned(),
+            reason: IssueReason::InvalidValue,
+        });
+    }
     Built {
         snapshot,
         config_issues,
         config_error,
         app_rules_error,
+        app_rules_issues,
     }
 }
 

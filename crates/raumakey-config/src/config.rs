@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use raumakey_model::host::ExeName;
 use raumakey_model::hotkey::{Hotkey, HotkeyConfig};
 use raumakey_model::keymap::{KEYMAP_SCHEMA_VERSION, KeyAction, KeyBinding, KeyMap};
 use raumakey_model::options::{EngineOptions, InputMethod, Normalization};
@@ -27,6 +28,7 @@ const ROOT_KEYS: &[&str] = &[
     "system",
     "conversion",
     "keymaps",
+    EXCLUSIONS_KEY,
 ];
 const INPUT_KEYS: &[&str] = &[
     "enabled",
@@ -45,6 +47,10 @@ const SYSTEM_KEYS: &[&str] = &["startup", "show_panel_on_start", "diagnostics"];
 const CONVERSION_KEYS: &[&str] = &["source", "target", "case", "remove_tones"];
 const KEYMAP_KEYS: &[&str] = &["id", "version", "name", BINDINGS_KEY];
 const BINDING_KEYS: &[&str] = &["key", "actions"];
+const EXCLUSION_KEYS: &[&str] = &["apps"];
+
+/// Name of the `[exclusions]` table.
+const EXCLUSIONS_KEY: &str = "exclusions";
 
 /// Name of the `bindings` array of a `[[keymaps]]` entry. In the unknown-key record of a key
 /// map ([`ConfigDocument::keymap_extras`]) this key holds the unknown keys of its bindings, in
@@ -239,6 +245,63 @@ impl Default for ConversionSection {
     }
 }
 
+/// `[exclusions]`: applications in which Raumakey always types English (D47).
+///
+/// In an excluded application nothing is transformed and no macro expands, whatever the mode;
+/// the mode hotkey still switches the global mode. The controller carries each name into the
+/// runtime snapshot as an application rule that disallows Vietnamese and macros. A name may be
+/// written as Explorer or Task Manager shows it, as a path (quoted or not) or without `.exe`;
+/// decoding normalizes it to the executable's file name (see [`ExclusionsSection::apps`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExclusionsSection {
+    /// Executable file names, lowercase, each with a `.`, and without repeats ([`ExeName`]
+    /// compares them).
+    ///
+    /// Users paste what Explorer or Task Manager shows, so each element is normalized first,
+    /// silently: every `"` is dropped (no Windows file name holds one, and Explorer's "Copy as
+    /// path" puts the path in them: `'"C:\Windows\System32\mstsc.exe"'` is `mstsc.exe`), a full
+    /// or relative path (either separator) counts as its last component
+    /// ([`ExeName::from_path`]: `C:\Windows\System32\mstsc.exe` is `mstsc.exe`), and a name
+    /// without any `.` gets `.exe` (`mstsc` is `mstsc.exe`; `VirtualBoxVM.exe` and `foo.bin`
+    /// stay as written). [`ExeName`] then trims, lowercases, and validates it.
+    ///
+    /// Decoded element by element (matrix #45): a missing `[exclusions]` or `apps` takes
+    /// [`ExclusionsSection::DEFAULT_APPS`] silently, while an explicit `apps = []` excludes
+    /// nothing. An `apps` that is not an array takes the defaults and is reported; an element
+    /// that is not a string, or that leaves no valid name (an empty name, a path that ends in a
+    /// separator, a name with a drive separator), is dropped and reported on its own
+    /// (`exclusions.apps[2]`), and when no element is usable the defaults apply. An element
+    /// that matches an earlier one once normalized (`mstsc`, `MSTSC.EXE`, and
+    /// `C:\Windows\System32\mstsc.exe` are one) is kept once, the first time, silently. A
+    /// commit writes the normalized names, which show what is matched; dropped and repeated
+    /// elements are not written back.
+    pub apps: Vec<ExeName>,
+    /// Unknown keys of `[exclusions]`, re-emitted on save.
+    pub extensions: toml::Table,
+}
+
+impl ExclusionsSection {
+    /// The applications excluded unless the file says otherwise, written on the first run:
+    /// Remote Desktop Connection (`mstsc.exe`), the Remote Desktop client of Windows App
+    /// (`msrdc.exe`), Remote Desktop Connection Manager (`rdcman.exe`), and Hyper-V VM
+    /// Connection (`vmconnect.exe`). Their keys are typed on another machine, which runs its
+    /// own input method.
+    pub const DEFAULT_APPS: &'static [&'static str] =
+        &["mstsc.exe", "msrdc.exe", "rdcman.exe", "vmconnect.exe"];
+}
+
+impl Default for ExclusionsSection {
+    fn default() -> Self {
+        Self {
+            apps: Self::DEFAULT_APPS
+                .iter()
+                .filter_map(|name| ExeName::new(name).ok())
+                .collect(),
+            extensions: toml::Table::new(),
+        }
+    }
+}
+
 /// `raumakey.toml`, schema v1 (plan §5.1).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConfigDocument {
@@ -275,13 +338,16 @@ pub struct ConfigDocument {
     /// Unknown keys of `[[keymaps]]` entries (by key map id; the unknown keys of their bindings
     /// are nested under [`BINDINGS_KEY`]) and the key maps that could not be decoded.
     pub keymap_extras: EntryExtras<String>,
+    /// `[exclusions]`, written after every other table.
+    pub exclusions: ExclusionsSection,
     /// Unknown top-level keys, plus the unknown keys of `[hotkeys]` under [`HOTKEYS_KEY`];
     /// re-emitted on save.
     pub extensions: toml::Table,
 }
 
 impl ConfigDocument {
-    /// Schema v1 defaults: [`EngineOptions::defaults_v1`] and [`HotkeyConfig::default`].
+    /// Schema v1 defaults: [`EngineOptions::defaults_v1`], [`HotkeyConfig::default`], and
+    /// [`ExclusionsSection::DEFAULT_APPS`].
     pub fn defaults() -> Self {
         Self {
             version: <Self as StoreDocument>::CURRENT_VERSION,
@@ -293,6 +359,7 @@ impl ConfigDocument {
             conversion: ConversionSection::default(),
             keymaps: Vec::new(),
             keymap_extras: EntryExtras::default(),
+            exclusions: ExclusionsSection::default(),
             extensions: toml::Table::new(),
         }
     }
@@ -469,6 +536,37 @@ fn decode_conversion(root: &mut TomlFields<'_>) -> ConversionSection {
         target: f.string("target", &defaults.target),
         case: f.keyword("case", defaults.case),
         remove_tones: f.bool("remove_tones", defaults.remove_tones),
+        extensions: f.into_rest(),
+    }
+}
+
+/// An element of `[exclusions] apps` as a user may paste it: without any `"` (no Windows file
+/// name holds one; Explorer's "Copy as path" adds them), the last component of a path, with
+/// `.exe` added when it has no `.` at all, trimmed, lowercased, and validated by [`ExeName`].
+/// `None` when no valid name is left.
+fn excluded_app(raw: &str) -> Option<ExeName> {
+    let name = ExeName::from_path(&raw.replace('"', "")).ok()?;
+    if name.as_str().contains('.') {
+        Some(name)
+    } else {
+        ExeName::new(&format!("{name}.exe")).ok()
+    }
+}
+
+/// Decodes `[exclusions]`: each element is normalized by [`excluded_app`], and names that are
+/// equal once normalized are kept once (see [`ExclusionsSection::apps`]).
+fn decode_exclusions(root: &mut TomlFields<'_>) -> ExclusionsSection {
+    let defaults = ExclusionsSection::default();
+    let table = root.table(EXCLUSIONS_KEY).unwrap_or_default();
+    let mut f = root.child(table, EXCLUSIONS_KEY);
+    let listed = f.string_list("apps", defaults.apps, excluded_app);
+    let mut seen = BTreeSet::new();
+    let apps = listed
+        .into_iter()
+        .filter(|app| seen.insert(app.clone()))
+        .collect();
+    ExclusionsSection {
+        apps,
         extensions: f.into_rest(),
     }
 }
@@ -667,6 +765,7 @@ impl StoreDocument for ConfigDocument {
         let system = decode_system(&mut root);
         let conversion = decode_conversion(&mut root);
         let (keymaps, keymap_extras) = decode_keymaps(&mut root);
+        let exclusions = decode_exclusions(&mut root);
         let mut extensions = root.into_rest();
         if !hotkey_extensions.is_empty() {
             extensions.insert(
@@ -684,6 +783,7 @@ impl StoreDocument for ConfigDocument {
             conversion,
             keymaps,
             keymap_extras,
+            exclusions,
             extensions,
         };
         document.report_unusable_user_keymap(&mut issues);
@@ -736,6 +836,10 @@ impl StoreDocument for ConfigDocument {
                 extensions: Extra::new(Some(&self.conversion.extensions), CONVERSION_KEYS),
             },
             keymaps: EntriesWire::new(self.keymap_wires(), &self.keymap_extras.rejected),
+            exclusions: ExclusionsWire {
+                apps: self.exclusions.apps.iter().map(ExeName::as_str).collect(),
+                extensions: Extra::new(Some(&self.exclusions.extensions), EXCLUSION_KEYS),
+            },
             extensions: Extra::new(Some(&self.extensions), ROOT_KEYS),
         };
         encode_toml(&wire)
@@ -802,6 +906,14 @@ struct ConfigWire<'a> {
     conversion: ConversionWire<'a>,
     #[serde(skip_serializing_if = "EntriesWire::is_empty")]
     keymaps: EntriesWire<'a, KeyMapWire<'a>>,
+    exclusions: ExclusionsWire<'a>,
+    #[serde(flatten)]
+    extensions: Extra<'a, toml::Table>,
+}
+
+#[derive(Serialize)]
+struct ExclusionsWire<'a> {
+    apps: Vec<&'a str>,
     #[serde(flatten)]
     extensions: Extra<'a, toml::Table>,
 }

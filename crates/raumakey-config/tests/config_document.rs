@@ -1,6 +1,8 @@
 use raumakey_config::{
-    CaseTransform, ConfigDocument, ConfigError, FieldIssue, IssueReason, StartupMode, StoreDocument,
+    CaseTransform, ConfigDocument, ConfigError, ExclusionsSection, FieldIssue, IssueReason,
+    StartupMode, StoreDocument,
 };
+use raumakey_model::host::ExeName;
 use raumakey_model::hotkey::{Hotkey, HotkeyConfig};
 use raumakey_model::keymap::{KeyAction, KeyBinding, KeyMap, Tone};
 use raumakey_model::options::{EngineOptions, InputMethod, Normalization};
@@ -63,6 +65,11 @@ fn defaults_mirror_engine_defaults_v1_and_default_hotkeys() {
     assert_eq!(doc.conversion.case, CaseTransform::None);
     assert!(!doc.conversion.remove_tones);
     assert!(doc.keymaps.is_empty());
+    assert_eq!(
+        doc.exclusions.apps,
+        exe_names(ExclusionsSection::DEFAULT_APPS)
+    );
+    assert!(doc.exclusions.extensions.is_empty());
     assert!(doc.extensions.is_empty());
     assert!(doc.input.extensions.is_empty());
     assert_eq!(ConfigDocument::default_document(), doc);
@@ -945,4 +952,317 @@ fn issue_reasons_have_stable_codes() {
         .to_string(),
         "keymaps[0].bindings[2].actions[1]: invalid-value"
     );
+}
+
+/// Lowercase executable names, as `ExeName::new` makes them.
+fn exe_names(names: &[&str]) -> Vec<ExeName> {
+    names
+        .iter()
+        .map(|name| ExeName::new(name).unwrap())
+        .collect()
+}
+
+/// D47: Remote Desktop Connection, the Remote Desktop (Windows App) client, Remote Desktop
+/// Connection Manager, and Hyper-V VM Connection type for another machine, so they are excluded
+/// unless the user says otherwise; a first run writes them into the file.
+#[test]
+fn the_default_exclusions_are_the_remote_desktop_and_virtual_machine_clients() {
+    assert_eq!(
+        ExclusionsSection::DEFAULT_APPS,
+        ["mstsc.exe", "msrdc.exe", "rdcman.exe", "vmconnect.exe"]
+    );
+    assert_eq!(
+        ExclusionsSection::default(),
+        ExclusionsSection {
+            apps: exe_names(ExclusionsSection::DEFAULT_APPS),
+            extensions: toml::Table::new(),
+        }
+    );
+    let encoded = ConfigDocument::defaults().encode().unwrap();
+    assert!(
+        encoded.contains(
+            "\n[exclusions]\napps = [\"mstsc.exe\", \"msrdc.exe\", \"rdcman.exe\", \"vmconnect.exe\"]\n"
+        ),
+        "{encoded}"
+    );
+}
+
+/// `[exclusions]` is written after every other table of the schema, `[[keymaps]]` included.
+#[test]
+fn the_exclusions_table_is_written_after_the_other_tables() {
+    let encoded = ConfigDocument::decode(PLAN_EXAMPLE)
+        .unwrap()
+        .document
+        .encode()
+        .unwrap();
+    let at = |header: &str| {
+        encoded
+            .find(header)
+            .unwrap_or_else(|| panic!("{header} missing from\n{encoded}"))
+    };
+    assert!(at("[conversion]") < at("[[keymaps]]"), "{encoded}");
+    assert!(at("[[keymaps]]") < at("[exclusions]"), "{encoded}");
+}
+
+/// Without `[exclusions]`, or without its `apps`, the default list is in effect, silently;
+/// unknown keys of the table are kept and written back.
+#[test]
+fn a_missing_exclusion_table_or_list_takes_the_defaults_silently() {
+    let defaults = exe_names(ExclusionsSection::DEFAULT_APPS);
+    let with_unknown = "version = 1\n[exclusions]\nx_future = { mode = \"strict\" }\n";
+    for text in ["version = 1\n", "version = 1\n[exclusions]\n", with_unknown] {
+        let loaded = ConfigDocument::decode(text).unwrap();
+        assert!(loaded.is_clean(), "{text}: {:?}", loaded.issues);
+        assert_eq!(loaded.document.exclusions.apps, defaults, "{text}");
+    }
+    let doc = ConfigDocument::decode(with_unknown).unwrap().document;
+    assert!(doc.exclusions.extensions.contains_key("x_future"));
+    let encoded = doc.encode().unwrap();
+    let parsed: toml::Table = toml::from_str(&encoded).unwrap();
+    assert_eq!(
+        parsed["exclusions"]["x_future"]["mode"].as_str(),
+        Some("strict")
+    );
+    assert_eq!(
+        parsed["exclusions"]["apps"].as_array().map(Vec::len),
+        Some(4)
+    );
+    assert_eq!(ConfigDocument::decode(&encoded).unwrap().document, doc);
+}
+
+/// `apps = []` is the user's choice to exclude nothing: it is kept and written back.
+#[test]
+fn an_explicitly_empty_exclusion_list_excludes_nothing() {
+    let loaded = ConfigDocument::decode("version = 1\n[exclusions]\napps = []\n").unwrap();
+    assert!(loaded.is_clean(), "{:?}", loaded.issues);
+    assert!(loaded.document.exclusions.apps.is_empty());
+    let encoded = loaded.document.encode().unwrap();
+    assert!(encoded.contains("[exclusions]\napps = []\n"), "{encoded}");
+    let again = ConfigDocument::decode(&encoded).unwrap();
+    assert!(again.is_clean());
+    assert!(again.document.exclusions.apps.is_empty());
+}
+
+/// Matrix #45: an `apps` that is not a list, or an `[exclusions]` that is not a table, takes
+/// the default list and is reported by its path.
+#[test]
+fn exclusions_of_the_wrong_type_take_the_defaults_and_are_reported() {
+    let defaults = exe_names(ExclusionsSection::DEFAULT_APPS);
+    let cases = [
+        (
+            "version = 1\n[exclusions]\napps = \"mstsc.exe\"\n",
+            ("exclusions.apps", "invalid-type"),
+        ),
+        (
+            "version = 1\n[exclusions]\napps = { mstsc = true }\n",
+            ("exclusions.apps", "invalid-type"),
+        ),
+        (
+            "version = 1\nexclusions = 5\n",
+            ("exclusions", "invalid-type"),
+        ),
+    ];
+    for (text, expected) in cases {
+        let loaded = ConfigDocument::decode(text).unwrap();
+        assert_eq!(codes(&loaded.issues), pairs(&[expected]), "{text}");
+        assert_eq!(loaded.document.exclusions.apps, defaults, "{text}");
+    }
+}
+
+/// A hand-edited list: each name is normalized (a path counts as its file name, a name without
+/// a `.` gets `.exe`), trimmed, and lowercased; an element that is not a string or leaves no
+/// valid executable name (an empty name, a path that ends in a separator, a drive letter) is
+/// dropped on its own and reported by its index, never by its value; a name that matches an
+/// earlier one once normalized is kept once, silently. Dropped elements are not written back,
+/// so the next load is clean.
+#[test]
+fn a_hand_edited_exclusion_list_keeps_every_usable_name_once() {
+    let text = r#"version = 1
+[exclusions]
+# Ứng dụng luôn gõ tiếng Anh
+apps = [
+    "MSTSC.EXE",
+    " Code ",
+    'C:\Tools\PuTTY.exe',
+    42,
+    "mstsc",
+    "",
+    "Ứng Dụng.exe",
+    'D:\Secret\',
+    "tools/plink",
+    "Secret:Stream.exe",
+    "code.EXE",
+]
+x_note = "kept"
+"#;
+    let loaded = ConfigDocument::decode(text).unwrap();
+    assert_eq!(
+        codes(&loaded.issues),
+        pairs(&[
+            ("exclusions.apps[3]", "invalid-type"),
+            ("exclusions.apps[5]", "invalid-value"),
+            ("exclusions.apps[7]", "invalid-value"),
+            ("exclusions.apps[9]", "invalid-value"),
+        ])
+    );
+    let rendered = format!("{:?}", loaded.issues);
+    for secret in ["Secret", "Stream", "42"] {
+        assert!(!rendered.contains(secret), "{rendered}");
+    }
+    let doc = loaded.document;
+    assert_eq!(
+        doc.exclusions.apps,
+        exe_names(&[
+            "mstsc.exe",
+            "code.exe",
+            "putty.exe",
+            "ứng dụng.exe",
+            "plink.exe"
+        ])
+    );
+    assert_eq!(
+        doc.exclusions
+            .extensions
+            .get("x_note")
+            .and_then(toml::Value::as_str),
+        Some("kept")
+    );
+
+    let encoded = doc.encode().unwrap();
+    assert!(
+        encoded.contains(
+            "apps = [\"mstsc.exe\", \"code.exe\", \"putty.exe\", \"ứng dụng.exe\", \"plink.exe\"]"
+        ),
+        "{encoded}"
+    );
+    assert!(!encoded.contains("Secret"), "{encoded}");
+    let again = ConfigDocument::decode(&encoded).unwrap();
+    assert!(again.is_clean(), "{:?}", again.issues);
+    assert_eq!(again.document, doc);
+}
+
+/// Matrix #45: a list whose every element is unusable is a corrupt field, so it takes the
+/// default list (only `apps = []` means "none").
+#[test]
+fn an_exclusion_list_with_only_unusable_elements_takes_the_defaults() {
+    let text = "version = 1\n[exclusions]\napps = ['C:', 3, \"  \", 'D:\\Tools\\']\n";
+    let loaded = ConfigDocument::decode(text).unwrap();
+    assert_eq!(
+        codes(&loaded.issues),
+        pairs(&[
+            ("exclusions.apps[0]", "invalid-value"),
+            ("exclusions.apps[1]", "invalid-type"),
+            ("exclusions.apps[2]", "invalid-value"),
+            ("exclusions.apps[3]", "invalid-value"),
+        ])
+    );
+    assert_eq!(
+        loaded.document.exclusions.apps,
+        exe_names(ExclusionsSection::DEFAULT_APPS)
+    );
+}
+
+/// The decoded names of `apps` in `list` (a TOML array), which must load without issues, and
+/// the `apps` line that a commit writes for them, which loads as the same names.
+fn normalized(list: &str) -> (Vec<ExeName>, String) {
+    let text = format!("version = 1\n[exclusions]\napps = {list}\n");
+    let loaded = ConfigDocument::decode(&text).unwrap();
+    assert!(loaded.is_clean(), "{text}: {:?}", loaded.issues);
+    let encoded = loaded.document.encode().unwrap();
+    let again = ConfigDocument::decode(&encoded).unwrap();
+    assert!(again.is_clean(), "{encoded}: {:?}", again.issues);
+    assert_eq!(again.document, loaded.document, "{encoded}");
+    let line = encoded
+        .lines()
+        .find(|line| line.starts_with("apps = "))
+        .unwrap_or_else(|| panic!("no apps line in\n{encoded}"))
+        .to_owned();
+    (loaded.document.exclusions.apps, line)
+}
+
+/// Users paste what Explorer or Task Manager shows: a full or relative path, with either
+/// separator, counts as the executable's file name, silently, and a commit writes that name.
+#[test]
+fn a_pasted_path_counts_as_its_executable_name() {
+    let (apps, line) = normalized(
+        r#"['C:\Windows\System32\mstsc.exe', "C:/Tools/x/RDCMan.exe", 'tools\VMConnect.exe', "./msrdc.exe", '\\server\share\Remote Tool.exe']"#,
+    );
+    assert_eq!(
+        apps,
+        exe_names(&[
+            "mstsc.exe",
+            "rdcman.exe",
+            "vmconnect.exe",
+            "msrdc.exe",
+            "remote tool.exe"
+        ])
+    );
+    assert_eq!(
+        line,
+        "apps = [\"mstsc.exe\", \"rdcman.exe\", \"vmconnect.exe\", \"msrdc.exe\", \"remote tool.exe\"]"
+    );
+}
+
+/// A name without any `.` (as Task Manager shows some processes) gets `.exe`, silently; a name
+/// with an extension, whatever it is, stays as written.
+#[test]
+fn a_name_without_an_extension_gets_exe() {
+    let (apps, line) = normalized(
+        r#"["mstsc", "VMConnect", 'C:\Tools\PuTTY', "Ứng Dụng", "VirtualBoxVM.exe", "foo.bin", "my.app", " rdcman "]"#,
+    );
+    assert_eq!(
+        apps,
+        exe_names(&[
+            "mstsc.exe",
+            "vmconnect.exe",
+            "putty.exe",
+            "ứng dụng.exe",
+            "virtualboxvm.exe",
+            "foo.bin",
+            "my.app",
+            "rdcman.exe"
+        ])
+    );
+    assert_eq!(
+        line,
+        "apps = [\"mstsc.exe\", \"vmconnect.exe\", \"putty.exe\", \"ứng dụng.exe\", \
+         \"virtualboxvm.exe\", \"foo.bin\", \"my.app\", \"rdcman.exe\"]"
+    );
+}
+
+/// Names that match once normalized (a bare name, the name in another case, a path to it) are
+/// one application: kept once, the first time, silently.
+#[test]
+fn names_that_match_once_normalized_are_kept_once() {
+    let (apps, line) = normalized(
+        r#"["mstsc", "MSTSC.EXE", 'C:\Windows\System32\mstsc.exe', "rdcman", "D:/RDCMan.exe", "rdcman.exe "]"#,
+    );
+    assert_eq!(apps, exe_names(&["mstsc.exe", "rdcman.exe"]));
+    assert_eq!(line, "apps = [\"mstsc.exe\", \"rdcman.exe\"]");
+}
+
+/// Explorer's "Copy as path" wraps the path in `"`, which no Windows file name contains: every
+/// `"` of an element is dropped before the rest of the normalization, so the quoted path is the
+/// plain name (and a repeat of it). An element of quotes only leaves no name and is reported.
+#[test]
+fn quotes_copied_with_a_path_are_dropped() {
+    let (apps, line) = normalized(
+        r#"['"C:\Windows\System32\mstsc.exe"', "mstsc", '"RDCMan"', 'C:\Tools\"PuTTY".exe', '"D:\Tools\VMConnect.exe" ']"#,
+    );
+    assert_eq!(
+        apps,
+        exe_names(&["mstsc.exe", "rdcman.exe", "putty.exe", "vmconnect.exe"])
+    );
+    assert_eq!(
+        line,
+        "apps = [\"mstsc.exe\", \"rdcman.exe\", \"putty.exe\", \"vmconnect.exe\"]"
+    );
+
+    let loaded =
+        ConfigDocument::decode("version = 1\n[exclusions]\napps = ['\"\"', \"mstsc\"]\n").unwrap();
+    assert_eq!(
+        codes(&loaded.issues),
+        pairs(&[("exclusions.apps[0]", "invalid-value")])
+    );
+    assert_eq!(loaded.document.exclusions.apps, exe_names(&["mstsc.exe"]));
 }

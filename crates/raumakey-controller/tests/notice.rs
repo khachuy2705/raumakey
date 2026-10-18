@@ -282,6 +282,33 @@ fn defaulted_values_and_skipped_macros_are_listed_by_path_and_count() {
     assert!(text.contains("raumakey-app-rules.toml"), "{text}");
 }
 
+/// An excluded application whose name cannot be used is left out, not replaced (D47), and a
+/// list beyond the snapshot limit is cut: the line about `raumakey.toml` says that values are
+/// replaced by their defaults or left out, and names the schema paths.
+#[test]
+fn excluded_applications_left_out_are_named_by_path() {
+    let status = Status {
+        config: DocumentStatus::Loaded {
+            issues: vec![issue("exclusions.apps[2]"), issue("exclusions.apps")],
+        },
+        app_rules: DocumentStatus::Loaded {
+            issues: vec![FieldIssue {
+                path: "rule".to_owned(),
+                reason: IssueReason::OutOfRange,
+            }],
+        },
+        ..clean()
+    };
+    let notice = status_notice(Some(&path()), &clean(), &status).unwrap();
+    assert_eq!(
+        shown(&notice),
+        "Raumakey gặp vấn đề khi nạp lại tệp cấu hình:\n\n- Một số giá trị trong raumakey.toml \
+         không dùng được và được thay bằng giá trị mặc định hoặc bị bỏ qua: exclusions.apps[2], \
+         exclusions.apps.\n\n- Một số giá trị trong raumakey-app-rules.toml không dùng được và \
+         bị bỏ qua: rule."
+    );
+}
+
 #[test]
 fn unreadable_macros_and_rules_are_reported() {
     let status = Status {

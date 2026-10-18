@@ -19,9 +19,9 @@
 //! - **Not kept:** values this build does not accept in the fields it knows, such as a newer
 //!   keyword for `startup`, `method`, `case`, `boundary`, or `transport`, or a value of
 //!   another type. Such a field holds its default, is reported, and the next commit writes the
-//!   default. List elements this build does not accept (hotkeys, key actions, named-set
-//!   members) are not written back either, nor are key-map bindings dropped for a bad `key` or
-//!   `actions`, together with their unknown keys.
+//!   default. List elements this build does not accept (hotkeys, key actions, excluded
+//!   applications, named-set members) are not written back either, nor are key-map bindings
+//!   dropped for a bad `key` or `actions`, together with their unknown keys.
 //!
 //! A caller should therefore show the load issues before it commits over them. Writing is
 //! atomic, with optimistic revision checks (matrix #46) that also catch a writer that changed
@@ -47,8 +47,8 @@ pub mod store;
 
 pub use app_rules::{ACTION_KEY, AppRulesDocument, RuleIdentity};
 pub use config::{
-    BINDINGS_KEY, CaseTransform, ConfigDocument, ConversionSection, HOTKEYS_KEY, InputSection,
-    MacroSection, StartupMode, SystemSection,
+    BINDINGS_KEY, CaseTransform, ConfigDocument, ConversionSection, ExclusionsSection, HOTKEYS_KEY,
+    InputSection, MacroSection, StartupMode, SystemSection,
 };
 pub use data_root::{DataRoot, WRITE_PROBE_FILE, is_writable_dir};
 pub use diagnostics::DiagnosticsLog;

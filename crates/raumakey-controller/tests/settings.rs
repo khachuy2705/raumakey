@@ -8,20 +8,24 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use raumakey_config::{
-    AtomicStore, ConfigDocument, ConfigError, FieldIssue, IssueReason, StartupMode, StdReplacer,
-    StoreDocument, is_writable_dir,
+    AtomicStore, ConfigDocument, ConfigError, ExclusionsSection, FieldIssue, IssueReason,
+    StartupMode, StdReplacer, StoreDocument, is_writable_dir,
 };
 #[cfg(windows)]
 use raumakey_controller::settings::is_protected_dir;
 use raumakey_controller::settings::{
     Change, DocumentStatus, Location, OpenReport, Recovery, Settings, is_temporary_path,
 };
-use raumakey_ipc::message::{MAX_HOTKEYS, MAX_KEYMAPS, MAX_NAMED_SETS, RuntimeSnapshot};
+use raumakey_ipc::message::{
+    MAX_APP_RULES, MAX_HOTKEYS, MAX_KEYMAPS, MAX_NAMED_SETS, RuntimeSnapshot,
+};
 use raumakey_macro::{EntryError, EntryIssue, MacroError, MacroTable};
+use raumakey_model::host::{ExeName, HostContext, SessionId};
 use raumakey_model::hotkey::{Hotkey, HotkeyConfig};
 use raumakey_model::macros::MacroId;
 use raumakey_model::options::{EngineOptions, InputMethod};
-use raumakey_model::policy::CompatibilityConfig;
+use raumakey_model::policy::{AppRule, CompatibilityConfig, HostPolicy, RuleAction};
+use raumakey_policy::CompatibilityPolicy;
 
 /// A folder for `raumakey.exe` and a local application data folder.
 struct Folders {
@@ -98,6 +102,34 @@ fn hotkey(text: &str) -> Hotkey {
 
 fn loaded_clean() -> DocumentStatus {
     DocumentStatus::Loaded { issues: Vec::new() }
+}
+
+/// The rule that excludes `exe` (D47): neither Vietnamese nor macros.
+fn exclusion(exe: &str) -> AppRule {
+    AppRule {
+        exe: ExeName::new(exe).unwrap(),
+        window_class: None,
+        action: RuleAction {
+            vietnamese: Some(false),
+            macros: Some(false),
+            ..RuleAction::default()
+        },
+    }
+}
+
+/// `compatibility` with the rule of each of `apps` before its own rules.
+fn with_exclusions(apps: &[&str], mut compatibility: CompatibilityConfig) -> CompatibilityConfig {
+    let mut rules: Vec<AppRule> = apps.iter().map(|exe| exclusion(exe)).collect();
+    rules.append(&mut compatibility.rules);
+    compatibility.rules = rules;
+    compatibility
+}
+
+/// The policy that `runtime` gives a window of class `class` in `exe`.
+fn policy_of(runtime: &RuntimeSnapshot, exe: &str, class: Option<&str>) -> HostPolicy {
+    let mut host = HostContext::new(SessionId::from_u128(1), ExeName::new(exe).unwrap());
+    host.window_class = class.map(str::to_owned);
+    CompatibilityPolicy::new(Arc::new(runtime.compatibility.clone())).resolve(&host)
 }
 
 /// Checks that the session core would install both snapshots.
@@ -181,11 +213,19 @@ fn the_default_snapshots_are_defaults_v1_with_the_ctrl_shift_toggle() {
     assert!(runtime.keymaps.is_empty());
     assert_eq!(runtime.hotkeys, HotkeyConfig::default());
     assert_eq!(runtime.hotkeys.toggle_mode, vec![hotkey("Ctrl+Shift")]);
-    assert_eq!(runtime.compatibility, CompatibilityConfig::defaults_v1());
+    // The D13 defaults, after a rule for each application excluded by default (D47).
+    assert_eq!(
+        runtime.compatibility,
+        with_exclusions(
+            ExclusionsSection::DEFAULT_APPS,
+            CompatibilityConfig::defaults_v1()
+        )
+    );
     let defaults = RuntimeSnapshot::defaults_v1();
     assert_eq!(
         RuntimeSnapshot {
             config_revision: 0,
+            compatibility: CompatibilityConfig::defaults_v1(),
             ..runtime.clone()
         },
         defaults
@@ -1141,7 +1181,13 @@ fn app_rules_are_loaded_when_the_file_exists() {
     assert_consumable(&settings);
     fs::remove_file(folders.app_rules()).unwrap();
     let runtime = settings.poll().unwrap().runtime.unwrap();
-    assert_eq!(runtime.compatibility, CompatibilityConfig::defaults_v1());
+    assert_eq!(
+        runtime.compatibility,
+        with_exclusions(
+            ExclusionsSection::DEFAULT_APPS,
+            CompatibilityConfig::defaults_v1()
+        )
+    );
     assert_eq!(settings.status().app_rules, DocumentStatus::Missing);
 }
 
@@ -1214,11 +1260,259 @@ fn app_rules_the_session_core_would_refuse_fall_back_to_the_defaults() {
         ),
         "{error:?}"
     );
+    // The exclusions of `raumakey.toml` stay in effect over the defaults.
     assert_eq!(
         settings.runtime_snapshot().compatibility,
-        CompatibilityConfig::defaults_v1()
+        with_exclusions(
+            ExclusionsSection::DEFAULT_APPS,
+            CompatibilityConfig::defaults_v1()
+        )
     );
     assert_consumable(&settings);
+}
+
+/// D47: each application of `[exclusions]` becomes a rule that allows neither Vietnamese nor
+/// macros, before the rules of `raumakey-app-rules.toml`. Exe-only rules apply in order and the
+/// first that sets a field decides it, so an exclusion wins over every exe-only rule and named
+/// set of that file; a window-class rule of the file for the same application still decides,
+/// for its class, the fields it sets.
+#[test]
+fn excluded_applications_win_over_the_app_rules_but_not_their_window_class_rules() {
+    let folders = Folders::new();
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 1\n[exclusions]\napps = [\"MSTSC.EXE\", \"msrdc.exe\"]\n",
+    )
+    .unwrap();
+    fs::write(
+        folders.app_rules(),
+        r#"version = 1
+revision = 1
+[[rule]]
+exe = "mstsc.exe"
+vietnamese = true
+macros = true
+[[rule]]
+exe = "mstsc.exe"
+window_class = "TscShellContainerClass"
+vietnamese = true
+[[rule]]
+exe = "notepad.exe"
+macros = false
+[[named_set]]
+name = "remote"
+members = ["msrdc.exe"]
+action = { vietnamese = true, macros = true }
+"#,
+    )
+    .unwrap();
+    let (settings, report) = folders.open();
+    assert_eq!(report.status.config, loaded_clean());
+    assert_eq!(report.status.app_rules, loaded_clean());
+    let runtime = settings.runtime_snapshot();
+    let rules = &runtime.compatibility.rules;
+    assert_eq!(rules.len(), 5);
+    assert_eq!(rules[..2], [exclusion("mstsc.exe"), exclusion("msrdc.exe")]);
+    assert_eq!(
+        rules[2].action.vietnamese,
+        Some(true),
+        "the file's rules follow"
+    );
+    assert_eq!(runtime.compatibility.named_sets.len(), 1);
+
+    for (exe, class) in [
+        ("mstsc.exe", None),
+        ("mstsc.exe", Some("Edit")),
+        ("msrdc.exe", None),
+    ] {
+        let policy = policy_of(runtime, exe, class);
+        assert!(!policy.vietnamese_allowed, "{exe} {class:?}");
+        assert!(!policy.macro_allowed, "{exe} {class:?}");
+    }
+    let shell = policy_of(runtime, "mstsc.exe", Some("tscshellcontainerclass"));
+    assert!(shell.vietnamese_allowed, "the window-class rule decides");
+    assert!(
+        !shell.macro_allowed,
+        "it does not set macros: the exclusion does"
+    );
+    let notepad = policy_of(runtime, "notepad.exe", None);
+    assert!(notepad.vietnamese_allowed);
+    assert!(!notepad.macro_allowed);
+    assert_consumable(&settings);
+}
+
+/// The channel carries at most `MAX_APP_RULES` rules. The exclusions come first, so when they
+/// and the rules of `raumakey-app-rules.toml` are too many together, the last rules of that
+/// file are cut and `rule` is reported on it; an exclusion list beyond the limit is cut itself
+/// and reported on `exclusions.apps`. The files keep everything.
+#[test]
+fn rules_beyond_the_snapshot_limit_are_cut_after_the_exclusions() {
+    let folders = Folders::new();
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 1\n[exclusions]\napps = [\"a.exe\", \"b.exe\"]\n",
+    )
+    .unwrap();
+    let mut rules = String::from("version = 1\nrevision = 1\n");
+    for index in 0..MAX_APP_RULES - 1 {
+        write!(
+            rules,
+            "[[rule]]\nexe = \"app{index}.exe\"\nreset_on_mouse = false\n"
+        )
+        .unwrap();
+    }
+    fs::write(folders.app_rules(), rules).unwrap();
+    let (mut settings, report) = folders.open();
+    assert_eq!(report.status.config, loaded_clean());
+    assert_eq!(
+        report.status.app_rules,
+        DocumentStatus::Loaded {
+            issues: vec![issue("rule", IssueReason::OutOfRange)]
+        }
+    );
+    let rules = &settings.runtime_snapshot().compatibility.rules;
+    assert_eq!(rules.len(), MAX_APP_RULES);
+    assert_eq!(rules[..2], [exclusion("a.exe"), exclusion("b.exe")]);
+    let last = format!("app{}.exe", MAX_APP_RULES - 3);
+    assert_eq!(rules[MAX_APP_RULES - 1].exe.as_str(), last);
+    assert_consumable(&settings);
+
+    // More exclusions than the limit: they are cut too, and no rule of the file is left.
+    let mut text = String::from("version = 1\nrevision = 1\n[exclusions]\napps = [");
+    for index in 0..=MAX_APP_RULES {
+        write!(text, "\"x{index}.exe\", ").unwrap();
+    }
+    text.push_str("]\n");
+    fs::write(folders.config(), text).unwrap();
+    let runtime = settings.poll().unwrap().runtime.unwrap();
+    assert_eq!(
+        settings.status().config,
+        DocumentStatus::Loaded {
+            issues: vec![issue("exclusions.apps", IssueReason::OutOfRange)]
+        }
+    );
+    assert_eq!(
+        settings.status().app_rules,
+        DocumentStatus::Loaded {
+            issues: vec![issue("rule", IssueReason::OutOfRange)]
+        }
+    );
+    let rules = &runtime.compatibility.rules;
+    assert_eq!(rules.len(), MAX_APP_RULES);
+    assert_eq!(rules[0], exclusion("x0.exe"));
+    let last = format!("x{}.exe", MAX_APP_RULES - 1);
+    assert_eq!(rules[MAX_APP_RULES - 1], exclusion(&last));
+    assert_eq!(settings.document().exclusions.apps.len(), MAX_APP_RULES + 1);
+    assert_consumable(&settings);
+}
+
+/// A hand edit of `[exclusions]` is picked up by the poll like any other: the new runtime
+/// snapshot carries the new list, and an empty list leaves the rules of the app-rules file
+/// (here the D13 defaults) alone.
+#[test]
+fn a_hand_edit_of_the_exclusions_reaches_the_runtime_snapshot() {
+    let folders = Folders::new();
+    let (mut settings, _) = folders.open();
+    assert!(!policy_of(settings.runtime_snapshot(), "mstsc.exe", None).vietnamese_allowed);
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 1\n[exclusions]\napps = [\"PuTTY.exe\"]\n",
+    )
+    .unwrap();
+    let runtime = settings.poll().unwrap().runtime.unwrap();
+    assert_eq!(&runtime, settings.runtime_snapshot());
+    assert_eq!(
+        runtime.compatibility,
+        with_exclusions(&["putty.exe"], CompatibilityConfig::defaults_v1())
+    );
+    assert!(!policy_of(&runtime, "putty.exe", None).vietnamese_allowed);
+    assert!(policy_of(&runtime, "mstsc.exe", None).vietnamese_allowed);
+    assert_eq!(settings.status().config, loaded_clean());
+
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 1\n[exclusions]\napps = []\n",
+    )
+    .unwrap();
+    let runtime = settings.poll().unwrap().runtime.unwrap();
+    assert_eq!(runtime.compatibility, CompatibilityConfig::defaults_v1());
+    assert!(settings.poll().is_none());
+}
+
+/// Changes from the tray menu and the panel commit the whole document: the exclusions and the
+/// unknown keys of `[exclusions]` are written back and stay in effect.
+#[test]
+fn changes_from_the_panel_keep_the_exclusions() {
+    let folders = Folders::new();
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 1\n[exclusions]\napps = [\"putty.exe\", \"mstsc.exe\"]\n\
+         x_note = \"kept\"\n",
+    )
+    .unwrap();
+    let (mut settings, _) = folders.open();
+    settings.apply(Change::SpellCheck(false)).unwrap();
+    settings.apply(Change::TypingDefaults).unwrap();
+    settings.apply(Change::VietnameseMode(false)).unwrap();
+    let document = stored(&folders.config());
+    assert_eq!(document.revision, 4);
+    assert_eq!(
+        document.exclusions.apps,
+        [
+            ExeName::new("putty.exe").unwrap(),
+            ExeName::new("mstsc.exe").unwrap()
+        ]
+    );
+    assert!(document.exclusions.extensions.contains_key("x_note"));
+    assert_eq!(
+        settings.runtime_snapshot().compatibility,
+        with_exclusions(
+            &["putty.exe", "mstsc.exe"],
+            CompatibilityConfig::defaults_v1()
+        )
+    );
+}
+
+/// Names pasted from Explorer or Task Manager (a path, a name without `.exe`) take effect as the
+/// executable name they stand for; unusable names in `[exclusions] apps` are reported by their
+/// schema path, never by their value. A commit writes only the normalized, usable names, so
+/// the report ends there and the file shows what is matched.
+#[test]
+fn unusable_excluded_names_are_reported_by_path_until_a_commit_drops_them() {
+    let folders = Folders::new();
+    fs::write(
+        folders.config(),
+        "version = 1\nrevision = 1\n[exclusions]\n\
+         apps = ['D:\\Secret\\', 'C:\\Windows\\System32\\mstsc.exe', 7, \"PuTTY\"]\n",
+    )
+    .unwrap();
+    let (mut settings, report) = folders.open();
+    assert_eq!(
+        report.status.config,
+        DocumentStatus::Loaded {
+            issues: vec![
+                issue("exclusions.apps[0]", IssueReason::InvalidValue),
+                issue("exclusions.apps[2]", IssueReason::InvalidType),
+            ]
+        }
+    );
+    assert!(!format!("{report:?}").contains("Secret"));
+    assert_eq!(
+        settings.runtime_snapshot().compatibility,
+        with_exclusions(
+            &["mstsc.exe", "putty.exe"],
+            CompatibilityConfig::defaults_v1()
+        )
+    );
+    settings.apply(Change::SpellCheck(false)).unwrap();
+    assert_eq!(settings.status().config, loaded_clean());
+    assert_eq!(
+        stored(&folders.config()).exclusions.apps,
+        [
+            ExeName::new("mstsc.exe").unwrap(),
+            ExeName::new("putty.exe").unwrap()
+        ]
+    );
 }
 
 /// A change that could not be saved is kept for a retry; once the user fixes the damaged file

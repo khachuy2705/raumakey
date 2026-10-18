@@ -17,9 +17,9 @@ use proptest::sample::{Index, select};
 
 use raumakey_config::{
     AppRulesDocument, CaseTransform, CommitResult, ConfigDocument, ConfigError, ConversionSection,
-    EntryExtras, ImportedCounts, InputSection, MacroDocument, MacroSection, MigrationRecord,
-    MigrationStatus, QuarantinedField, RuleIdentity, SourceFingerprint, StartupMode, StoreDocument,
-    SystemSection,
+    EntryExtras, ExclusionsSection, ImportedCounts, InputSection, MacroDocument, MacroSection,
+    MigrationRecord, MigrationStatus, QuarantinedField, RuleIdentity, SourceFingerprint,
+    StartupMode, StoreDocument, SystemSection,
 };
 use raumakey_model::host::ExeName;
 use raumakey_model::hotkey::{Hotkey, HotkeyConfig, HotkeyKey};
@@ -295,6 +295,26 @@ fn conversion_section() -> impl Strategy<Value = ConversionSection> {
         )
 }
 
+/// Executable names as decoding leaves them (trimmed, lowercase, with a `.`: a bare name gets
+/// `.exe`), each once, in any order; sometimes none, which the file says as `apps = []`.
+fn exclusions_section() -> impl Strategy<Value = ExclusionsSection> {
+    let name = prop_oneof![exe_text(), "[A-Za-zĐđÀ-ỹ0-9 ._-]{1,12}"];
+    (vec(name, 0..5), toml_extensions(0)).prop_map(|(names, extensions)| {
+        let mut apps: Vec<ExeName> = Vec::new();
+        for app in names.iter().filter_map(|name| ExeName::new(name).ok()) {
+            let app = if app.as_str().contains('.') {
+                app
+            } else {
+                ExeName::new(&format!("{app}.exe")).expect("a longer valid name")
+            };
+            if !apps.contains(&app) {
+                apps.push(app);
+            }
+        }
+        ExclusionsSection { apps, extensions }
+    })
+}
+
 fn config_document() -> impl Strategy<Value = ConfigDocument> {
     (
         0..=MAX_TOML_REVISION,
@@ -302,7 +322,7 @@ fn config_document() -> impl Strategy<Value = ConfigDocument> {
         macro_section(),
         (vec(hotkey(), 0..3), vec(hotkey(), 0..3)),
         system_section(),
-        conversion_section(),
+        (conversion_section(), exclusions_section()),
         keymaps_with_extras(),
         toml_extensions(0),
         prop::option::of(toml_extensions(1)),
@@ -315,7 +335,7 @@ fn config_document() -> impl Strategy<Value = ConfigDocument> {
                 macros,
                 (toggle_mode, hard_reset),
                 system,
-                conversion,
+                (conversion, exclusions),
                 (keymaps, keymap_extras),
                 mut extensions,
                 hotkey_extensions,
@@ -342,6 +362,7 @@ fn config_document() -> impl Strategy<Value = ConfigDocument> {
                     conversion,
                     keymaps,
                     keymap_extras,
+                    exclusions,
                     extensions,
                 }
             },
@@ -907,6 +928,8 @@ fn config_random_table() -> impl Strategy<Value = toml::Table> {
         "system",
         "conversion",
         "keymaps",
+        "exclusions",
+        "apps",
         "enabled",
         "method",
         "user_keymap",
@@ -951,6 +974,9 @@ fn config_random_table() -> impl Strategy<Value = toml::Table> {
         "S",
         "my-map",
         "bad id",
+        "mstsc.exe",
+        "MSTSC.EXE",
+        "C:/apps/x.exe",
         "",
     ];
     schema_table(keys.clone(), keys, schema_leaf(words, true))
@@ -1187,11 +1213,28 @@ fn config_file() -> BoxedStrategy<toml::Table> {
         ("toggle_mode", optional(array_of(word(hotkeys.clone()), 3))),
         ("hard_reset", optional(array_of(word(hotkeys), 3))),
     ]);
+    let apps = vec![
+        "mstsc.exe",
+        "MSTSC.EXE",
+        "mstsc",
+        " Code ",
+        "Ứng Dụng.exe",
+        "C:/apps/x.exe",
+        "C:\\Windows\\System32\\MSTSC",
+        "\"C:\\Windows\\System32\\mstsc.exe\"",
+        "\"\"",
+        "a\\b.bin",
+        "D:\\Tools\\",
+        "C:",
+        "",
+    ];
+    let exclusions = table_value(vec![("apps", optional(array_of(word(apps), 5)))]);
     let mut fields = header_fields();
     fields.extend([
         ("input", optional(input)),
         ("hotkeys", optional(hotkey_table)),
         ("keymaps", mostly(array_of(keymap_value(), 4))),
+        ("exclusions", optional(exclusions)),
     ]);
     fields_table(fields)
 }
@@ -1411,6 +1454,14 @@ proptest! {
                 prop_assert!(ids.insert(map.id.clone()), "duplicate key map id");
             }
             prop_assert!(!doc.hotkeys.toggle_mode.is_empty() || text.contains("toggle_mode"));
+            // Every excluded name is a file name with a `.` that reads back as itself, once.
+            let mut apps = BTreeSet::new();
+            for app in &doc.exclusions.apps {
+                prop_assert_eq!(&ExeName::new(app.as_str()), &Ok(app.clone()));
+                prop_assert!(app.as_str().contains('.'), "{}", app);
+                prop_assert!(!app.as_str().contains(['\\', '/', '"']), "{}", app);
+                prop_assert!(apps.insert(app.clone()), "repeated exclusion");
+            }
         }
     }
 
