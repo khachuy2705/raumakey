@@ -25,6 +25,14 @@
 //! - [`run_message_loop`] runs `GetMessageW`/`TranslateMessage`/`DispatchMessageW` until
 //!   `WM_QUIT` and returns its exit code; [`post_quit`] ends it. A [`WindowHandle`] lets other
 //!   threads post private and registered messages to a window ([`is_postable`]).
+//! - [`register_message`] registers a message by name (`RegisterWindowMessageW`), and
+//!   [`register_user_message`] one named for the current user
+//!   ([`message_name`](crate::names::message_name): `Raumakey.<sidhash>.<component>`), such as
+//!   the request of a second controller start to the running one.
+//!   [`post_to_top_level_windows`] posts a registered message to every top-level window of the
+//!   desktop (`HWND_BROADCAST`; [`is_broadcastable`]), and [`allow_any_foreground`]
+//!   (`AllowSetForegroundWindow(ASFW_ANY)`) first passes the caller's right to set the
+//!   foreground window on, so that the window that answers may come to the front.
 //!
 //! **Message-only windows receive no broadcast messages.** Explorer announces a new taskbar by
 //! broadcasting the registered `TaskbarCreated` message
@@ -101,6 +109,14 @@ pub const fn is_postable(message: u32) -> bool {
     )
 }
 
+/// True for the messages [`post_to_top_level_windows`] posts: registered messages
+/// ([`REGISTERED_MESSAGE_FIRST`]`..=`[`REGISTERED_MESSAGE_LAST`]), whose meaning every
+/// receiver agrees on by name. A private message means something else to each application, and
+/// system messages come from the system only.
+pub const fn is_broadcastable(message: u32) -> bool {
+    matches!(message, REGISTERED_MESSAGE_FIRST..=REGISTERED_MESSAGE_LAST)
+}
+
 /// A private message of the application: `WM_APP + offset`, within
 /// [`WM_APP`]`..=`[`WM_APP_LAST`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -146,7 +162,10 @@ pub fn class_name(label: &str, serial: u64) -> WinResult<String> {
 }
 
 #[cfg(windows)]
-pub use win::{Window, WindowClass, WindowHandle, WindowHandler, post_quit, run_message_loop};
+pub use win::{
+    Window, WindowClass, WindowHandle, WindowHandler, allow_any_foreground, post_quit,
+    post_to_top_level_windows, register_message, register_user_message, run_message_loop,
+};
 
 #[cfg(windows)]
 mod win {
@@ -160,19 +179,22 @@ mod win {
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CREATESTRUCTW, ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow,
-        DispatchMessageW, GCW_ATOM, GetClassWord, GetMessageW, GetWindowThreadProcessId,
-        HWND_MESSAGE, KillTimer, MSG, MSGFLT_ALLOW, PostMessageW, PostQuitMessage,
-        RegisterClassExW, SetTimer, TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE,
-        WINDOW_LONG_PTR_INDEX, WINDOW_STYLE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WNDCLASSEXW,
-        WS_EX_TOOLWINDOW, WS_POPUP,
+        ASFW_ANY, AllowSetForegroundWindow, CREATESTRUCTW, ChangeWindowMessageFilterEx,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GCW_ATOM, GetClassWord,
+        GetMessageW, GetWindowThreadProcessId, HWND_BROADCAST, HWND_MESSAGE, KillTimer, MSG,
+        MSGFLT_ALLOW, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW,
+        SetTimer, TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_LONG_PTR_INDEX,
+        WINDOW_STYLE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WNDCLASSEXW, WS_EX_TOOLWINDOW,
+        WS_POPUP,
     };
 
-    use super::{class_name, is_postable};
+    use super::{class_name, is_broadcastable, is_postable};
     use crate::com_server::ServerLock;
     use crate::error::{E_ABORT, E_INVALIDARG, ResultExt, WinError, WinResult};
     use crate::module::Module;
+    use crate::names::message_name;
     use crate::panic::{guard_lresult, guard_value};
+    use crate::sid::current_user_sid_hash;
     use crate::strings::WideString;
 
     /// Serial number of the next class name.
@@ -613,6 +635,60 @@ mod win {
     pub fn post_quit(exit_code: i32) {
         // SAFETY: no preconditions; posts `WM_QUIT` to the calling thread.
         unsafe { PostQuitMessage(exit_code) };
+    }
+
+    /// The message number registered for `name` (`RegisterWindowMessageW`), one of the
+    /// registered messages ([`super::is_broadcastable`]). Every process of the session that
+    /// registers the same name gets the same number until the session ends. An empty name or
+    /// one with a NUL fails with `E_INVALIDARG`.
+    pub fn register_message(name: &str) -> WinResult<u32> {
+        if name.is_empty() {
+            return Err(WinError::new(E_INVALIDARG, "registered message name"));
+        }
+        let wide =
+            WideString::new(name).map_err(|error| error.with_context("registered message name"))?;
+        // SAFETY: the name is NUL-terminated and outlives the call (the system copies it).
+        let message = unsafe { RegisterWindowMessageW(wide.as_pcwstr()) };
+        if message == 0 {
+            return Err(WinError::last("RegisterWindowMessageW"));
+        }
+        Ok(message)
+    }
+
+    /// The message registered for `Raumakey.<sidhash>.<component>` of the current user
+    /// ([`message_name`]). `component` must match `[A-Za-z0-9_-]{1,64}`; otherwise the result
+    /// is an `E_INVALIDARG` error.
+    pub fn register_user_message(component: &str) -> WinResult<u32> {
+        let hash = current_user_sid_hash()?;
+        let name = message_name(&hash, component)
+            .map_err(|_| WinError::new(E_INVALIDARG, "registered message component"))?;
+        register_message(&name)
+    }
+
+    /// Posts the registered `message` with zero parameters to every top-level window of the
+    /// desktop (`PostMessageW(HWND_BROADCAST)`), without waiting. Message-only windows receive
+    /// nothing, and User Interface Privilege Isolation drops the message for windows of
+    /// processes of higher integrity unless they let it through
+    /// ([`Window::allow_message_from_lower_integrity`]). Any message that is not registered
+    /// ([`super::is_broadcastable`]) fails with `E_INVALIDARG` before anything is posted.
+    pub fn post_to_top_level_windows(message: u32) -> WinResult<()> {
+        if !is_broadcastable(message) {
+            return Err(WinError::new(E_INVALIDARG, "broadcast message"));
+        }
+        // SAFETY: posts plain values (no pointers) to every top-level window; the call never
+        // waits for a receiver.
+        unsafe { PostMessageW(Some(HWND_BROADCAST), message, WPARAM(0), LPARAM(0)) }
+            .context("PostMessageW(HWND_BROADCAST)")
+    }
+
+    /// Lets any process set the foreground window (`AllowSetForegroundWindow(ASFW_ANY)`), for
+    /// as long as this process could itself: the process that the user just started (or
+    /// clicked) asks another one to bring its window to the front. Fails with
+    /// `ERROR_ACCESS_DENIED` ([`WinErrorKind::AccessDenied`](crate::error::WinErrorKind)) when
+    /// this process may not set the foreground window either.
+    pub fn allow_any_foreground() -> WinResult<()> {
+        // SAFETY: no pointers; the call only changes the foreground rights of the session.
+        unsafe { AllowSetForegroundWindow(ASFW_ANY) }.context("AllowSetForegroundWindow")
     }
 
     /// What the window procedure keeps per window (its pointer is in the extra bytes).

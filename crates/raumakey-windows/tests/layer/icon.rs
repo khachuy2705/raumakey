@@ -22,8 +22,11 @@ mod win {
     use std::ffi::c_void;
 
     use raumakey_windows::error::WinErrorKind;
-    use raumakey_windows::icon::{Icon, IconKind, IconSize, icon_size, icon_size_for_dpi};
-    use windows::Win32::Foundation::ERROR_INVALID_CURSOR_HANDLE;
+    use raumakey_windows::icon::{
+        Icon, IconKind, IconSize, icon_size, icon_size_for_dpi, icon_size_for_window,
+    };
+    use raumakey_windows::window::{Window, WindowClass};
+    use windows::Win32::Foundation::{ERROR_INVALID_CURSOR_HANDLE, HWND};
     use windows::Win32::Graphics::Gdi::{BITMAP, DeleteObject, GetObjectW, HGDIOBJ};
     use windows::Win32::UI::WindowsAndMessaging::{
         GetIconInfo, GetSystemMetrics, HICON, ICONINFO, SM_CXICON, SM_CXSMICON, SM_CYICON,
@@ -31,7 +34,7 @@ mod win {
     };
     use windows::core::HRESULT;
 
-    use crate::support::{ResourceFile, group_icon_ids};
+    use crate::support::{ResourceFile, group_icon_ids, on_fresh_thread};
 
     /// Width and height of an icon's image.
     fn dimensions(icon: HICON) -> (u32, u32) {
@@ -174,5 +177,30 @@ mod win {
         assert_eq!(large_144.width(), large_96.width() * 3 / 2);
         assert!(small_96.width() < large_96.width());
         assert_eq!(icon_size_for_dpi(IconKind::Small, 0), None);
+    }
+
+    /// The test executable has no DPI awareness, so its windows run at 96 DPI and their icon
+    /// sizes are the system's (scaled by Windows); a handle that names no window falls back to
+    /// the system DPI too.
+    #[test]
+    fn window_icon_sizes_follow_the_windows_dpi() {
+        on_fresh_thread(|| {
+            let class = WindowClass::register("test-icon-dpi").unwrap();
+            let window = Window::create_hidden(
+                &class,
+                "Raumakey test",
+                Box::new(|_: HWND, _: u32, _, _| None),
+            )
+            .unwrap();
+            for kind in [IconKind::Small, IconKind::Large] {
+                let expected = icon_size_for_dpi(kind, 96).unwrap();
+                assert_eq!(icon_size_for_window(kind, window.hwnd()).unwrap(), expected);
+                assert_eq!(icon_size(kind).unwrap(), expected);
+                assert_eq!(
+                    icon_size_for_window(kind, HWND::default()).unwrap(),
+                    icon_size(kind).unwrap()
+                );
+            }
+        });
     }
 }

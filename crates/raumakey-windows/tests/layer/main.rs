@@ -5,7 +5,9 @@
 //! kernel objects, registry keys under `HKCU\Software\Raumakey\Tests-<pid>-<n>`, process-local
 //! windows that are never shown (created on a fresh thread and destroyed before it ends; nothing
 //! is broadcast), `WH_CBT` hooks of such a thread only (they see only that thread's windows),
-//! menus that are never shown, in-process COM objects that are never registered, system DLLs
+//! dialog boxes without a taskbar button (`WS_EX_NOACTIVATE`) that are moved far off-screen
+//! before Windows shows them, menus that are never shown, in-process COM objects that are never
+//! registered, system DLLs
 //! mapped as data, a uniquely named temporary copy of a data-only DLL (no code runs),
 //! impersonation on a fresh test thread (which reverts before it ends) of tokens that exist only
 //! in this process (a low-integrity copy of the process token, an AppContainer "lowbox" token
@@ -24,6 +26,8 @@ mod support;
 mod clipboard;
 mod com_server;
 mod dialog;
+mod dialog_box;
+mod dialog_template;
 mod error;
 mod foreground;
 mod hooks;

@@ -2,7 +2,8 @@
 
 use raumakey_model::identity::NAMED_OBJECT_PREFIX;
 use raumakey_windows::names::{
-    NameError, SidHash, fnv1a_64, is_valid_component, object_name, pipe_name, sid_hash16,
+    NameError, SidHash, fnv1a_64, is_valid_component, message_name, object_name, pipe_name,
+    sid_hash16,
 };
 
 #[test]
@@ -72,6 +73,24 @@ fn pipe_names_carry_session_and_user() {
         pipe_name(4_294_967_295, &hash),
         "\\\\.\\pipe\\Raumakey.4294967295.0123456789abcdef.control"
     );
+}
+
+/// Registered window messages live in the session-wide atom table, so their names carry the
+/// user's SID hash, like the names of kernel objects (but without `Local\`).
+#[test]
+fn message_names_are_user_qualified_and_prefixed() {
+    let hash = SidHash::parse("0123456789abcdef").unwrap();
+    assert_eq!(
+        message_name(&hash, "show-settings").unwrap(),
+        "Raumakey.0123456789abcdef.show-settings"
+    );
+    for bad in ["", "a.b", "a b", "ế", "a\0"] {
+        assert_eq!(
+            message_name(&hash, bad),
+            Err(NameError::InvalidComponent),
+            "{bad:?}"
+        );
+    }
 }
 
 #[test]

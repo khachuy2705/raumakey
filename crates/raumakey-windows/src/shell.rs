@@ -127,14 +127,14 @@ mod win {
         NIM_SETVERSION, NOTIFY_ICON_MESSAGE, NOTIFYICON_VERSION_4, NOTIFYICONDATAW,
         Shell_NotifyIconW, ShellLink,
     };
-    use windows::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW;
-    use windows::core::{Interface, w};
+    use windows::core::Interface;
 
     use super::tooltip_units;
     use crate::com::ComApartment;
     use crate::error::{E_FAIL, E_INVALIDARG, ResultExt, WinError, WinResult};
     use crate::icon::Icon;
     use crate::strings::{WideString, until_nul};
+    use crate::window::register_message;
 
     /// `SLGP_RAWPATH`: return the stored target path without resolution.
     const SLGP_RAWPATH: u32 = 0x4;
@@ -144,12 +144,8 @@ mod win {
     /// The message id Explorer broadcasts after it (re)creates the taskbar; the controller
     /// re-adds its icon without changing mode (matrix #58).
     pub fn taskbar_created_message() -> WinResult<u32> {
-        // SAFETY: the name is a static NUL-terminated string.
-        let message = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
-        if message == 0 {
-            return Err(WinError::last("RegisterWindowMessageW(TaskbarCreated)"));
-        }
-        Ok(message)
+        register_message("TaskbarCreated")
+            .map_err(|error| error.with_context("RegisterWindowMessageW(TaskbarCreated)"))
     }
 
     /// The controller's notification-area icon (`NOTIFYICON_VERSION_4`). It is removed on drop.

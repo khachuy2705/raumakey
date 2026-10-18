@@ -12,7 +12,7 @@
 use raumakey_windows::error::WinErrorKind;
 use raumakey_windows::window::{
     AppMessage, REGISTERED_MESSAGE_FIRST, REGISTERED_MESSAGE_LAST, WM_APP, WM_APP_LAST, WM_CLOSE,
-    WM_ENDSESSION, class_name, is_postable,
+    WM_ENDSESSION, class_name, is_broadcastable, is_postable,
 };
 
 #[test]
@@ -45,6 +45,27 @@ fn only_private_and_registered_messages_are_postable() {
         u32::MAX,
     ] {
         assert!(!is_postable(rejected), "{rejected:#x}");
+    }
+}
+
+/// Only registered messages go to every top-level window: private messages mean something
+/// else to each application, and system messages come from the system.
+#[test]
+fn only_registered_messages_are_broadcastable() {
+    for allowed in [REGISTERED_MESSAGE_FIRST, 0xC123, REGISTERED_MESSAGE_LAST] {
+        assert!(is_broadcastable(allowed), "{allowed:#x}");
+    }
+    for rejected in [
+        0x0000,
+        WM_CLOSE,
+        WM_ENDSESSION,
+        0x0400,
+        WM_APP,
+        WM_APP_LAST,
+        0x1_0000,
+        u32::MAX,
+    ] {
+        assert!(!is_broadcastable(rejected), "{rejected:#x}");
     }
 }
 
@@ -95,12 +116,15 @@ mod win {
     use raumakey_windows::com_server::lock_count;
     use raumakey_windows::error::{WinErrorKind, WinResult};
     use raumakey_windows::module::Module;
+    use raumakey_windows::names::message_name;
     use raumakey_windows::panic::guard_value;
     use raumakey_windows::shell::taskbar_created_message;
+    use raumakey_windows::sid::current_user_sid_hash;
     use raumakey_windows::strings::WideString;
     use raumakey_windows::window::{
-        AppMessage, WM_APP, WM_APP_LAST, Window, WindowClass, WindowHandle, WindowHandler,
-        post_quit, run_message_loop,
+        AppMessage, REGISTERED_MESSAGE_FIRST, REGISTERED_MESSAGE_LAST, WM_APP, WM_APP_LAST, Window,
+        WindowClass, WindowHandle, WindowHandler, allow_any_foreground, post_quit,
+        post_to_top_level_windows, register_message, register_user_message, run_message_loop,
     };
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -1085,5 +1109,67 @@ mod win {
             unsafe { DestroyWindow(window.hwnd()) }.unwrap();
             assert_eq!(window.set_timer(1, 10).unwrap_err().context(), "SetTimer");
         });
+    }
+
+    /// The same name gives the same registered message every time; `TaskbarCreated` is one of
+    /// them. The test name is fixed, so repeated runs add no atoms to the session's table.
+    #[test]
+    fn registering_a_message_twice_gives_the_same_registered_number() {
+        let message = register_message("Raumakey.test-register-message").unwrap();
+        assert!((REGISTERED_MESSAGE_FIRST..=REGISTERED_MESSAGE_LAST).contains(&message));
+        assert_eq!(
+            register_message("Raumakey.test-register-message").unwrap(),
+            message
+        );
+        assert_eq!(
+            register_message("TaskbarCreated").unwrap(),
+            taskbar_created_message().unwrap()
+        );
+        for bad in ["", "a\0b"] {
+            let error = register_message(bad).unwrap_err();
+            assert_eq!(error.kind(), WinErrorKind::InvalidInput, "{bad:?}");
+        }
+    }
+
+    /// `register_user_message` registers `Raumakey.<sidhash>.<component>` for the current user.
+    #[test]
+    fn user_messages_carry_the_users_sid_hash() {
+        let hash = current_user_sid_hash().unwrap();
+        let name = message_name(&hash, "test-user-message").unwrap();
+        assert_eq!(
+            register_user_message("test-user-message").unwrap(),
+            register_message(&name).unwrap()
+        );
+        for bad in ["", "a.b", "ế"] {
+            let error = register_user_message(bad).unwrap_err();
+            assert_eq!(error.kind(), WinErrorKind::InvalidInput, "{bad:?}");
+        }
+    }
+
+    /// Nothing is broadcast in tests: only messages that are refused before the call are tried.
+    #[test]
+    fn only_registered_messages_are_posted_to_every_top_level_window() {
+        for refused in [
+            0,
+            WM_CLOSE,
+            WM_DESTROY,
+            WM_USER,
+            WM_APP,
+            WM_APP_LAST,
+            0x1_0000,
+        ] {
+            let error = post_to_top_level_windows(refused).unwrap_err();
+            assert_eq!(error.kind(), WinErrorKind::InvalidInput, "{refused:#x}");
+        }
+    }
+
+    /// Passing the right to set the foreground window on succeeds only when this process has
+    /// it, which depends on the desktop (it fails with access denied otherwise).
+    #[test]
+    fn allowing_any_process_to_take_the_foreground_succeeds_or_is_denied() {
+        if let Err(error) = allow_any_foreground() {
+            assert_eq!(error.kind(), WinErrorKind::AccessDenied, "{error}");
+            assert_eq!(error.context(), "AllowSetForegroundWindow");
+        }
     }
 }

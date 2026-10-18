@@ -15,10 +15,15 @@
 //! An AppContainer process's `Local\` is its own namespace, so it cannot open these kernel
 //! objects by name. That is why the IPC path uses the pipe only: `\\.\pipe\` names are the same
 //! for every process.
+//!
+//! Registered window messages (`RegisterWindowMessageW`) share one atom table per session, so
+//! their names carry the SID hash too, without the `Local\` prefix:
+//! `Raumakey.<sidhash>.<name>` ([`message_name`]). Every process of the session may register
+//! the same name and post the message, so it carries no authority: it only asks.
 
 use core::fmt;
 
-use raumakey_model::identity::NAMED_OBJECT_PREFIX;
+use raumakey_model::identity::{NAMED_OBJECT_PREFIX, PRODUCT_NAME};
 
 /// Longest accepted name component.
 pub const MAX_COMPONENT_LEN: usize = 64;
@@ -114,6 +119,15 @@ pub fn object_name(sid_hash: &SidHash, name: &str) -> Result<String, NameError> 
         return Err(NameError::InvalidComponent);
     }
     Ok(format!("{NAMED_OBJECT_PREFIX}{}.{name}", sid_hash.as_str()))
+}
+
+/// `Raumakey.<sidhash>.<name>`: the name of a registered window message of the user (see the
+/// module documentation).
+pub fn message_name(sid_hash: &SidHash, name: &str) -> Result<String, NameError> {
+    if !is_valid_component(name) {
+        return Err(NameError::InvalidComponent);
+    }
+    Ok(format!("{PRODUCT_NAME}.{}.{name}", sid_hash.as_str()))
 }
 
 /// `\\.\pipe\Raumakey.<session>.<sidhash>.control`.

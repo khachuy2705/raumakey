@@ -15,6 +15,9 @@
 //!   exists from Windows 10 1607 on. It is looked up at run time, so the binaries still load on
 //!   older Windows 10 releases, where the function returns `None` and callers use
 //!   [`icon_size`].
+//! - [`icon_size_for_window`] reads them for the DPI of a window (`GetDpiForWindow`, also from
+//!   Windows 10 1607 on and looked up at run time), and falls back to [`icon_size`]: the icons
+//!   of a dialog's title bar and taskbar button follow the monitor it is on.
 //!
 //! [`Icon::handle`] lends the `HICON` to a call that uses it before the borrow ends. A
 //! [`NotifyIcon`](crate::shell::NotifyIcon) sends its icon handle to the shell again with every
@@ -67,14 +70,14 @@ pub enum IconKind {
 }
 
 #[cfg(windows)]
-pub use win::{Icon, icon_size, icon_size_for_dpi};
+pub use win::{Icon, icon_size, icon_size_for_dpi, icon_size_for_window};
 
 #[cfg(windows)]
 mod win {
     use core::fmt;
     use std::sync::OnceLock;
 
-    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::Foundation::{HMODULE, HWND};
     use windows::Win32::System::LibraryLoader::{
         GET_MODULE_HANDLE_EX_FLAG_PIN, GetModuleHandleExW, GetProcAddress,
     };
@@ -82,7 +85,7 @@ mod win {
         DestroyIcon, GetSystemMetrics, HICON, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW, SM_CXICON,
         SM_CXSMICON, SM_CYICON, SM_CYSMICON, SYSTEM_METRICS_INDEX,
     };
-    use windows::core::{PCWSTR, s, w};
+    use windows::core::{PCSTR, PCWSTR, s, w};
 
     use super::{IconKind, IconSize};
     use crate::error::{E_FAIL, E_INVALIDARG, ResultExt, WinError, WinResult};
@@ -177,29 +180,70 @@ mod win {
         to_size(width, height)
     }
 
+    /// The small or large icon size for the DPI of window `hwnd` (`GetDpiForWindow`, then
+    /// [`icon_size_for_dpi`]), or for the system DPI ([`icon_size`]) when the DPI functions are
+    /// unavailable (before Windows 10 1607) or fail.
+    pub fn icon_size_for_window(kind: IconKind, hwnd: HWND) -> WinResult<IconSize> {
+        match window_dpi(hwnd).and_then(|dpi| icon_size_for_dpi(kind, dpi)) {
+            Some(size) => Ok(size),
+            None => icon_size(kind),
+        }
+    }
+
+    /// The DPI of window `hwnd`; `None` when `GetDpiForWindow` is unavailable or fails (0).
+    fn window_dpi(hwnd: HWND) -> Option<u32> {
+        let dpi_for_window = dpi_for_window()?;
+        // SAFETY: `dpi_for_window` is user32's GetDpiForWindow, which validates the handle and
+        // answers 0 for one that names no window.
+        let dpi = unsafe { dpi_for_window(hwnd) };
+        (dpi != 0).then_some(dpi)
+    }
+
     /// `int WINAPI GetSystemMetricsForDpi(int nIndex, UINT dpi)`.
     type MetricsForDpi = unsafe extern "system" fn(SYSTEM_METRICS_INDEX, u32) -> i32;
+
+    /// `UINT WINAPI GetDpiForWindow(HWND hwnd)`.
+    type DpiForWindow = unsafe extern "system" fn(HWND) -> u32;
 
     /// `GetSystemMetricsForDpi` of user32, looked up once; `None` before Windows 10 1607 (or
     /// if user32 is not loaded, which never happens in a process that uses windows).
     fn system_metrics_for_dpi() -> Option<MetricsForDpi> {
         static FUNCTION: OnceLock<Option<MetricsForDpi>> = OnceLock::new();
         *FUNCTION.get_or_init(|| {
-            let mut user32 = HMODULE::default();
-            // SAFETY: a static NUL-terminated name and a valid out pointer. Nothing is loaded;
-            // PIN keeps an already loaded user32 until the process ends, so the cached function
-            // pointer never dangles.
-            unsafe {
-                GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, w!("user32.dll"), &mut user32)
-            }
-            .ok()?;
-            // SAFETY: a pinned module and a static NUL-terminated ANSI export name.
-            let address = unsafe { GetProcAddress(user32, s!("GetSystemMetricsForDpi")) }?;
+            let address = user32_export(s!("GetSystemMetricsForDpi"))?;
             // SAFETY: the export has the documented signature `MetricsForDpi` describes
             // (`int` and `UINT` parameters, `int` result, WINAPI calling convention).
             Some(unsafe {
                 core::mem::transmute::<unsafe extern "system" fn() -> isize, MetricsForDpi>(address)
             })
         })
+    }
+
+    /// `GetDpiForWindow` of user32, looked up once; `None` before Windows 10 1607.
+    fn dpi_for_window() -> Option<DpiForWindow> {
+        static FUNCTION: OnceLock<Option<DpiForWindow>> = OnceLock::new();
+        *FUNCTION.get_or_init(|| {
+            let address = user32_export(s!("GetDpiForWindow"))?;
+            // SAFETY: the export has the documented signature `DpiForWindow` describes (an
+            // `HWND` parameter, a `UINT` result, WINAPI calling convention).
+            Some(unsafe {
+                core::mem::transmute::<unsafe extern "system" fn() -> isize, DpiForWindow>(address)
+            })
+        })
+    }
+
+    /// The export `name` of user32; `None` when user32 lacks it (or is not loaded, which never
+    /// happens in a process that uses windows). The module is pinned, so the address stays
+    /// valid until the process ends.
+    fn user32_export(name: PCSTR) -> Option<unsafe extern "system" fn() -> isize> {
+        let mut user32 = HMODULE::default();
+        // SAFETY: a static NUL-terminated name and a valid out pointer. Nothing is loaded; PIN
+        // keeps an already loaded user32 until the process ends, so a cached function pointer
+        // never dangles.
+        unsafe { GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, w!("user32.dll"), &mut user32) }
+            .ok()?;
+        // SAFETY: a pinned module and a NUL-terminated ANSI export name (callers pass `s!`
+        // literals).
+        unsafe { GetProcAddress(user32, name) }
     }
 }
