@@ -1529,17 +1529,18 @@ Mọi task đã xong, đã được review độc lập và sửa theo review. `
 | S5 | Xong | `5217dc5`, `185e493`, `174db96`, `e37590e` | Chấp thuận; sửa comment về lề độ rộng hộp thông báo |
 | S6 | Xong | `aa01688`, `683f8ae` | Sửa: nháy đúp với cú nhấn thứ hai giữ lâu vẫn đổi chế độ; `WM_LBUTTONDBLCLK` muộn; hai cú nháy chậm bị coi là nháy đúp; lớp cửa sổ khác với hook |
 | S7 | Xong | `7be95c2`, `e9a818d` | Chấp thuận; sửa: một tên exe có `İ` làm mất mọi loại trừ; dấu chấm và dấu cách ở cuối tên; báo cáo khi vượt 4.096 quy tắc |
+| S8 | Xong | `4752301`, `ecbddc1`, `8136f95` | Chấp thuận; sửa: mất focus sau Thêm/Xoá; cửa sổ bị cloak trong danh sách; mô tả theo bản dịch; sửa đổi lúc thoát; bốn test không fail khi thiếu mã |
 
-Bằng chứng cho bản sửa đổi `e9a818d`, chạy ngày 2026-10-18 trên host phát triển Windows 11 x86_64
+Bằng chứng cho bản sửa đổi `8136f95`, chạy ngày 2026-10-18 trên host phát triển Windows 11 x86_64
 (Rust 1.99.1, `rust-lld` + `xwin`), khi không có Raumakey nào khác đang chạy:
 
 | Lệnh | Kết quả |
 |---|---|
 | `cargo xtask ci`: fmt và Clippy với `-D warnings`, feature mặc định và cả sáu feature `evkey-compat` | Đạt |
-| `cargo xtask ci`: `cargo test --locked --workspace` | 2,534 đạt, 0 không đạt, 23 bị bỏ qua |
-| Cũng các test đó với các feature `evkey-compat` | 2,608 đạt, 0 không đạt, 23 bị bỏ qua |
+| `cargo xtask ci`: `cargo test --locked --workspace` | 2,619 đạt, 0 không đạt, 25 bị bỏ qua |
+| Cũng các test đó với các feature `evkey-compat` | 2,693 đạt, 0 không đạt, 25 bị bỏ qua |
 | `cargo xtask ci`: bước fuzz smoke | 10 đạt |
-| Test i686 (WOW64), lệnh ở `GUIDE.md` §3 | 1,049 đạt, 0 không đạt, 15 bị bỏ qua |
+| Test i686 (WOW64), lệnh ở `GUIDE.md` §3 | 1,070 đạt, 0 không đạt, 16 bị bỏ qua |
 | `cargo xtask cross --release` | Đạt (x86_64, i686, aarch64) |
 | `cargo xtask inspect --release` | Cả 66 mục kiểm tra đều đạt |
 | `cargo xtask package --release` | Đạt: mỗi package có 6 tệp |
@@ -1552,12 +1553,14 @@ Smoke test của `raumakey.exe` thật (package release) trên máy phát triể
   ra; `raumakey.toml` (có `show_panel_on_start = true` và `[exclusions] apps = ["mstsc.exe",
   "msrdc.exe", "rdcman.exe", "vmconnect.exe"]`) và `raumakey.toml.lock` được tạo cạnh exe.
 - Lần chạy thứ hai trong lúc bản đầu chạy: thoát với mã 0; bản đầu vẫn chỉ có một bảng.
-- Nút "Danh sách gõ tắt…" mở hộp thoại "Raumakey – Danh sách gõ tắt".
+- Nút "Danh sách gõ tắt…" mở hộp thoại "Raumakey – Danh sách gõ tắt"; nút "Ứng dụng loại trừ…" mở
+  hộp thoại "Raumakey – Ứng dụng loại trừ" với bốn ứng dụng mặc định và mô tả của chúng.
 - WM_CLOSE gửi tới cửa sổ khay: mã thoát 0, cả bảng và danh sách gõ tắt đóng, không còn tiến trình.
 - Ảnh chụp (`PrintWindow`) bảng và danh sách ở 96 DPI: mọi nhãn đủ chữ, không chữ nào bị ngắt giữa
   chừng.
 
 Chưa kiểm chứng: việc gõ trong ứng dụng thật, các mức phóng to khác 100 %, nháy đúp vào biểu tượng
-thật (thứ tự thông báo mà shell gửi), và biểu tượng E khi Remote Desktop Connection ở trước. Các danh sách kiểm
+thật (thứ tự thông báo mà shell gửi), biểu tượng E khi Remote Desktop Connection ở trước, và hộp
+thoại chọn tệp của Duyệt…. Các danh sách kiểm
 tra thủ công ở module `typing`, `desktop` và `macro_dialog` của controller, và `GUIDE.md` §5.6,
 chưa được chạy. Không điều nào ở trên là bằng chứng về hành vi khi chạy thật.

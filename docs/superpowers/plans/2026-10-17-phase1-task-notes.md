@@ -846,3 +846,46 @@ mỗi task được review độc lập rồi sửa theo review.
   giới hạn. Đỏ: test `settings` (cả danh sách bị bỏ), tệp quy tắc ứng dụng `Unusable`, test
   `config` (không có issue), proptest của model và của config, test dấu chấm cuối, test báo cáo khi
   tệp quy tắc không đọc được, 2 test `notice`.
+
+## Hộp thoại ứng dụng loại trừ (D48)
+
+Ngày 2026-10-18, chủ dự án muốn quản lý danh sách loại trừ trong một cửa sổ riêng, kèm ảnh hộp
+thoại "Special Cases" của EVKey để minh hoạ. Hộp thoại của Raumakey là thiết kế riêng (thiết kế
+§22.8, kế hoạch D48, task S8) và chỉ quản lý một việc: ứng dụng luôn gõ tiếng Anh. Trước task,
+người phụ trách công khai `normalize_excluded_app` để hộp thoại đọc tên như tệp đọc (đỏ: E0432).
+
+### S8
+
+- Phía dữ liệu: `ExclusionsRequest { Add, Remove, Defaults }`; `Settings::edit_exclusions` và
+  `Settings::apply(Change)` đi chung một đường riêng (`Settings::edit(Edit)`), nên một sửa đổi danh
+  sách có đủ bảo đảm như một thay đổi từ bảng (vẫn có hiệu lực khi chưa lưu được, thử lại, áp lại
+  sau khi tệp được nạp lại hay xung đột). `Change` vẫn là `Copy`; tray nhận danh sách và quy tắc mới
+  từ câu trả lời của worker.
+- Phía giao diện: nút "Ứng dụng loại trừ…" trong nhóm "Hệ thống"; hộp thoại có danh sách ảo hai
+  cột, combo nhập được với các ứng dụng đang có cửa sổ, Làm mới, Duyệt…, Thêm, Xoá, Mặc định, Đóng;
+  `raumakey-windows` liệt kê ứng dụng có cửa sổ, đọc `FileDescription`, mở hộp thoại chọn tệp.
+- Đỏ: các bước dữ liệu, tray và bảng làm test trước (lỗi biên dịch của `exclusions`, `settings`,
+  `worker`, `tray`; 3 test `run` với danh sách rỗng; 4 test `panel`; test lỗi lưu được báo một lần).
+  Ở phần hộp thoại và phần helper Windows, agent viết mã trước hoặc cùng lúc với test và tái hiện
+  lần chạy đỏ bằng cách tạm bỏ mã; một lỗi thật được thấy như vậy: gõ bằng `WM_SETTEXT` không sinh
+  `CBN_EDITCHANGE`, nên nút Thêm không bật (test giờ gõ bằng `WM_CHAR`). Đây là chỗ lệch khỏi quy
+  tắc TDD; review sau đó tìm và bổ sung các test không fail khi thiếu mã.
+- Review: chấp thuận, kèm vài điểm nhỏ.
+  1. Mất focus bàn phím sau khi bấm Thêm bằng chuột và sau Xoá (nút bị vô hiệu hoá khi đang giữ
+     focus).
+  2. Bốn test không fail khi thiếu mã của chúng: `PICKED`, `TrayLink::reached`, `init` gửi
+     `EXCLUSIONS_REFRESH`, `browse()` hiện lại trạng thái.
+  3. Mô tả chỉ đọc bản dịch đầu tiên (`snippingtool.exe` không có mô tả).
+  4. Danh sách ứng dụng đang chạy gồm cả cửa sổ bị cloak (`systemsettings.exe`,
+     `applicationframehost.exe`, `textinputhost.exe`).
+  5. Sửa đổi còn trong hàng đợi của tray lúc thoát bị bỏ.
+  6. Tên chọn từ danh sách chưa qua `normalize_excluded_app`.
+  7. `VerQueryValueW` nhận khối dữ liệu như vùng chỉ đọc.
+  8. Lỗi mở hộp thoại chọn tệp bị nuốt; không có phím Delete.
+- Sửa: chuyển focus trước khi vô hiệu hoá một nút; sau Xoá chọn dòng kế tiếp; phím Delete; bỏ cửa
+  sổ bị cloak (`DwmGetWindowAttribute`, thêm feature `Win32_Graphics_Dwm`, `Cargo.lock` không đổi);
+  thử mọi bản dịch rồi các bản dịch thường gặp; `Effect::FlushInbox` gửi cả sửa đổi danh sách lúc
+  thoát; chuẩn hoá tên được chọn; khối dữ liệu ghi được; cảnh báo khi Duyệt… lỗi. Đỏ: 4 test
+  `programs`, 2 test `dialog_box`, 2 test thoát, 9 test hộp thoại (focus `HWND(0x0)`, lựa chọn -1,
+  Delete không gửi gì, `tool` thêm thành `tool`, thiếu cảnh báo…); sáu lần chạy đột biến
+  (`PICKED`, `init`, `browse()`, `TrayLink::reached`, `reuse`, chuyển focus) đều fail.
