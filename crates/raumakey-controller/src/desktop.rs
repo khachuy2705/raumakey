@@ -1200,6 +1200,12 @@ impl PanelDialog {
             // Texts hold no NUL (paths and hotkey names); a refused one keeps the old text.
             let _ = dialog.set_text(*id, text);
         }
+        for (id, text) in &view.wrapped {
+            // Wrapped at spaces to the control's width, since Windows would cut a Vietnamese
+            // word; the dialog wraps them again after a change of DPI. A text that cannot be
+            // measured keeps the old one.
+            let _ = dialog.set_text_wrapped(*id, text);
+        }
         for &(id, enabled) in &view.enabled {
             dialog.set_enabled(id, enabled);
         }

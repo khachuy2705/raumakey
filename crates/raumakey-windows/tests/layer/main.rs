@@ -8,7 +8,10 @@
 //! only that thread's windows),
 //! dialog boxes without a taskbar button (`WS_EX_NOACTIVATE`) that are moved far off-screen
 //! before Windows shows them (some under an activation context of Common Controls 6 made from a
-//! temporary manifest, active on the test's own threads only), menus that are never shown,
+//! temporary manifest, active on the test's own threads only), whose controls may paint
+//! themselves into memory bitmaps (`WM_PRINTCLIENT`), one message box that hooks of its own
+//! fresh thread (`WH_CALLWNDPROCRET`, `WH_CBT`) read once it is laid out, move off-screen, end
+//! before Windows first shows it, and never let activate, menus that are never shown,
 //! in-process COM objects that are never registered, system DLLs
 //! mapped as data, a uniquely named temporary copy of a data-only DLL (no code runs),
 //! impersonation on a fresh test thread (which reverts before it ends) of tokens that exist only
@@ -47,6 +50,7 @@ mod shell;
 mod strings;
 mod tsf_registration;
 mod window;
+mod word_wrap;
 
 // Win32 modules.
 #[cfg(windows)]

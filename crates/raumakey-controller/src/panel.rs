@@ -39,15 +39,18 @@
 //! [Mở file cấu hình]  [Mặc định]                               [Đóng]
 //! ```
 //!
-//! The three long check boxes wrap onto two lines (`BS_MULTILINE`). "Đóng" is `IDCANCEL` and
-//! the default button, so Enter, Esc, and the close box all close the panel. The hint and the
-//! two lines of the footer are labels that the glue fills from [`PanelState::hint`],
+//! The three long check boxes take two lines (`BS_MULTILINE`). "Đóng" is `IDCANCEL` and the
+//! default button, so Enter, Esc, and the close box all close the panel. The hint and the two
+//! lines of the footer are labels that the glue fills from [`PanelState::hint`],
 //! [`PanelState::config_file`], and [`PanelState::config_location`]. The path stands alone on
 //! its line, which shortens a long path in its middle (`SS_PATHELLIPSIS` keeps what follows
 //! the last backslash: the file name). The line under it says where the file lives, and for
 //! `%LOCALAPPDATA%` why, on up to two lines ("(trong %LOCALAPPDATA%\Raumakey, vì thư mục của
 //! raumakey.exe không ghi được hoặc là thư mục được bảo vệ)"), as the welcome of a first run
-//! does: the panel opened at the start replaces that welcome. Without a folder
+//! does: the panel opened at the start replaces that welcome. Windows' own word wrap would cut
+//! these Vietnamese texts of two lines inside a word ("…không phải ti" / "ếng Việt"), so the
+//! glue sets them wrapped at spaces to their control's width ([`PanelView::wrapped`]), and
+//! Windows finds nothing left to wrap; no text has a line break of its own. Without a folder
 //! ([`Location::Unavailable`]) the path line says that changes are not saved, the line under
 //! it is empty, and "Mở file cấu hình" and "Danh sách gõ tắt…" are disabled.
 //!
@@ -113,6 +116,20 @@ pub const ID_DEFAULTS: u16 = 142;
 pub const ID_CONFIG_LOCATION: u16 = 143;
 /// "Đóng": the Cancel button, which the dialog box answers by closing.
 pub const ID_CLOSE: u16 = IDCANCEL;
+
+/// The check boxes whose labels take two lines, and their labels: the template has them as
+/// they are, and the glue sets them again wrapped at spaces ([`PanelView::wrapped`]).
+const TWO_LINE_CHECK_BOXES: [(u16, &str); 3] = [
+    (ID_FREE_MARKING, "Cho gõ dấu sau phụ âm cuối (toans → toán)"),
+    (
+        ID_AUTO_RESTORE,
+        "Giữ nguyên phím đã gõ khi từ không phải tiếng Việt",
+    ),
+    (
+        ID_MACRO_AUTO_CASE,
+        "Viết hoa theo cách gõ (Ko → Không, KO → KHÔNG)",
+    ),
+];
 
 /// The check boxes, in the order of [`PanelView::checks`].
 pub const CHECK_BOXES: [u16; 10] = [
@@ -284,11 +301,12 @@ impl PanelState {
             method: methods
                 .iter()
                 .position(|(method, _)| *method == self.method),
-            texts: vec![
-                (ID_HINT, self.hint()),
-                (ID_CONFIG_FILE, self.config_file()),
-                (ID_CONFIG_LOCATION, self.config_location().to_owned()),
-            ],
+            texts: vec![(ID_HINT, self.hint()), (ID_CONFIG_FILE, self.config_file())],
+            wrapped: TWO_LINE_CHECK_BOXES
+                .iter()
+                .map(|&(id, label)| (id, label.to_owned()))
+                .chain([(ID_CONFIG_LOCATION, self.config_location().to_owned())])
+                .collect(),
             enabled: vec![(ID_OPEN_CONFIG, can_save), (ID_MACRO_LIST, can_save)],
         }
     }
@@ -321,9 +339,14 @@ pub struct PanelView {
     pub methods: Vec<&'static str>,
     /// The selected item of the method list.
     pub method: Option<usize>,
-    /// Each label filled from the state ([`ID_HINT`], [`ID_CONFIG_FILE`],
-    /// [`ID_CONFIG_LOCATION`]) and its text.
+    /// Each label of one line filled from the state ([`ID_HINT`], [`ID_CONFIG_FILE`]) and its
+    /// text.
     pub texts: Vec<(u16, String)>,
+    /// Each control whose text takes more than one line (the check boxes with two lines,
+    /// then [`ID_CONFIG_LOCATION`]) and its text as it is: the glue wraps it at spaces to the
+    /// control's width itself (`Dialog::set_text_wrapped`), because Windows would cut a
+    /// Vietnamese word ("…không phải ti" / "ếng Việt").
+    pub wrapped: Vec<(u16, String)>,
     /// Each button that needs a folder and whether it is enabled.
     pub enabled: Vec<(u16, bool)>,
 }
@@ -427,9 +450,14 @@ const fn rect(x: i16, y: i16, cx: i16, cy: i16) -> DialogRect {
     DialogRect::new(x, y, cx, cy)
 }
 
-/// A check box whose label wraps onto two lines.
-fn two_line_check_box(id: u16, text: &str, rect: DialogRect) -> Control {
-    Control::check_box(id, text, rect).with_style(styles::BS_MULTILINE)
+/// Check box `id` of [`TWO_LINE_CHECK_BOXES`] with its label, which takes two lines
+/// (`BS_MULTILINE`, so that the line break the glue puts in is kept).
+fn two_line_check_box(id: u16, rect: DialogRect) -> Control {
+    let label = TWO_LINE_CHECK_BOXES
+        .iter()
+        .find(|(known, _)| *known == id)
+        .map_or("", |(_, label)| label);
+    Control::check_box(id, label, rect).with_style(styles::BS_MULTILINE)
 }
 
 /// The panel as a dialog template, centered on its monitor, with a minimize box (it has a
@@ -463,21 +491,13 @@ pub fn panel_template() -> DialogTemplate {
             )
             .group(),
         )
-        .with_control(two_line_check_box(
-            ID_FREE_MARKING,
-            "Cho gõ dấu sau phụ âm cuối (toans → toán)",
-            rect(14, 65, 144, 18),
-        ))
+        .with_control(two_line_check_box(ID_FREE_MARKING, rect(14, 65, 144, 18)))
         .with_control(Control::check_box(
             ID_SPELL_CHECK,
             "Kiểm tra chính tả",
             rect(14, 86, 144, 10),
         ))
-        .with_control(two_line_check_box(
-            ID_AUTO_RESTORE,
-            "Giữ nguyên phím đã gõ khi từ không phải tiếng Việt",
-            rect(14, 99, 144, 18),
-        ))
+        .with_control(two_line_check_box(ID_AUTO_RESTORE, rect(14, 99, 144, 18)))
         .with_control(Control::group_box(STATIC_ID, "Gõ tắt", rect(169, 22, 154, 84)).group())
         .with_control(Control::check_box(ID_MACROS, "Bật gõ tắt", rect(176, 35, 140, 10)).group())
         .with_control(Control::check_box(
@@ -487,7 +507,6 @@ pub fn panel_template() -> DialogTemplate {
         ))
         .with_control(two_line_check_box(
             ID_MACRO_AUTO_CASE,
-            "Viết hoa theo cách gõ (Ko → Không, KO → KHÔNG)",
             rect(176, 61, 140, 18),
         ))
         .with_control(

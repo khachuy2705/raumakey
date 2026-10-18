@@ -14,8 +14,9 @@
 //! class names), [`menu`] (menu items and their flags), [`icon`] (icon sizes), [`dialog`]
 //! (message box styles, texts, and answers), [`dialog_template`] (in-memory dialog templates:
 //! layout, styles, validation), [`dialog_box`] (the private messages dialogs reserve, the
-//! notification codes of their controls), and [`com_server`] (COM object and server-lock
-//! counts). Their Win32 parts and the purely Win32 modules (`com`, `file_replace`,
+//! notification codes of their controls), [`word_wrap`] (wrapping at spaces only, the width of
+//! a message box line), and [`com_server`] (COM object and server-lock counts). Their Win32
+//! parts and the purely Win32 modules (`com`, `file_replace`,
 //! `known_folder`, `module`, `pipe`, `sid`, `single_instance`, `task_scheduler`, and the
 //! `evkey-compat` module `legacy`) exist only on Windows.
 //!
@@ -26,7 +27,9 @@
 //! foreground), [`shell`] (the notification icon), [`menu`], [`icon`], [`dialog`],
 //! [`dialog_template`] and [`dialog_box`] (the settings panel and the macro list: modal dialog
 //! boxes from in-memory templates, run on a thread of their own and driven by a handler),
-//! `single_instance`, and `module` (the module that links this crate and its path). The TIP's
+//! [`word_wrap`] (Vietnamese texts of labels, check boxes, and message boxes wrapped at spaces
+//! with the real fonts, since Windows' own word wrap cuts Vietnamese words), `single_instance`,
+//! and `module` (the module that links this crate and its path). The TIP's
 //! are [`com_server`] (class factory, `DllGetClassObject`, `DllCanUnloadNow`), `module` (the
 //! DLL's own path for `DllRegisterServer`), and [`input`] (`GetMessageExtraInfo`, to bypass
 //! Raumakey's own injected keys).
@@ -57,6 +60,7 @@ pub mod shell;
 pub mod strings;
 pub mod tsf_registration;
 pub mod window;
+pub mod word_wrap;
 
 #[cfg(windows)]
 pub mod com;

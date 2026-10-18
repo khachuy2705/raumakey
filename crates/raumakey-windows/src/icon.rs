@@ -71,6 +71,8 @@ pub enum IconKind {
 
 #[cfg(windows)]
 pub use win::{Icon, icon_size, icon_size_for_dpi, icon_size_for_window};
+#[cfg(windows)]
+pub(crate) use win::{system_metric_for_dpi, user32_export, window_dpi};
 
 #[cfg(windows)]
 mod win {
@@ -190,8 +192,20 @@ mod win {
         }
     }
 
+    /// System metric `index` for `dpi` (`GetSystemMetricsForDpi`); `None` for a DPI of 0 and
+    /// when the function is unavailable (before Windows 10 1607).
+    pub(crate) fn system_metric_for_dpi(index: SYSTEM_METRICS_INDEX, dpi: u32) -> Option<i32> {
+        if dpi == 0 {
+            return None;
+        }
+        let metrics_for_dpi = system_metrics_for_dpi()?;
+        // SAFETY: `metrics_for_dpi` is user32's GetSystemMetricsForDpi, which takes a metric
+        // index and a DPI and has no other preconditions.
+        Some(unsafe { metrics_for_dpi(index, dpi) })
+    }
+
     /// The DPI of window `hwnd`; `None` when `GetDpiForWindow` is unavailable or fails (0).
-    fn window_dpi(hwnd: HWND) -> Option<u32> {
+    pub(crate) fn window_dpi(hwnd: HWND) -> Option<u32> {
         let dpi_for_window = dpi_for_window()?;
         // SAFETY: `dpi_for_window` is user32's GetDpiForWindow, which validates the handle and
         // answers 0 for one that names no window.
@@ -235,7 +249,7 @@ mod win {
     /// The export `name` of user32; `None` when user32 lacks it (or is not loaded, which never
     /// happens in a process that uses windows). The module is pinned, so the address stays
     /// valid until the process ends.
-    fn user32_export(name: PCSTR) -> Option<unsafe extern "system" fn() -> isize> {
+    pub(crate) fn user32_export(name: PCSTR) -> Option<unsafe extern "system" fn() -> isize> {
         let mut user32 = HMODULE::default();
         // SAFETY: a static NUL-terminated name and a valid out pointer. Nothing is loaded; PIN
         // keeps an already loaded user32 until the process ends, so a cached function pointer

@@ -11,10 +11,11 @@ use std::path::{Path, PathBuf};
 
 use raumakey_config::{ConfigError, FieldIssue};
 use raumakey_controller::macro_dialog::{
-    APP_ICON_ID, CELL_SCALARS, COLUMNS, DIALOG_SIZE, HINT, ID_COUNT, ID_LIST, ID_PUT, ID_REMOVE,
-    ID_REPLACEMENT, ID_SAVE, ID_STATUS, ID_TRIGGER, LINE_BREAK_MARK, Placement, Prompt, PromptKind,
-    REPLACEMENT_LIMIT, SaveOutcome, Status, TITLE, TRIGGER_LIMIT, cell_text, count_text, edit_text,
-    entered_text, may_close, open_list, put_row, row_cells, save_list, status_text, template,
+    APP_ICON_ID, CELL_SCALARS, COLUMNS, DIALOG_SIZE, HINT, ID_COUNT, ID_HINT, ID_LIST, ID_PUT,
+    ID_REMOVE, ID_REPLACEMENT, ID_SAVE, ID_STATUS, ID_TRIGGER, LINE_BREAK_MARK, Placement, Prompt,
+    PromptKind, REPLACEMENT_LIMIT, SaveOutcome, Status, TITLE, TRIGGER_LIMIT, cell_text,
+    count_text, edit_text, entered_text, may_close, open_list, put_row, row_cells, save_list,
+    status_text, template,
 };
 use raumakey_controller::macro_list::{
     DISCARD_QUESTION, MacroList, RowError, RowStatus, SaveError, conflict_question,
@@ -145,6 +146,9 @@ fn the_template_lays_out_the_editor_with_its_controls_and_texts() {
     for text in ["Gõ tắt:", "Thay bằng:", HINT] {
         assert!(texts.contains(&text), "{text}");
     }
+    // The hint has an id of its own: the editor sets it again, wrapped at spaces.
+    assert_eq!(find(ID_HINT).class(), ControlClass::Static);
+    assert_eq!(find(ID_HINT).text(), HINT);
     assert_eq!(
         HINT,
         "Chọn một dòng để sửa. Mục mới được bật sẵn; xoá rồi thêm lại một mục sẽ đặt lại các \

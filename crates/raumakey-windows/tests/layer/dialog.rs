@@ -1,5 +1,7 @@
 //! `dialog`: message box styles, texts, and answers (pure). Showing a box needs a person to
-//! close it, so that is a manual test.
+//! close it, so that is a manual test. One test has `message_box` lay out a real box and ends
+//! it before Windows shows it: hooks of the box's own thread read the laid-out box, move it off
+//! every monitor, post `WM_CLOSE`, and refuse to activate it.
 
 use raumakey_windows::dialog::{MessageKind, MessageResponse, message_box_texts, styles};
 use raumakey_windows::error::WinErrorKind;
@@ -83,6 +85,8 @@ fn a_dismissed_box_answers_no_to_a_question_and_ok_otherwise() {
 
 #[cfg(windows)]
 mod win {
+    use core::cell::{Cell, RefCell};
+    use core::ffi::c_void;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -90,11 +94,21 @@ mod win {
         MessageKind, MessageResponse, dismiss_message_boxes, message_box, spawn_message_box,
     };
     use raumakey_windows::error::WinErrorKind;
+    use raumakey_windows::panic::guard_value;
     use raumakey_windows::window::{Window, WindowClass};
-    use windows::Win32::Foundation::HWND;
+    use raumakey_windows::word_wrap::wrap_for_message_box;
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows::Win32::Graphics::Gdi::{
+        DT_CALCRECT, DT_EDITCONTROL, DT_EXPANDTABS, DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK,
+        DrawTextW, GetDC, GetTextMetricsW, HGDIOBJ, ReleaseDC, SelectObject, TEXTMETRICW,
+    };
     use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP,
+        CWPRETSTRUCT, CallNextHookEx, CreateWindowExW, DestroyWindow, GWL_STYLE, GetClientRect,
+        GetDlgItem, GetWindowLongW, GetWindowTextW, HCBT_ACTIVATE, PostMessageW, SWP_NOACTIVATE,
+        SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SendMessageW, SetWindowPos, SetWindowsHookExW,
+        UnhookWindowsHookEx, WH_CALLWNDPROCRET, WH_CBT, WINDOW_EX_STYLE, WINDOWPOS, WM_CLOSE,
+        WM_GETFONT, WM_INITDIALOG, WM_SHOWWINDOW, WM_WINDOWPOSCHANGED, WS_CHILD, WS_POPUP,
     };
     use windows::core::w;
 
@@ -160,6 +174,200 @@ mod win {
         .unwrap_err();
         assert_eq!(error.kind(), WinErrorKind::InvalidInput);
         assert!(answers.recv_timeout(Duration::from_millis(50)).is_err());
+    }
+
+    /// What [`after_box_init`] read from the box: its text, how many lines its text control
+    /// shows, and the width of each line drawn on one line.
+    #[derive(Debug, Default)]
+    struct Seen {
+        text: String,
+        shown_lines: i32,
+        line_widths: Vec<i32>,
+        text_width: i32,
+    }
+
+    thread_local! {
+        /// What [`after_box_init`] saw on this thread.
+        static SEEN: RefCell<Option<Seen>> = const { RefCell::new(None) };
+        /// A window of this thread was shown ([`after_box_init`]).
+        static SHOWN: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The message box's text control (`IDC_STATIC` of the box, 0xFFFF).
+    const BOX_TEXT: i32 = 0xFFFF;
+
+    /// A `WH_CALLWNDPROCRET` hook of the box's thread: once a message box answered
+    /// `WM_INITDIALOG`, its layout is done and it is not shown yet. Reads its text control,
+    /// moves the box off every monitor, and posts `WM_CLOSE` (the button of a box with OK only
+    /// is `IDCANCEL`, so `IDOK` would not close it), which ends the box before Windows first
+    /// shows it. Notes in [`SHOWN`] when a window of the thread is shown all the same.
+    unsafe extern "system" fn after_box_init(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        guard_value((), || {
+            if code < 0 {
+                return;
+            }
+            // SAFETY: for a hook code of 0 or more, `lparam` points to the `CWPRETSTRUCT`
+            // of the message the window just answered.
+            let call = unsafe { &*(lparam.0 as *const CWPRETSTRUCT) };
+            let shows = match call.message {
+                WM_SHOWWINDOW => call.wParam.0 != 0,
+                WM_WINDOWPOSCHANGED => {
+                    // SAFETY: for WM_WINDOWPOSCHANGED, `lParam` points to the window's
+                    // `WINDOWPOS`.
+                    let position = unsafe { &*(call.lParam.0 as *const WINDOWPOS) };
+                    position.flags & SWP_SHOWWINDOW == SWP_SHOWWINDOW
+                }
+                _ => false,
+            };
+            // SAFETY: only reads the style of a window of this thread.
+            let child = unsafe { GetWindowLongW(call.hwnd, GWL_STYLE) } as u32 & WS_CHILD.0 != 0;
+            // The controls show themselves inside the hidden box.
+            if shows && !child {
+                SHOWN.with(|shown| shown.set(true));
+            }
+            if call.message == WM_INITDIALOG {
+                let seen = read_box(call.hwnd);
+                SEEN.with(|slot| *slot.borrow_mut() = seen);
+                // SAFETY: a window of this thread; no pointers.
+                unsafe {
+                    let _ = SetWindowPos(
+                        call.hwnd,
+                        None,
+                        -32_000,
+                        -32_000,
+                        0,
+                        0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                    let _ = PostMessageW(Some(call.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                }
+            }
+        });
+        // SAFETY: forwards the unchanged arguments to the next hook.
+        unsafe { CallNextHookEx(None, code, wparam, lparam) }
+    }
+
+    /// A `WH_CBT` hook of the box's thread that refuses to activate any window, so the box
+    /// never takes the foreground (`MB_SETFOREGROUND`).
+    unsafe extern "system" fn no_activation(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if code == HCBT_ACTIVATE as i32 {
+            // Nonzero: the window is not activated.
+            return LRESULT(1);
+        }
+        // SAFETY: forwards the unchanged arguments to the next hook.
+        unsafe { CallNextHookEx(None, code, wparam, lparam) }
+    }
+
+    /// The text of the box's text control and how many lines it shows: `DrawTextW` lays the
+    /// text out in the control's client width with its font and the flags a label with
+    /// `SS_EDITCONTROL` and `SS_NOPREFIX` uses.
+    fn read_box(dialog: HWND) -> Option<Seen> {
+        // SAFETY: only reads the dialog's list of children.
+        let control = unsafe { GetDlgItem(Some(dialog), BOX_TEXT) }.ok()?;
+        let mut client = RECT::default();
+        // SAFETY: `client` is a valid out buffer.
+        unsafe { GetClientRect(control, &mut client) }.ok()?;
+        let mut buffer = [0_u16; 4096];
+        // SAFETY: the buffer is writable for its length.
+        let length = unsafe { GetWindowTextW(control, &mut buffer) };
+        let text = String::from_utf16_lossy(&buffer[..usize::try_from(length).ok()?]);
+        // SAFETY: a control of this thread; no pointers.
+        let font = unsafe { SendMessageW(control, WM_GETFONT, None, None) }.0;
+        // SAFETY: a device context of a window of this thread, released below; the font is
+        // the control's own and is deselected before the release. `DrawTextW` only reads the
+        // text (no DT_MODIFYSTRING) and writes the rectangles.
+        unsafe {
+            let dc = GetDC(Some(control));
+            let previous = SelectObject(dc, HGDIOBJ(font as *mut c_void));
+            let mut metrics = TEXTMETRICW::default();
+            let _ = GetTextMetricsW(dc, &mut metrics);
+            let flags = DT_WORDBREAK | DT_EDITCONTROL | DT_EXPANDTABS | DT_NOPREFIX;
+            let mut units: Vec<u16> = text.encode_utf16().collect();
+            let mut laid_out = RECT {
+                right: client.right,
+                ..RECT::default()
+            };
+            DrawTextW(dc, &mut units, &mut laid_out, flags | DT_CALCRECT);
+            let line_widths = text
+                .split('\n')
+                .map(|line| {
+                    let mut units: Vec<u16> = line.encode_utf16().collect();
+                    if units.is_empty() {
+                        // An empty slice lends a dangling pointer, which DrawTextW reads.
+                        return 0;
+                    }
+                    let mut single = RECT::default();
+                    let single_line = DT_SINGLELINE | DT_EXPANDTABS | DT_NOPREFIX | DT_CALCRECT;
+                    DrawTextW(dc, &mut units, &mut single, single_line);
+                    single.right
+                })
+                .collect();
+            SelectObject(dc, previous);
+            ReleaseDC(Some(control), dc);
+            Some(Seen {
+                text,
+                shown_lines: laid_out.bottom / metrics.tmHeight.max(1),
+                line_widths,
+                text_width: client.right,
+            })
+        }
+    }
+
+    /// Shows `text` in a real message box through `message_box` on a fresh thread whose hooks
+    /// end the box before Windows shows it ([`after_box_init`], [`no_activation`]), and returns
+    /// what the box laid out.
+    fn shown_in_a_box(text: &'static str) -> Seen {
+        let (sender, seen) = mpsc::channel();
+        std::thread::spawn(move || {
+            // SAFETY: no preconditions.
+            let thread = unsafe { GetCurrentThreadId() };
+            // SAFETY: hook procedures of this process for this thread only, so no module
+            // handle is needed; both are removed below, before the thread ends.
+            let hooks = unsafe {
+                [
+                    SetWindowsHookExW(WH_CALLWNDPROCRET, Some(after_box_init), None, thread),
+                    SetWindowsHookExW(WH_CBT, Some(no_activation), None, thread),
+                ]
+            };
+            let answer = message_box(None, text, "Raumakey", MessageKind::Information);
+            for hook in hooks.into_iter().flatten() {
+                // SAFETY: removes a hook that this thread set.
+                let _ = unsafe { UnhookWindowsHookEx(hook) };
+            }
+            let laid_out = SEEN.with(|slot| slot.borrow_mut().take());
+            let _ = sender.send((answer.ok(), laid_out, SHOWN.with(Cell::get)));
+        });
+        let (answer, laid_out, shown) = seen
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the box was closed in time");
+        assert_eq!(answer, Some(MessageResponse::Ok));
+        assert!(!shown, "the box ended before Windows showed it");
+        laid_out.expect("the box's text was read")
+    }
+
+    /// A long Vietnamese text in a real message box (ended before it is shown): `message_box`
+    /// wraps it at spaces to lines the box keeps as they are, so the box shows exactly those
+    /// lines, each whole words, and cuts no word.
+    #[test]
+    fn a_message_box_shows_the_text_wrapped_at_spaces_only() {
+        const TEXT: &str = "Raumakey đang chạy. Biểu tượng V/E ở khay hệ thống cho biết chế độ \
+                            gõ: nhấp vào biểu tượng để chuyển giữa tiếng Việt và tiếng Anh, nhấp \
+                            chuột phải để mở menu.\n\nTệp cấu hình: C:\\Users\\Nguyen Van Anh\\\
+                            AppData\\Local\\Raumakey\\raumakey.toml";
+        let seen = shown_in_a_box(TEXT);
+        assert_eq!(seen.text, wrap_for_message_box(TEXT));
+        let lines = seen.text.split('\n').count();
+        assert!(lines > TEXT.split('\n').count(), "{:?}", seen.text);
+        assert_eq!(
+            seen.shown_lines,
+            i32::try_from(lines).unwrap(),
+            "{:?} in {} pixels: {:?}",
+            seen.text,
+            seen.text_width,
+            seen.line_widths
+        );
+        let words: Vec<&str> = TEXT.split_whitespace().collect();
+        assert_eq!(seen.text.split_whitespace().collect::<Vec<_>>(), words);
     }
 
     /// Shows a box on a thread of its own, then dismisses it after one second without waiting:

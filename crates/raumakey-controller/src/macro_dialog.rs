@@ -30,13 +30,15 @@
 //! never waits for it:
 //!
 //! - **Opening.** `init` sets the icon of `raumakey.exe` ([`APP_ICON_ID`]; a failure is
-//!   ignored), the columns and the edits' limits, and loads the list: file I/O on the
-//!   dialog's own thread, as design §22.2 has it (see `MacroListDialog` for how long the
-//!   editor may then stop answering; nothing else waits for that thread). When the load failed
-//!   or left values it could not read, `init` posts itself a private message, which arrives
-//!   before the dialog is first shown (a dialog box shows itself once its queue first runs
-//!   empty): the box is shown then, owned by the hidden dialog, so that dismissing the dialog
-//!   closes it, and on an error or a "no" the dialog ends without ever being shown.
+//!   ignored), the columns, the [`HINT`] wrapped at spaces to its label's width (Windows' own
+//!   word wrap would cut a Vietnamese word; `Dialog::set_text_wrapped`), and the edits'
+//!   limits, and loads the list: file I/O on the dialog's own thread, as design §22.2 has it
+//!   (see `MacroListDialog` for how long the editor may then stop answering; nothing else
+//!   waits for that thread). When the load failed or left values it could not read, `init`
+//!   posts itself a private message, which arrives before the dialog is first shown (a dialog
+//!   box shows itself once its queue first runs empty): the box is shown then, owned by the
+//!   hidden dialog, so that dismissing the dialog closes it, and on an error or a "no" the
+//!   dialog ends without ever being shown.
 //! - **Rows.** The list view is virtual (`LVS_OWNERDATA`): after every change the handler
 //!   hands all rows to the dialog (`Dialog::list_set_virtual_rows`), which only stores them
 //!   and sets the count, so 20,000 rows open and update at once, and the cells are drawn also
@@ -141,6 +143,8 @@ pub const ID_SAVE: u16 = 106;
 pub const ID_COUNT: u16 = 107;
 /// The status line ([`status_text`]).
 pub const ID_STATUS: u16 = 108;
+/// The label with the [`HINT`], on two lines.
+pub const ID_HINT: u16 = 109;
 
 /// The columns of the list: header and width in dialog units.
 pub const COLUMNS: [(&str, i16); 3] = [("Gõ tắt", 70), ("Thay bằng", 166), ("Trạng thái", 56)];
@@ -200,7 +204,7 @@ pub fn template(placement: Placement) -> DialogTemplate {
             Control::label(ID_STATUS, "", rect(110, 139, 203, 8)).with_style(styles::SS_NOPREFIX),
         )
         .with_control(
-            Control::label(STATIC_ID, HINT, rect(7, 151, 306, 16)).with_style(styles::SS_NOPREFIX),
+            Control::label(ID_HINT, HINT, rect(7, 151, 306, 16)).with_style(styles::SS_NOPREFIX),
         )
         .with_control(Control::label(STATIC_ID, "Gõ tắt:", rect(7, 173, 44, 8)))
         .with_control(Control::edit(ID_TRIGGER, rect(54, 171, 120, 12)))
@@ -550,8 +554,8 @@ mod win {
     use raumakey_windows::window::AppMessage;
 
     use super::{
-        APP_ICON_ID, COLUMNS, ID_COUNT, ID_LIST, ID_PUT, ID_REMOVE, ID_REPLACEMENT, ID_SAVE,
-        ID_STATUS, ID_TRIGGER, Placement, Prompt, REPLACEMENT_LIMIT, SaveOutcome, Status,
+        APP_ICON_ID, COLUMNS, HINT, ID_COUNT, ID_HINT, ID_LIST, ID_PUT, ID_REMOVE, ID_REPLACEMENT,
+        ID_SAVE, ID_STATUS, ID_TRIGGER, Placement, Prompt, REPLACEMENT_LIMIT, SaveOutcome, Status,
         TRIGGER_LIMIT, confirm_open, count_text, edit_text, entered_text, is_replacement_error,
         is_trigger_error, load_error_prompt, may_close, put_row, row_cells, save_list, status_text,
         template,
@@ -790,6 +794,9 @@ mod win {
                 let _ = dialog.set_icons(module, APP_ICON_ID);
             }
             let _ = dialog.list_set_columns(ID_LIST, &COLUMNS);
+            // Wrapped at spaces, since Windows would cut a Vietnamese word; a hint that
+            // cannot be measured stays as the template has it.
+            let _ = dialog.set_text_wrapped(ID_HINT, HINT);
             dialog.set_text_limit(ID_TRIGGER, TRIGGER_LIMIT);
             dialog.set_text_limit(ID_REPLACEMENT, REPLACEMENT_LIMIT);
             match MacroList::load(&self.folder) {

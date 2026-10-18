@@ -4,7 +4,8 @@
 //!
 //! [`MessageKind`] (buttons and icon), [`MessageResponse`] (the answer), and
 //! [`message_box_texts`] (the checked strings) are pure. On Windows, [`message_box`] shows a
-//! modal `MessageBoxW` and waits for the answer.
+//! modal `MessageBoxW` and waits for the answer. Every box gets its text wrapped at spaces
+//! first ([`crate::word_wrap`]), so that Windows never cuts a Vietnamese word.
 //!
 //! The text and caption are shown to the user and never logged. Called from a window handler,
 //! the box runs a modal loop: messages for that window that arrive meanwhile get the default
@@ -116,6 +117,11 @@ pub fn message_box_texts(text: &str, caption: &str) -> WinResult<(WideString, Wi
 /// with `E_INVALIDARG` when `text` or `caption` contains a NUL, before anything is shown
 /// ([`message_box_texts`]).
 ///
+/// The text is wrapped at spaces first
+/// ([`wrap_for_message_box`](crate::word_wrap::wrap_for_message_box)) to lines narrow enough
+/// that the box keeps each as it is: `MessageBoxW` itself would cut a long Vietnamese line
+/// inside a word.
+///
 /// `owner` must be `None` or a window of the calling thread: the box disables its owner while
 /// it is shown, which waits for the owner's thread to answer, so an owner whose thread waits
 /// for the caller would deadlock.
@@ -129,8 +135,11 @@ pub fn message_box(
     use windows::Win32::UI::WindowsAndMessaging::{MESSAGEBOX_STYLE, MessageBoxW};
 
     use crate::error::{E_UNEXPECTED, WinError};
+    use crate::word_wrap::wrap_for_message_box;
 
-    let (text, caption) = message_box_texts(text, caption)?;
+    // A text with a NUL fails before anything is measured.
+    message_box_texts(text, caption)?;
+    let (text, caption) = message_box_texts(&wrap_for_message_box(text), caption)?;
     // SAFETY: both strings are NUL-terminated and outlive the call; USER validates the owner
     // handle, so any value is memory-safe (the thread rule above is about deadlocks).
     let answer = unsafe {

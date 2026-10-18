@@ -57,7 +57,7 @@ use raumakey_controller::worker::{Answer, Outcome, PollReport, WorkerCommand};
 use raumakey_ipc::message::RuntimeSnapshot;
 use raumakey_model::options::InputMethod;
 use raumakey_windows::dialog_box::notifications::{BN_CLICKED, CBN_SELCHANGE};
-use raumakey_windows::dialog_template::IDCANCEL;
+use raumakey_windows::dialog_template::{IDCANCEL, styles};
 use raumakey_windows::icon::{IconKind, icon_size};
 use raumakey_windows::menu::MenuItem;
 use raumakey_windows::module::Module;
@@ -65,6 +65,7 @@ use raumakey_windows::shell::{NIN_SELECT, WM_CONTEXTMENU, taskbar_created_messag
 use raumakey_windows::window::{
     Window, WindowClass, post_quit, register_user_message, run_message_loop,
 };
+use raumakey_windows::word_wrap::line_width;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     DT_CALCRECT, DT_MODIFYSTRING, DT_NOPREFIX, DT_PATH_ELLIPSIS, DT_SINGLELINE, DT_WORDBREAK,
@@ -74,12 +75,13 @@ use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId}
 use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use windows::Win32::UI::WindowsAndMessaging::{
     BM_CLICK, BM_GETCHECK, CB_GETCOUNT, CB_GETCURSEL, CB_SETCURSEL, CHANGEFILTERSTRUCT,
-    ChangeWindowMessageFilterEx, EnumWindows, GA_PARENT, GetAncestor, GetClassNameW, GetClientRect,
-    GetDesktopWindow, GetDlgCtrlID, GetDlgItem, GetNextDlgGroupItem, GetWindowRect,
-    GetWindowThreadProcessId, InternalGetWindowText, IsWindow, IsWindowVisible, MSGFLT_ALLOW,
-    MSGFLTINFO_ALREADYALLOWED_FORWND, MSGFLTINFO_NONE, MSGFLTINFO_STATUS, PostMessageW,
-    PostThreadMessageW, SMTO_NORMAL, SendMessageTimeoutW, SendMessageW, WM_CLOSE, WM_COMMAND,
-    WM_ENDSESSION, WM_GETFONT, WM_GETTEXT, WM_GETTEXTLENGTH, WM_NULL, WM_QUIT, WM_SETTEXT,
+    ChangeWindowMessageFilterEx, EnumChildWindows, EnumWindows, GA_PARENT, GWL_STYLE, GetAncestor,
+    GetClassNameW, GetClientRect, GetDesktopWindow, GetDlgCtrlID, GetDlgItem, GetNextDlgGroupItem,
+    GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, InternalGetWindowText, IsWindow,
+    IsWindowVisible, MSGFLT_ALLOW, MSGFLTINFO_ALREADYALLOWED_FORWND, MSGFLTINFO_NONE,
+    MSGFLTINFO_STATUS, PostMessageW, PostThreadMessageW, SMTO_NORMAL, SendMessageTimeoutW,
+    SendMessageW, WM_CLOSE, WM_COMMAND, WM_ENDSESSION, WM_GETFONT, WM_GETTEXT, WM_GETTEXTLENGTH,
+    WM_NULL, WM_QUIT, WM_SETTEXT,
 };
 use windows::core::BOOL;
 
@@ -1713,7 +1715,11 @@ fn the_real_panel_keeps_the_file_name_and_the_arrow_keys_in_their_groups() {
         assert!(shown.ends_with(r"\raumakey.toml"), "{shown}");
         assert_eq!(shown.contains("..."), shortened, "{shown}");
         let note = item(panel, ID_CONFIG_LOCATION);
-        assert_eq!(window_text(note), state.config_location());
+        // Wrapped at spaces by the panel.
+        assert_eq!(
+            window_text(note).replace('\n', " "),
+            state.config_location()
+        );
         let (needed, height) = wrapped_height(note);
         assert!(needed <= height, "{location:?}: {needed} > {height}");
     }
@@ -1721,6 +1727,141 @@ fn the_real_panel_keeps_the_file_name_and_the_arrow_keys_in_their_groups() {
     shell.close_panel();
     assert_eq!(next_event(&events), Event::PanelClosed(1));
     wait_until("the panel was destroyed", || !is_window(panel));
+}
+
+/// The child windows of `dialog`.
+fn children(dialog: HWND) -> Vec<HWND> {
+    unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        // SAFETY: `lparam` is the vector of the enumeration below, which outlives it.
+        let found = unsafe { &mut *(lparam.0 as *mut Vec<HWND>) };
+        found.push(hwnd);
+        BOOL::from(true)
+    }
+    let mut found: Vec<HWND> = Vec::new();
+    // SAFETY: the callback runs during the call only and gets a pointer to `found`, which
+    // outlives the call.
+    let _ = unsafe { EnumChildWindows(Some(dialog), Some(each), LPARAM(&raw mut found as isize)) };
+    found
+}
+
+/// The width of `line` drawn on one line with the font of `control`.
+fn single_line_width(control: HWND, line: &str) -> i32 {
+    let mut units: Vec<u16> = line.encode_utf16().collect();
+    if units.is_empty() {
+        return 0;
+    }
+    with_font_of(control, |dc| {
+        let mut rect = RECT::default();
+        let length = i32::try_from(units.len()).unwrap();
+        let format = DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX;
+        // SAFETY: the buffer holds `length` units, which the call only reads; `rect` is a
+        // valid in/out rectangle.
+        unsafe { draw_text(dc, units.as_mut_ptr(), length, &mut rect, format.0) };
+        rect.right
+    })
+}
+
+/// What is wrong with the text of `control` when it is a check box or a label that wraps
+/// (not one that shortens its text on one line): each line that does not fit the control's
+/// line width (`line_width`: the client width, less a check box's box) on one line, which
+/// Windows would wrap, possibly inside a word, and lines that need more height than the
+/// control has. `None` for other controls.
+fn text_overflow(control: HWND) -> Option<Vec<String>> {
+    let mut class = [0_u16; 16];
+    // SAFETY: the buffer is writable for its length.
+    let length = unsafe { GetClassNameW(control, &mut class) };
+    let class = String::from_utf16_lossy(&class[..usize::try_from(length).unwrap()]);
+    // SAFETY: only reads the window's style.
+    let style = unsafe { GetWindowLongW(control, GWL_STYLE) } as u32;
+    let check_box = class == "Button" && matches!(style & 0x0F, 2..=6 | 9);
+    let shortens = style & (styles::SS_PATHELLIPSIS | styles::SS_ENDELLIPSIS) != 0;
+    if !check_box && !(class == "Static" && !shortens) {
+        return None;
+    }
+    // SAFETY: only reads the control's id.
+    let id = unsafe { GetDlgCtrlID(control) };
+    let limit = line_width(control).unwrap();
+    let text = window_text(control);
+    let mut problems = Vec::new();
+    for line in text.split('\n') {
+        let width = single_line_width(control, line);
+        if width > limit {
+            problems.push(format!("{id}: {line:?} takes {width} pixels of {limit}"));
+        }
+    }
+    let mut client = RECT::default();
+    // SAFETY: `client` is a valid out buffer.
+    unsafe { GetClientRect(control, &mut client) }.unwrap();
+    let mut units: Vec<u16> = text.encode_utf16().collect();
+    if !units.is_empty() {
+        let needed = with_font_of(control, |dc| {
+            let mut rect = RECT {
+                right: limit,
+                ..RECT::default()
+            };
+            let length = i32::try_from(units.len()).unwrap();
+            let format = DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX;
+            // SAFETY: as in `single_line_width`.
+            unsafe { draw_text(dc, units.as_mut_ptr(), length, &mut rect, format.0) };
+            rect.bottom
+        });
+        if needed > client.bottom {
+            problems.push(format!(
+                "{id}: {text:?} needs {needed} pixels of height, has {}",
+                client.bottom
+            ));
+        }
+    }
+    Some(problems)
+}
+
+/// The real panel, opened with the long note of `%LOCALAPPDATA%`, and the real macro list
+/// editor, under Common Controls 6 as `raumakey.exe` runs them: every check box and every
+/// label that wraps shows lines that each fit its line width on one line, so Windows has
+/// nothing left to wrap and cuts no Vietnamese word ("…không phải ti" / "ếng Việt"), and is
+/// tall enough for them.
+#[test]
+fn the_real_panel_and_editor_leave_windows_nothing_to_wrap() {
+    let folder = tempfile::tempdir().unwrap();
+    let (inbox, events) = mpsc::channel();
+    let mut shell = real_shell(inbox);
+    let mut state = panel_state(Vietnamese);
+    state.location = Location::LocalAppData;
+    state.config_path = Some(PathBuf::from(
+        r"C:\Users\Nguyen Van Anh\AppData\Local\Raumakey\raumakey.toml",
+    ));
+    {
+        // The dialogs' threads inherit the context; the guard may go once they started.
+        let _v6 = CommonControls6::activate();
+        shell.open_panel(1, state.clone());
+        shell.open_macro_list(folder.path().to_path_buf());
+    }
+    let panel = wait_for_panel();
+    let editor = wait_for_dialog(macro_dialog::TITLE);
+    assert_eq!(
+        window_text(item(panel, ID_CONFIG_LOCATION)).replace('\n', " "),
+        state.config_location()
+    );
+    let mut checked = 0;
+    let mut found = Vec::new();
+    for dialog in [panel, editor] {
+        for control in children(dialog) {
+            if let Some(problems) = text_overflow(control) {
+                checked += 1;
+                found.extend(problems);
+            }
+        }
+    }
+    assert_eq!(found, Vec::<String>::new());
+    // The panel's ten check boxes and three labels, and the editor's five labels.
+    assert_eq!(checked, 18);
+
+    shell.close_panel();
+    assert_eq!(next_event(&events), Event::PanelClosed(1));
+    shell.close_macro_list();
+    wait_until("the dialogs were destroyed", || {
+        !is_window(panel) && !is_window(editor)
+    });
 }
 
 /// Opened again at once after the user closed it (its dialog has ended, but its thread has

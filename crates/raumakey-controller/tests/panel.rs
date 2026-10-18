@@ -297,6 +297,20 @@ fn the_view_sets_every_control_from_the_state() {
                     ID_CONFIG_FILE,
                     r"Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml".to_owned()
                 ),
+            ],
+            wrapped: vec![
+                (
+                    ID_FREE_MARKING,
+                    "Cho gõ dấu sau phụ âm cuối (toans → toán)".to_owned()
+                ),
+                (
+                    ID_AUTO_RESTORE,
+                    "Giữ nguyên phím đã gõ khi từ không phải tiếng Việt".to_owned()
+                ),
+                (
+                    ID_MACRO_AUTO_CASE,
+                    "Viết hoa theo cách gõ (Ko → Không, KO → KHÔNG)".to_owned()
+                ),
                 (ID_CONFIG_LOCATION, "(cạnh raumakey.exe)".to_owned()),
             ],
             enabled: vec![(ID_OPEN_CONFIG, true), (ID_MACRO_LIST, true)],
@@ -304,6 +318,32 @@ fn the_view_sets_every_control_from_the_state() {
     );
     let ids: Vec<u16> = state().view().checks.iter().map(|(id, _)| *id).collect();
     assert_eq!(ids, CHECK_BOXES);
+}
+
+/// Every control that shows more than one line (the check boxes with `BS_MULTILINE`, the
+/// location note) gets its text from the view's `wrapped`, which the glue wraps at spaces
+/// itself, since Windows would cut a Vietnamese word: the check boxes with their labels of
+/// the template, and no control that shows one line.
+#[test]
+fn the_controls_of_several_lines_get_texts_that_the_glue_wraps() {
+    let template = panel_template();
+    let view = state().view();
+    let wrapped: Vec<u16> = view.wrapped.iter().map(|(id, _)| *id).collect();
+    for control in template.controls() {
+        let several_lines = control.style() & styles::BS_MULTILINE != 0
+            || (control.class() == ControlClass::Static && control.rect().cy >= 16);
+        assert_eq!(
+            wrapped.contains(&control.id()),
+            several_lines,
+            "{}",
+            control.id()
+        );
+        let text = view.wrapped.iter().find(|(id, _)| *id == control.id());
+        if let (ControlClass::Button, Some((_, text))) = (control.class(), text) {
+            assert_eq!(control.text(), text);
+        }
+    }
+    assert!(view.texts.iter().all(|(id, _)| !wrapped.contains(id)));
 }
 
 /// Each check box follows its own value, and no other.
@@ -399,7 +439,7 @@ fn without_a_folder_the_file_buttons_are_disabled() {
         ID_CONFIG_FILE,
         "Tệp cấu hình: không có, nên các thay đổi không được lưu.".to_owned()
     )));
-    assert!(view.texts.contains(&(ID_CONFIG_LOCATION, String::new())));
+    assert!(view.wrapped.contains(&(ID_CONFIG_LOCATION, String::new())));
 }
 
 // --- Requests ---------------------------------------------------------------------------------

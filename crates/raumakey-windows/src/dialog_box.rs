@@ -19,7 +19,9 @@
 //! - The handler gets a [`Dialog`] in every callback: a view of the dialog window with helpers
 //!   for its controls (check boxes, texts, drop-down lists, list views, the icons of its title
 //!   bar and taskbar button, focus, message boxes owned by the dialog, ending it), and its
-//!   position ([`Dialog::move_to`]).
+//!   position ([`Dialog::move_to`]). Texts of several lines go through
+//!   [`Dialog::set_text_wrapped`], which wraps them at spaces with the control's own font
+//!   (and again after a change of DPI), since Windows would cut a Vietnamese word.
 //! - [`spawn_dialog`] runs a dialog without owner on a thread of its own, the way
 //!   [`spawn_message_box`](crate::dialog::spawn_message_box) runs message boxes: the caller's
 //!   thread goes on handling its own messages, and a [`DetachedDialog`] posts private messages
@@ -50,7 +52,8 @@
 //! private message posted to the dialog during such a modal loop is therefore lost to the
 //! handler: callers keep shared state and re-read it once their message box returns. The
 //! dialog procedure itself handles its reserved messages even then, so a dialog can be
-//! dismissed or brought to the front while its handler waits for a message box.
+//! dismissed or brought to the front, and its wrapped texts wrapped again after a change of
+//! DPI ([`Dialog::set_text_wrapped`]), while its handler waits for a message box.
 //!
 //! **Dismissing.** [`DetachedDialog::dismiss`] posts a reserved message that the dialog
 //! procedure answers itself with `EndDialog(IDCANCEL)`, without asking the handler (and
@@ -121,6 +124,9 @@ const DISMISS: u32 = WM_APP_LAST;
 /// Restores the dialog if it is minimized and makes it the foreground window.
 #[cfg(windows)]
 const BRING_TO_FRONT: u32 = WM_APP_LAST - 1;
+/// Wraps the texts set with `Dialog::set_text_wrapped` again, after a change of DPI.
+#[cfg(windows)]
+const REWRAP: u32 = WM_APP_LAST - 2;
 
 /// Notification codes that dialog handlers match on: the high word of `wParam` of a
 /// `WM_COMMAND` for the `u16` ones, `NMHDR::code` of a `WM_NOTIFY` for the `i32` ones.
@@ -188,7 +194,7 @@ mod win {
     use windows::Win32::UI::WindowsAndMessaging::{GWL_STYLE, GetWindowLongW};
 
     use super::notifications::BN_CLICKED;
-    use super::{BRING_TO_FRONT, DISMISS, is_reserved};
+    use super::{BRING_TO_FRONT, DISMISS, REWRAP, is_reserved};
     use crate::dialog::{MessageKind, MessageResponse, message_box};
     use crate::dialog_template::styles::LVS_OWNERDATA;
     use crate::dialog_template::{IDCANCEL, TemplateBytes};
@@ -198,6 +204,7 @@ mod win {
     use crate::panic::{guard_bool, guard_value};
     use crate::strings::WideString;
     use crate::window::AppMessage;
+    use crate::word_wrap::wrap_for_control;
 
     /// What a dialog procedure answers for a message it handled.
     const TRUE: isize = 1;
@@ -399,7 +406,31 @@ mod win {
             // SAFETY: the text is NUL-terminated and outlives the call; the control is a
             // window of this thread.
             unsafe { SetDlgItemTextW(self.hwnd, i32::from(id), text.as_pcwstr()) }
-                .context("SetDlgItemTextW")
+                .context("SetDlgItemTextW")?;
+            // A text set as it is replaces one that was wrapped.
+            self.state.forget_wrapped(id);
+            Ok(())
+        }
+
+        /// Sets the text of label, check box, or radio button `id` wrapped at spaces to the
+        /// control's width with its own font
+        /// ([`wrap_for_control`](crate::word_wrap::wrap_for_control)), so that the control
+        /// shows each line as it is: wrapping by itself, Windows would cut a Vietnamese word.
+        /// The control needs the height for the lines; a check box or radio button needs
+        /// `BS_MULTILINE` for more than one.
+        ///
+        /// The dialog keeps `text` and wraps it again for the controls' new sizes and fonts
+        /// once the dialog moved to a monitor of another DPI (`WM_DPICHANGED`), until
+        /// [`set_text`](Self::set_text) or this sets another text for the control. Fails with
+        /// `E_INVALIDARG` for a text with a NUL and for a control of another kind (a push
+        /// button, an edit), and when there is no such control; the text stays as it was.
+        pub fn set_text_wrapped(&self, id: u16, text: &str) -> WinResult<()> {
+            // A text with a NUL fails before anything is measured.
+            WideString::new(text)?;
+            let wrapped = wrap_for_control(self.item(id)?, text)?;
+            self.set_text(id, &wrapped)?;
+            self.state.keep_wrapped(id, text);
+            Ok(())
         }
 
         /// Enables or disables control `id` (`EnableWindow`).
@@ -760,14 +791,15 @@ mod win {
         }
 
         /// Shows a modal message box owned by the dialog, captioned with the product name, and
-        /// returns the answer ([`message_box`](crate::dialog::message_box)). Its modal loop
-        /// runs inside the callback (see "Re-entrancy" in the module documentation). Fails with
-        /// `E_INVALIDARG` for a text with a NUL, and with `E_ABORT`
-        /// ([`WinErrorKind::Cancelled`](crate::error::WinErrorKind)) when the dialog was
-        /// dismissed, before or while the box was open: the box is closed with the dialog, or
-        /// not shown at all. A box shown during `init` of a detached dialog is the exception: a
-        /// dismiss cannot reach it before `init` returns (see "Dismissing" in the module
-        /// documentation), so it stays open until it is answered, and the call then fails.
+        /// returns the answer ([`message_box`](crate::dialog::message_box), which wraps the
+        /// text at spaces). Its modal loop runs inside the callback (see "Re-entrancy" in the
+        /// module documentation). Fails with `E_INVALIDARG` for a text with a NUL, and with
+        /// `E_ABORT` ([`WinErrorKind::Cancelled`](crate::error::WinErrorKind)) when the dialog
+        /// was dismissed, before or while the box was open: the box is closed with the dialog,
+        /// or not shown at all. A box shown during `init` of a detached dialog is the
+        /// exception: a dismiss cannot reach it before `init` returns (see "Dismissing" in the
+        /// module documentation), so it stays open until it is answered, and the call then
+        /// fails.
         pub fn message_box(&self, text: &str, kind: MessageKind) -> WinResult<MessageResponse> {
             if self.state.is_dismissed() {
                 return Err(WinError::new(E_ABORT, "MessageBoxW"));
@@ -926,6 +958,9 @@ mod win {
         icons: RefCell<Option<Icons>>,
         /// The rows of the virtual list views ([`Dialog::list_set_virtual_rows`]).
         virtual_rows: RefCell<VirtualRows>,
+        /// The texts set with [`Dialog::set_text_wrapped`], by control, as they were given:
+        /// wrapped again after a change of DPI ([`rewrap`]).
+        wrapped: RefCell<Vec<(u16, String)>>,
     }
 
     impl DialogState {
@@ -944,6 +979,23 @@ mod win {
                 open_box: Cell::new(None),
                 icons: RefCell::new(None),
                 virtual_rows: RefCell::new(VirtualRows::default()),
+                wrapped: RefCell::new(Vec::new()),
+            }
+        }
+
+        /// Keeps `text` as the wrapped text of control `id` (see [`rewrap`]).
+        fn keep_wrapped(&self, id: u16, text: &str) {
+            // Never borrowed while a helper runs; a text not kept is only not wrapped again.
+            if let Ok(mut wrapped) = self.wrapped.try_borrow_mut() {
+                wrapped.retain(|(known, _)| *known != id);
+                wrapped.push((id, text.to_owned()));
+            }
+        }
+
+        /// Control `id` has no wrapped text any more.
+        fn forget_wrapped(&self, id: u16) {
+            if let Ok(mut wrapped) = self.wrapped.try_borrow_mut() {
+                wrapped.retain(|(known, _)| *known != id);
             }
         }
 
@@ -1398,13 +1450,17 @@ mod win {
         lparam: LPARAM,
     ) -> isize {
         match message {
-            DISMISS | BRING_TO_FRONT if wparam.0 != state.cookie => return FALSE,
+            DISMISS | BRING_TO_FRONT | REWRAP if wparam.0 != state.cookie => return FALSE,
             DISMISS => {
                 dismiss(state, hwnd);
                 return TRUE;
             }
             BRING_TO_FRONT => {
                 bring_to_front(hwnd);
+                return TRUE;
+            }
+            REWRAP => {
+                rewrap(state, hwnd);
                 return TRUE;
             }
             WM_DESTROY => {
@@ -1416,6 +1472,18 @@ mod win {
             WM_DPICHANGED => {
                 // The low word is the new horizontal DPI (both are equal).
                 state.reload_icons(hwnd, u32::from(low_word(wparam.0)));
+                if state
+                    .wrapped
+                    .try_borrow()
+                    .is_ok_and(|wrapped| !wrapped.is_empty())
+                {
+                    // The default processing scales the controls and their fonts once this
+                    // returns; the texts are wrapped again after it.
+                    // SAFETY: posts plain values to this thread's dialog.
+                    let _ = unsafe {
+                        PostMessageW(Some(hwnd), REWRAP, WPARAM(state.cookie), LPARAM(0))
+                    };
+                }
                 return FALSE;
             }
             WM_NOTIFY => match answer_virtual_list(state, hwnd, lparam) {
@@ -1830,6 +1898,21 @@ mod win {
                 let _ = ShowWindow(hwnd, SW_RESTORE);
             }
             SetForegroundWindow(GetLastActivePopup(hwnd)).as_bool()
+        }
+    }
+
+    /// Wraps the texts set with [`Dialog::set_text_wrapped`] again for the controls' sizes and
+    /// fonts now, after a change of DPI. Labels and buttons notify nobody of a new text, so
+    /// this never reaches the handler, and it runs while the handler is busy too.
+    fn rewrap(state: &DialogState, hwnd: HWND) {
+        let texts = match state.wrapped.try_borrow() {
+            Ok(wrapped) => wrapped.clone(),
+            Err(_) => return,
+        };
+        let dialog = Dialog { hwnd, state };
+        for (id, text) in texts {
+            // A control that cannot be measured keeps the lines it shows.
+            let _ = dialog.set_text_wrapped(id, &text);
         }
     }
 
