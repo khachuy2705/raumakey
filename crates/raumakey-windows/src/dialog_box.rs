@@ -52,25 +52,43 @@
 //! dismissed or brought to the front while its handler waits for a message box.
 //!
 //! **Dismissing.** [`DetachedDialog::dismiss`] posts a reserved message that the dialog
-//! procedure answers itself with `EndDialog(IDCANCEL)`, without asking the handler. It also
-//! dismisses the dialogs that the handler runs with this dialog as owner, and closes the
-//! message box shown through [`Dialog::message_box`] with its
+//! procedure answers itself with `EndDialog(IDCANCEL)`, without asking the handler (and
+//! nothing else can send it; see "Forged messages"). It also dismisses the dialogs that the
+//! handler runs with this dialog as owner, and closes the message box shown through
+//! [`Dialog::message_box`] with its
 //! [`dismiss_answer`](crate::dialog::MessageKind::dismiss_answer) (`message_box` then fails
 //! with `E_ABORT`). A dialog dismissed before its window handle is published (that happens
-//! once `init` returned) ends during `WM_INITDIALOG` and is never shown.
+//! once `init` returned) ends during `WM_INITDIALOG` and is never shown. Until then nothing
+//! reaches the dialog's thread: a message box that `init` shows stays open until it is
+//! answered (and [`Dialog::message_box`] then fails with `E_ABORT`), while one asked after the
+//! dismiss fails at once without being shown.
 //!
 //! **Forged messages.** Any process of the desktop at the same or a higher integrity level may
-//! send or post messages to a dialog, as to any window. The reserved and private messages carry
-//! no pointers, and a forged `WM_INITDIALOG` is ignored (see above). `WM_NOTIFY` carries a
-//! pointer to an `NMHDR` that Windows neither marshals between processes nor refuses to post,
-//! so a forged one may point anywhere: the dialog procedure copies the header with
-//! `ReadProcessMemory`, which fails instead of faulting on memory that cannot be read, and
-//! hands it to the handler only when it names a control of the dialog by its handle and id.
+//! send or post messages to a dialog, as to any window. The private messages carry no
+//! pointers, and a forged `WM_INITDIALOG` is ignored (see above).
+//!
+//! - The reserved messages count only with the dialog's cookie in `wParam`, a random value
+//!   that only its [`DetachedDialog`] and this module know, so another process cannot simply
+//!   dismiss a dialog (skipping the question its handler asks before closing) or bring it to
+//!   the front. That is hardening, not a boundary: a process that may read this process's
+//!   memory can find the cookie.
+//! - `WM_DESTROY` carries nothing, and only `DestroyWindow` sends the genuine one, after
+//!   hiding the window. One that reaches the shown dialog is ignored; one that reaches it
+//!   before Windows first shows it looks genuine, and only keeps the handler's callbacks away
+//!   until the dialog is shown. The window stays published and on the thread's list of
+//!   dialogs until `DialogBoxIndirectParamW` returns, so dismissing it, or its owner, still
+//!   closes it.
+//! - `WM_NOTIFY` carries a pointer to an `NMHDR` that Windows neither marshals between
+//!   processes nor refuses to post, so a forged one may point anywhere: the dialog procedure
+//!   copies the header with `ReadProcessMemory`, which fails instead of faulting on memory that
+//!   cannot be read, and hands it to the handler only when it names a control of the dialog by
+//!   its handle and id.
 //!
 //! **Panics.** The dialog procedure runs inside [`guard_value`](crate::panic::guard_value): a
 //! panicking callback leaves its message unhandled (`FALSE`), the handler is not left borrowed,
 //! and no unwind reaches Windows. A panic in `init` still publishes the window handle, so the
-//! dialog can be dismissed.
+//! dialog can be dismissed. A panic while the handler is dropped, after the dialog ended, is
+//! contained too: the result stays what the dialog ended with.
 
 use crate::window::WM_APP_LAST;
 
@@ -117,7 +135,9 @@ mod win {
     use core::cell::{Cell, RefCell};
     use core::ffi::c_void;
     use core::fmt;
-    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+    use core::hash::BuildHasher;
+    use std::collections::hash_map::RandomState;
+    use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
     use std::sync::{Arc, OnceLock};
 
     use raumakey_model::identity::PRODUCT_NAME;
@@ -137,10 +157,10 @@ mod win {
         BM_GETCHECK, BM_SETCHECK, CB_ADDSTRING, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL,
         DLGTEMPLATE, DialogBoxIndirectParamW, EndDialog, EnumThreadWindows, GW_OWNER,
         GetClassNameW, GetDlgCtrlID, GetDlgItem, GetLastActivePopup, GetWindow, ICON_BIG,
-        ICON_SMALL, IsChild, IsIconic, IsWindow, MapDialogRect, PostMessageW, SW_RESTORE,
-        SendDlgItemMessageW, SendMessageW, SetDlgItemTextW, SetForegroundWindow, ShowWindow,
-        WINDOW_LONG_PTR_INDEX, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_GETTEXT,
-        WM_GETTEXTLENGTH, WM_INITDIALOG, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETICON,
+        ICON_SMALL, IsChild, IsIconic, IsWindow, IsWindowVisible, MapDialogRect, PostMessageW,
+        SW_RESTORE, SendDlgItemMessageW, SendMessageW, SetDlgItemTextW, SetForegroundWindow,
+        ShowWindow, WINDOW_LONG_PTR_INDEX, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED,
+        WM_GETTEXT, WM_GETTEXTLENGTH, WM_INITDIALOG, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETICON,
     };
     use windows::core::{BOOL, PWSTR};
 
@@ -210,6 +230,12 @@ mod win {
         /// The private `message` arrived with `wparam` and `lparam` (posted with
         /// [`DetachedDialog::post`] or by other code of the process). Reserved messages
         /// ([`super::is_reserved`]) never arrive here.
+        ///
+        /// Any process of the desktop at the same or a higher integrity level may post such a
+        /// message too, with any values, and a posted message may be lost (see "Re-entrancy"
+        /// in the module documentation): `wparam` and `lparam` are untrusted plain values that
+        /// never carry pointers, and the data they announce travels through state the handler
+        /// shares with the sender.
         fn app_message(
             &mut self,
             dialog: &Dialog<'_>,
@@ -328,6 +354,10 @@ mod win {
         /// Sets the text of control `id` (`SetDlgItemTextW`). An edit reports `EN_CHANGE`,
         /// which does not reach the busy handler. Fails with `E_INVALIDARG` for a text with a
         /// NUL, and when there is no such control.
+        ///
+        /// A label or a button (whose text USER keeps) holds at most 65,535 UTF-16 units: USER
+        /// replaces a longer text with an empty one and the call still succeeds. An edit takes
+        /// longer texts.
         pub fn set_text(&self, id: u16, text: &str) -> WinResult<()> {
             let text = WideString::new(text)?;
             // SAFETY: the text is NUL-terminated and outlives the call; the control is a
@@ -396,12 +426,15 @@ mod win {
         }
 
         /// Selects item `index` of drop-down list `id`, or nothing for `None`
-        /// (`CB_SETCURSEL`, which sends no notification). An index past the last item fails
-        /// with `E_INVALIDARG` and leaves nothing selected.
+        /// (`CB_SETCURSEL`, which sends no notification). An index past the last item (such as
+        /// any index above `i32::MAX`) fails with `E_INVALIDARG` and leaves nothing selected.
         pub fn combo_select(&self, id: u16, index: Option<usize>) -> WinResult<()> {
             let control = self.item(id)?;
-            // -1 (all bits set) selects nothing.
-            let wparam = index.unwrap_or(usize::MAX);
+            // USER reads the index as an `int`, so one above `i32::MAX` would select the item
+            // that its low bits name: it selects nothing instead, as -1 (all bits set) does.
+            let wparam = index
+                .filter(|&index| i32::try_from(index).is_ok())
+                .unwrap_or(usize::MAX);
             // SAFETY: a control of this thread; no pointers.
             let selected =
                 unsafe { SendMessageW(control, CB_SETCURSEL, Some(WPARAM(wparam)), None) }.0;
@@ -424,7 +457,9 @@ mod win {
         /// width in dialog units, converted to pixels for the dialog's font and DPI
         /// (`MapDialogRect`). Also turns on full-row selection (`LVS_EX_FULLROWSELECT`). Fails
         /// with `E_INVALIDARG`, before anything changes, for a text with a NUL or a negative
-        /// width; fails when there is no such control or a column cannot be inserted.
+        /// width; fails when there is no such control or a column cannot be inserted. The
+        /// widths are converted here, once: they are not scaled again when the dialog moves to
+        /// a monitor of another DPI (`WM_DPICHANGED`).
         pub fn list_set_columns(&self, id: u16, columns: &[(&str, i16)]) -> WinResult<()> {
             let columns = columns
                 .iter()
@@ -565,8 +600,8 @@ mod win {
         /// Selects row `index` of list view `id` (and gives it the focus rectangle), scrolling
         /// it into view, or selects nothing for `None` (`LVM_SETITEMSTATE`,
         /// `LVM_ENSUREVISIBLE`). The list view reports `LVN_ITEMCHANGED`, which does not reach
-        /// the busy handler. A row past the last fails with `E_INVALIDARG` and leaves nothing
-        /// selected.
+        /// the busy handler. A row past the last (such as any row above `i32::MAX`) fails with
+        /// `E_INVALIDARG` and leaves nothing selected.
         pub fn list_select(&self, id: u16, index: Option<usize>) -> WinResult<()> {
             let list = self.item(id)?;
             let clear = LVITEMW {
@@ -585,6 +620,11 @@ mod win {
             let Some(index) = index else {
                 return Ok(());
             };
+            // USER reads the row as an `int`, so one above `i32::MAX` would select the row that
+            // its low bits name.
+            if i32::try_from(index).is_err() {
+                return Err(WinError::new(E_INVALIDARG, "LVM_SETITEMSTATE"));
+            }
             let select = LVITEMW {
                 state: LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0),
                 stateMask: LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0),
@@ -666,15 +706,18 @@ mod win {
         /// runs inside the callback (see "Re-entrancy" in the module documentation). Fails with
         /// `E_INVALIDARG` for a text with a NUL, and with `E_ABORT`
         /// ([`WinErrorKind::Cancelled`](crate::error::WinErrorKind)) when the dialog was
-        /// dismissed, before or while the box was open: the box is closed with the dialog.
+        /// dismissed, before or while the box was open: the box is closed with the dialog, or
+        /// not shown at all. A box shown during `init` of a detached dialog is the exception: a
+        /// dismiss cannot reach it before `init` returns (see "Dismissing" in the module
+        /// documentation), so it stays open until it is answered, and the call then fails.
         pub fn message_box(&self, text: &str, kind: MessageKind) -> WinResult<MessageResponse> {
-            if self.state.dismissed.get() {
+            if self.state.is_dismissed() {
                 return Err(WinError::new(E_ABORT, "MessageBoxW"));
             }
             let previous = self.state.open_box.replace(Some(kind));
             let answer = message_box(Some(self.hwnd), text, PRODUCT_NAME, kind);
             self.state.open_box.set(previous);
-            if self.state.dismissed.get() {
+            if self.state.is_dismissed() {
                 return Err(WinError::new(E_ABORT, "MessageBoxW"));
             }
             answer
@@ -708,11 +751,14 @@ mod win {
         handler: RefCell<Box<dyn DialogHandler>>,
         /// What a detached dialog shares with its [`DetachedDialog`].
         shared: Option<Arc<Shared>>,
+        /// The `wParam` that the reserved messages of this dialog carry ([`new_cookie`]).
+        cookie: usize,
         /// The dialog window, once `WM_INITDIALOG` installed this state (0 before).
         hwnd: Cell<isize>,
-        /// `WM_DESTROY` was seen: the handler gets no more callbacks.
+        /// `WM_DESTROY` reached the hidden dialog: it is being destroyed, and the handler gets
+        /// no more callbacks while it stays hidden (see [`dispatch`]).
         destroyed: Cell<bool>,
-        /// The dialog was dismissed.
+        /// The dialog was dismissed (see also [`is_dismissed`](Self::is_dismissed)).
         dismissed: Cell<bool>,
         /// The dialog ended during `WM_INITDIALOG` because it was dismissed: never shown.
         ended_unshown: Cell<bool>,
@@ -726,6 +772,33 @@ mod win {
     }
 
     impl DialogState {
+        fn new(handler: Box<dyn DialogHandler>, shared: Option<Arc<Shared>>) -> Self {
+            Self {
+                handler: RefCell::new(handler),
+                cookie: shared
+                    .as_ref()
+                    .map_or_else(new_cookie, |shared| shared.cookie),
+                shared,
+                hwnd: Cell::new(0),
+                destroyed: Cell::new(false),
+                dismissed: Cell::new(false),
+                ended_unshown: Cell::new(false),
+                focus_moved: Cell::new(false),
+                open_box: Cell::new(None),
+                icons: RefCell::new(None),
+            }
+        }
+
+        /// True once the dialog was dismissed, including by its [`DetachedDialog`] before the
+        /// window handle was published (during `init`).
+        fn is_dismissed(&self) -> bool {
+            self.dismissed.get()
+                || self
+                    .shared
+                    .as_ref()
+                    .is_some_and(|shared| shared.dismissed.load(Ordering::SeqCst))
+        }
+
         /// Shows `icons` in the dialog, then drops the icons shown before (the window no
         /// longer uses them).
         fn set_icons(&self, hwnd: HWND, icons: Icons) {
@@ -774,14 +847,51 @@ mod win {
     }
 
     /// What a detached dialog's thread and its [`DetachedDialog`]s share.
-    #[derive(Debug, Default)]
     struct Shared {
-        /// The dialog window once its `init` ran; 0 before, and again from `WM_DESTROY` on.
+        /// The `wParam` of the dialog's reserved messages ([`new_cookie`]).
+        cookie: usize,
+        /// The dialog window once its `init` ran; 0 before, and again once
+        /// `DialogBoxIndirectParamW` returned.
         hwnd: AtomicIsize,
         /// The owner dismissed the dialog: a dialog not shown yet is never shown.
         dismissed: AtomicBool,
         /// The dialog was closed (or never shown).
         closed: AtomicBool,
+    }
+
+    impl Shared {
+        fn new() -> Self {
+            Self {
+                cookie: new_cookie(),
+                hwnd: AtomicIsize::new(0),
+                dismissed: AtomicBool::new(false),
+                closed: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl fmt::Debug for Shared {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            // The cookie stays out of logs.
+            f.debug_struct("Shared")
+                .field("hwnd", &self.hwnd)
+                .field("dismissed", &self.dismissed)
+                .field("closed", &self.closed)
+                .finish_non_exhaustive()
+        }
+    }
+
+    /// A new `wParam` for the reserved messages of one dialog (see "Forged messages" in the
+    /// module documentation): SipHash under keys drawn from the system's random generator
+    /// ([`RandomState`]) of a process-wide counter and the thread id, so other processes cannot
+    /// predict it; never 0.
+    fn new_cookie() -> usize {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: GetCurrentThreadId has no preconditions.
+        let thread = unsafe { GetCurrentThreadId() };
+        // Keeps the low bits of the hash on 32-bit targets, as many as `wParam` holds.
+        RandomState::new().hash_one((count, thread)) as usize | 1
     }
 
     /// A dialog shown on a thread of its own ([`spawn_dialog`]). Clones share the dialog, and
@@ -808,6 +918,10 @@ mod win {
         /// after the dialog was destroyed, and when posting fails. A message that arrives while
         /// the handler runs a modal loop (a message box) does not reach it (see
         /// "Re-entrancy" in the module documentation).
+        ///
+        /// `wparam` and `lparam` are plain values, never pointers: other processes may post
+        /// the same message with any values, so the handler cannot trust them, and the message
+        /// may be lost. Data travels through state the handler shares with the caller.
         pub fn post(&self, message: AppMessage, wparam: usize, lparam: isize) -> bool {
             !is_reserved(message.id()) && self.post_raw(message.id(), wparam, lparam)
         }
@@ -816,7 +930,7 @@ mod win {
         /// the front ([`Dialog::bring_to_front`]), without waiting. False when the dialog is
         /// not up (see [`post`](Self::post)).
         pub fn bring_to_front(&self) -> bool {
-            self.post_raw(BRING_TO_FRONT, 0, 0)
+            self.post_raw(BRING_TO_FRONT, self.shared.cookie, 0)
         }
 
         /// Closes the dialog without waiting and without asking its handler: the dialog ends
@@ -827,7 +941,7 @@ mod win {
             // Pairs with the publication in `initialize`: either the dialog's thread sees the
             // flag before it shows the dialog, or this sees the published handle and posts.
             self.shared.dismissed.store(true, Ordering::SeqCst);
-            let _ = self.post_raw(DISMISS, 0, 0);
+            let _ = self.post_raw(DISMISS, self.shared.cookie, 0);
         }
 
         fn post_raw(&self, message: u32, wparam: usize, lparam: isize) -> bool {
@@ -850,15 +964,17 @@ mod win {
     }
 
     /// Runs `template` without owner on a new thread (named `raumakey-dialog`) and returns at
-    /// once; when the dialog closes, `on_close` gets its result on that thread (`None` when it
-    /// was dismissed before it was shown, or could not be shown). Fails when the thread cannot
-    /// start. A panic in `on_close` is contained.
+    /// once; when the dialog closes, `on_close` gets its result on that thread, after the
+    /// handler was dropped (`None` only when the dialog was dismissed before it was shown, or
+    /// could not be shown; a panic while the handler is dropped is contained and leaves the
+    /// result as it was). Fails when the thread cannot start. A panic in `on_close` is
+    /// contained.
     pub fn spawn_dialog(
         template: TemplateBytes,
         handler: impl DialogHandler + Send + 'static,
         on_close: impl FnOnce(Option<isize>) + Send + 'static,
     ) -> WinResult<DetachedDialog> {
-        let shared = Arc::new(Shared::default());
+        let shared = Arc::new(Shared::new());
         let on_thread = Arc::clone(&shared);
         std::thread::Builder::new()
             .name(THREAD_NAME.to_owned())
@@ -884,7 +1000,8 @@ mod win {
     /// Shows `template` as a modal dialog owned by `owner` and returns the result it ended
     /// with ([`Dialog::end`]; `IDCANCEL` when the handler agreed to close it or it was
     /// dismissed). `handler` receives its messages (see the module documentation) and is
-    /// dropped before this returns, after the dialog is destroyed.
+    /// dropped before this returns, after the dialog is destroyed; a panic while it is dropped
+    /// is contained and leaves the result as it was.
     ///
     /// `owner` must be `None` or a window of the calling thread, which the dialog disables
     /// while it is open; an owner whose thread waits for the caller would deadlock. Without an
@@ -900,34 +1017,40 @@ mod win {
     }
 
     /// [`run_dialog`], publishing the window to `shared` for a detached dialog. `Ok(None)`: the
-    /// dialog was dismissed before it was shown.
+    /// dialog was dismissed before it was shown. The handler is dropped last, and a panic
+    /// meanwhile (it is the caller's code) does not lose the outcome.
     fn run(
         template: &TemplateBytes,
         owner: Option<HWND>,
         handler: Box<dyn DialogHandler>,
         shared: Option<Arc<Shared>>,
     ) -> WinResult<Option<isize>> {
+        let state = DialogState::new(handler, shared);
+        let outcome = show(template, owner, &state);
+        guard_value((), move || drop(state));
+        outcome
+    }
+
+    /// Shows the dialog of `state` and returns once it ended (see [`run`]); afterwards nothing
+    /// reaches `state` any more: the window is no longer published, nor in the thread's list
+    /// of dialogs, and its slot no longer points to `state`.
+    fn show(
+        template: &TemplateBytes,
+        owner: Option<HWND>,
+        state: &DialogState,
+    ) -> WinResult<Option<isize>> {
         register_common_controls()?;
         let module = Module::containing_this_crate()?;
-        let state = DialogState {
-            handler: RefCell::new(handler),
-            shared,
-            hwnd: Cell::new(0),
-            destroyed: Cell::new(false),
-            dismissed: Cell::new(false),
-            ended_unshown: Cell::new(false),
-            focus_moved: Cell::new(false),
-            open_box: Cell::new(None),
-            icons: RefCell::new(None),
-        };
-        let pointer: *const DialogState = &state;
+        let pointer: *const DialogState = state;
         let result = {
             let _starting = Starting::mark(pointer);
             // SAFETY: the template is a DWORD-aligned extended template that lives during the
-            // call; `dialog_proc` reads `state` through the init parameter only during
-            // `WM_INITDIALOG` of this call (see `Starting`), and through the dialog's slot
-            // until the dialog is destroyed, which happens before the call returns. USER
-            // validates the owner handle.
+            // call, and `DialogTemplate::build` refused everything that would make USER read
+            // it otherwise than it was written (a text that starts with the ordinal marker, the
+            // message box point size), so USER reads its bytes only. `dialog_proc` reads
+            // `state` through the init parameter only during `WM_INITDIALOG` of this call (see
+            // `Starting`), and through the dialog's slot until the call returns (the slot is
+            // cleared below should the window outlive it). USER validates the owner handle.
             unsafe {
                 DialogBoxIndirectParamW(
                     Some(module.instance()),
@@ -943,6 +1066,16 @@ mod win {
             // `init` never ran: the dialog could not be created.
             return Err(WinError::last("DialogBoxIndirectParamW"));
         }
+        // Done here rather than at `WM_DESTROY`, which anyone may forge (see "Forged
+        // messages" in the module documentation).
+        if let Some(shared) = &state.shared {
+            shared.hwnd.store(0, Ordering::SeqCst);
+        }
+        OPEN.with(|open| {
+            if let Ok(mut open) = open.try_borrow_mut() {
+                open.retain(|&(dialog, _)| dialog != hwnd);
+            }
+        });
         // The dialog is destroyed before DialogBoxIndirectParamW returns; should its window
         // still exist, it no longer reaches the state that is about to be dropped.
         let window = HWND(hwnd as *mut c_void);
@@ -983,9 +1116,10 @@ mod win {
         /// The state of the `DialogBoxIndirectParamW` call that `run` is making on this thread,
         /// until its `WM_INITDIALOG` takes it; null otherwise.
         static STARTING: Cell<*const DialogState> = const { Cell::new(core::ptr::null()) };
-        /// The dialogs of this thread that this module runs, from `WM_INITDIALOG` to
-        /// `WM_DESTROY` (so that dismissing a dialog reaches the dialogs it owns).
-        static OPEN: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) };
+        /// The dialogs of this thread that this module runs, with their cookies, from
+        /// `WM_INITDIALOG` until `DialogBoxIndirectParamW` returns (so that dismissing a dialog
+        /// reaches the dialogs it owns).
+        static OPEN: RefCell<Vec<(isize, usize)>> = const { RefCell::new(Vec::new()) };
     }
 
     /// Marks a state as the one `WM_INITDIALOG` may take, for the duration of one
@@ -1057,7 +1191,7 @@ mod win {
         state.hwnd.set(hwnd.0 as isize);
         OPEN.with(|open| {
             if let Ok(mut open) = open.try_borrow_mut() {
-                open.push(hwnd.0 as isize);
+                open.push((hwnd.0 as isize, state.cookie));
             }
         });
         let dialog = Dialog { hwnd, state };
@@ -1091,6 +1225,12 @@ mod win {
 
     /// Handles one message of an installed dialog: the reserved ones and the bookkeeping here,
     /// the rest by the handler unless it is busy or the dialog is being destroyed.
+    ///
+    /// A reserved message counts only with the dialog's cookie in `wParam`, and `WM_DESTROY`
+    /// only when the dialog is hidden, as `DestroyWindow` hides a window before it sends that
+    /// message: a forged one that reaches the shown dialog is ignored (see "Forged messages"
+    /// in the module documentation). Should a forged one reach the dialog before it is first
+    /// shown, the handler gets its callbacks again once the dialog is visible.
     fn dispatch(
         state: &DialogState,
         hwnd: HWND,
@@ -1099,6 +1239,7 @@ mod win {
         lparam: LPARAM,
     ) -> isize {
         match message {
+            DISMISS | BRING_TO_FRONT if wparam.0 != state.cookie => return FALSE,
             DISMISS => {
                 dismiss(state, hwnd);
                 return TRUE;
@@ -1108,7 +1249,9 @@ mod win {
                 return TRUE;
             }
             WM_DESTROY => {
-                forget(state, hwnd);
+                if !is_visible(hwnd) {
+                    state.destroyed.set(true);
+                }
                 return FALSE;
             }
             WM_DPICHANGED => {
@@ -1119,7 +1262,11 @@ mod win {
             _ => {}
         }
         if state.destroyed.get() {
-            return FALSE;
+            if !is_visible(hwnd) {
+                return FALSE;
+            }
+            // A destroyed dialog never shows again: that `WM_DESTROY` was forged.
+            state.destroyed.set(false);
         }
         // A busy handler (a re-entrant message) leaves the message to the default processing.
         let Ok(mut handler) = state.handler.try_borrow_mut() else {
@@ -1198,23 +1345,10 @@ mod win {
         }
     }
 
-    /// `WM_DESTROY`: the handler gets no more callbacks, the window is no longer published,
-    /// and it leaves the thread's list of dialogs.
-    fn forget(state: &DialogState, hwnd: HWND) {
-        state.destroyed.set(true);
-        if let Some(shared) = &state.shared {
-            let _ = shared.hwnd.compare_exchange(
-                hwnd.0 as isize,
-                0,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            );
-        }
-        OPEN.with(|open| {
-            if let Ok(mut open) = open.try_borrow_mut() {
-                open.retain(|&dialog| dialog != hwnd.0 as isize);
-            }
-        });
+    /// True when `hwnd` has `WS_VISIBLE` (and so do its parents; a dialog has none).
+    fn is_visible(hwnd: HWND) -> bool {
+        // SAFETY: only reads the window's state; USER validates `hwnd`.
+        unsafe { IsWindowVisible(hwnd) }.as_bool()
     }
 
     /// Restores `hwnd` if it is minimized and brings it, or its last active owned popup, to
@@ -1262,8 +1396,8 @@ mod win {
         owner: HWND,
         /// The answer that closes the message box it shows, if it shows one.
         box_answer: Option<MessageResponse>,
-        /// The dialogs of this module on this thread.
-        open: Vec<isize>,
+        /// The dialogs of this module on this thread, with their cookies.
+        open: Vec<(isize, usize)>,
     }
 
     /// The callback of [`dismiss`]: closes a window that the dismissed dialog owns.
@@ -1276,8 +1410,12 @@ mod win {
             if owner != closing.owner {
                 return true;
             }
-            let (message, wparam) = if closing.open.contains(&(hwnd.0 as isize)) {
-                (DISMISS, 0)
+            let open = closing
+                .open
+                .iter()
+                .find(|&&(dialog, _)| dialog == hwnd.0 as isize);
+            let (message, wparam) = if let Some(&(_, cookie)) = open {
+                (DISMISS, cookie)
             } else if let Some(answer) = closing.box_answer
                 && is_dialog_class(hwnd)
             {

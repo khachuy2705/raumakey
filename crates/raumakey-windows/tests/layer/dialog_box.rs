@@ -15,7 +15,9 @@
 //! (the dialog manager focuses a control), which takes the foreground only in a process that
 //! may set the foreground window; a test process started from a console may not. No test
 //! brings a dialog to the front or shows a message box (the one that does is `#[ignore]`d and
-//! manual), and no test depends on what else the desktop shows.
+//! manual; the one that asks for a box that must not appear refuses every window of its
+//! dialog's thread with a `WH_CBT` hook of that thread), and no test depends on what else the
+//! desktop shows.
 
 use raumakey_windows::dialog_box::{RESERVED_FIRST, is_reserved, notifications};
 use raumakey_windows::window::{WM_APP, WM_APP_LAST};
@@ -42,10 +44,11 @@ fn notification_codes_have_their_win32_values() {
 
 #[cfg(windows)]
 mod win {
+    use core::cell::Cell;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::{self, Receiver, Sender};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use raumakey_windows::dialog::{MessageKind, MessageResponse};
     use raumakey_windows::dialog_box::{
@@ -57,8 +60,9 @@ mod win {
     };
     use raumakey_windows::error::{WinError, WinErrorKind};
     use raumakey_windows::module::Module;
-    use raumakey_windows::window::AppMessage;
-    use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+    use raumakey_windows::panic::guard_value;
+    use raumakey_windows::window::{AppMessage, WM_APP_LAST};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::Controls::{
         LVIS_SELECTED, LVITEMW, LVM_GETITEMCOUNT, LVM_GETITEMTEXTW, LVM_GETNEXTITEM,
@@ -67,10 +71,11 @@ mod win {
     use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
     use windows::Win32::UI::WindowsAndMessaging::{
         BM_CLICK, BM_GETCHECK, CB_GETCOUNT, CB_GETCURSEL, CB_GETLBTEXT, CB_GETLBTEXTLEN,
-        CB_SETCURSEL, GetDlgItem, GetWindowRect, ICON_BIG, ICON_SMALL, IsWindow, PostMessageW,
-        SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SendMessageTimeoutW, SetWindowPos,
-        WM_CLOSE, WM_COMMAND, WM_GETICON, WM_GETTEXT, WM_GETTEXTLENGTH, WM_INITDIALOG, WM_KEYDOWN,
-        WM_NOTIFY, WM_NULL, WM_SETTEXT,
+        CB_SETCURSEL, CallNextHookEx, GetDlgItem, GetWindowRect, HCBT_CREATEWND, HHOOK, ICON_BIG,
+        ICON_SMALL, IsWindow, IsWindowVisible, PostMessageW, SMTO_NORMAL, SWP_NOACTIVATE,
+        SWP_NOSIZE, SWP_NOZORDER, SendMessageTimeoutW, SetWindowPos, SetWindowsHookExW,
+        UnhookWindowsHookEx, WH_CBT, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_GETICON, WM_GETTEXT,
+        WM_GETTEXTLENGTH, WM_INITDIALOG, WM_KEYDOWN, WM_NOTIFY, WM_NULL, WM_SETTEXT,
     };
 
     use crate::support::{ResourceFile, group_icon_ids};
@@ -91,6 +96,12 @@ mod win {
     const EN_KILLFOCUS: u16 = 0x0200;
     /// `EN_UPDATE`: the edit is about to show changed text.
     const EN_UPDATE: u16 = 0x0400;
+    /// `LVN_DELETEITEM`: the list view deletes an item.
+    const LVN_DELETEITEM: i32 = -103;
+    /// `LVN_DELETEALLITEMS`: the list view deletes all its items (also when it is destroyed).
+    const LVN_DELETEALLITEMS: i32 = -104;
+    /// The reserved message that dismisses a dialog (`DetachedDialog::dismiss` posts it).
+    const DISMISS: u32 = WM_APP_LAST;
 
     const METHODS: [&str; 3] = ["Telex", "VNI", "VIQR"];
     const EDIT_TEXT: &str = "Kiểm tra chính tả";
@@ -108,6 +119,8 @@ mod win {
     const END: u32 = 2;
     /// Marks the end of what a test waits for (see `Running::settle`).
     const BARRIER: u32 = 3;
+    /// Selects item `wParam` of the drop-down list and of the list view.
+    const SELECT: u32 = 4;
 
     fn app(offset: u32) -> AppMessage {
         AppMessage::new(offset).unwrap()
@@ -143,6 +156,11 @@ mod win {
         ListSelected(Option<usize>),
         /// The result of a nested dialog the handler ran.
         Nested(Result<isize, WinErrorKind>),
+        /// What `combo_select` and `list_select` returned for the index of `SELECT`.
+        Selected {
+            combo: Result<(), WinErrorKind>,
+            list: Result<(), WinErrorKind>,
+        },
         /// A helper failed.
         Failed(&'static str, WinErrorKind),
         /// `on_close` ran with this result.
@@ -165,6 +183,10 @@ mod win {
         nested: Option<Box<Probe>>,
         /// Counts the drops of this handler.
         drops: Option<Arc<AtomicUsize>>,
+        /// Dropping this handler panics.
+        panic_on_drop: bool,
+        /// `init` posts `WM_DESTROY` to the dialog, as another process could.
+        forge_destroy: bool,
     }
 
     impl Probe {
@@ -177,6 +199,8 @@ mod win {
                 icons: None,
                 nested: None,
                 drops: None,
+                panic_on_drop: false,
+                forge_destroy: false,
             }
         }
 
@@ -219,6 +243,7 @@ mod win {
             if let Some(drops) = &self.drops {
                 drops.fetch_add(1, Ordering::SeqCst);
             }
+            assert!(!self.panic_on_drop, "deliberate panic in drop");
         }
     }
 
@@ -257,6 +282,12 @@ mod win {
             self.fill(dialog);
             if let Some((module, id)) = self.icons {
                 self.check("set_icons", dialog.set_icons(module, id));
+            }
+            if self.forge_destroy {
+                // SAFETY: posts plain values to the dialog.
+                let posted =
+                    unsafe { PostMessageW(Some(dialog.hwnd()), WM_DESTROY, WPARAM(0), LPARAM(0)) };
+                self.check("PostMessageW", posted.map_err(WinError::from));
             }
         }
 
@@ -315,8 +346,17 @@ mod win {
                 lparam,
                 thread: current_thread(),
             });
-            if message.offset() == END {
-                dialog.end(wparam as isize);
+            match message.offset() {
+                END => dialog.end(wparam as isize),
+                SELECT => self.send(Seen::Selected {
+                    combo: dialog
+                        .combo_select(ID_COMBO, Some(wparam))
+                        .map_err(|error| error.kind()),
+                    list: dialog
+                        .list_select(ID_LIST, Some(wparam))
+                        .map_err(|error| error.kind()),
+                }),
+                _ => {}
             }
         }
 
@@ -395,6 +435,17 @@ mod win {
     fn is_window(hwnd: HWND) -> bool {
         // SAFETY: only queries whether the handle names a window.
         unsafe { IsWindow(Some(hwnd)) }.as_bool()
+    }
+
+    /// Waits until Windows showed the dialog: its modal loop shows it the first time its queue
+    /// is empty after `init`, which the messages of a test may precede.
+    fn wait_until_shown(hwnd: HWND) {
+        let deadline = Instant::now() + WAIT;
+        // SAFETY: only reads the window's state.
+        while !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            assert!(Instant::now() < deadline, "the dialog was shown in time");
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     fn window_text(hwnd: HWND) -> String {
@@ -490,9 +541,16 @@ mod win {
 
         /// Waits for `on_close` and returns its result.
         fn closed(&self) -> Option<isize> {
+            self.closing().1
+        }
+
+        /// Waits for `on_close`: everything the handler saw until then, and the result.
+        fn closing(&self) -> (Vec<Seen>, Option<isize>) {
+            let mut seen = Vec::new();
             loop {
-                if let Seen::Closed(result) = next(&self.seen) {
-                    return result;
+                match next(&self.seen) {
+                    Seen::Closed(result) => return (seen, result),
+                    other => seen.push(other),
                 }
             }
         }
@@ -529,14 +587,30 @@ mod win {
         let running = started(|_| {});
         let seen = running.settle();
         assert_eq!(failures(&seen), Vec::<&Seen>::new());
-        // The programmatic changes of `init` (EN_CHANGE of the edit, LVN_ITEMCHANGED of the
-        // list view) did not reach the handler, which was busy.
-        assert!(
-            !seen
-                .iter()
-                .any(|seen| matches!(seen, Seen::Command { .. } | Seen::Notify { .. })),
-            "{seen:?}"
-        );
+        // The programmatic changes of `init` (EN_CHANGE and EN_UPDATE of the edit,
+        // LVN_ITEMCHANGED of the list view) did not reach the handler, which was busy. Other
+        // notifications may: the shown dialog's own, such as NM_CUSTOMDRAW when the list view
+        // paints, or NM_SETFOCUS.
+        for seen in &seen {
+            assert!(
+                !matches!(
+                    seen,
+                    Seen::Command {
+                        code: notifications::BN_CLICKED
+                            | notifications::CBN_SELCHANGE
+                            | notifications::EN_CHANGE
+                            | EN_UPDATE,
+                        ..
+                    } | Seen::Notify {
+                        code: notifications::LVN_ITEMCHANGED,
+                        ..
+                    } | Seen::Text(_)
+                        | Seen::ComboSelected(_)
+                        | Seen::ListSelected(_)
+                ),
+                "{seen:?}"
+            );
+        }
         let hwnd = running.hwnd;
         assert_eq!(send(item(hwnd, ID_CHECK), BM_GETCHECK, 0, 0), 1);
         let combo = item(hwnd, ID_COMBO);
@@ -655,7 +729,9 @@ mod win {
             }),
             "{seen:?}"
         );
-        // ...but not what the handler's changes made the controls report.
+        // ...but not what the handler's changes made the controls report (the shown dialog's
+        // own notifications, such as NM_CUSTOMDRAW when the list view repaints its new
+        // selection, may arrive).
         for seen in &seen {
             assert!(
                 !matches!(
@@ -663,10 +739,17 @@ mod win {
                     Seen::Command {
                         id: ID_EDIT,
                         code: notifications::EN_CHANGE | EN_UPDATE
-                    } | Seen::Command { id: ID_CHECK, .. }
-                        | Seen::Command { id: ID_COMBO, .. }
-                        | Seen::Notify { .. }
-                        | Seen::Text(_)
+                    } | Seen::Command {
+                        id: ID_CHECK,
+                        code: notifications::BN_CLICKED
+                    } | Seen::Command {
+                        id: ID_COMBO,
+                        code: notifications::CBN_SELCHANGE
+                    } | Seen::Notify {
+                        code: notifications::LVN_ITEMCHANGED,
+                        ..
+                    } | Seen::Text(_)
+                        | Seen::ComboSelected(_)
                         | Seen::ListSelected(_)
                 ),
                 "{seen:?}"
@@ -877,6 +960,311 @@ mod win {
             id: ID_LIST,
             code: notifications::LVN_ITEMCHANGED
         }));
+    }
+
+    /// `WM_DESTROY` carries nothing, so any process may post or send it, although only
+    /// `DestroyWindow` sends the genuine one, after hiding the window. A forged one that reaches
+    /// the shown dialog changes nothing: `post` still reaches the handler, and the Cancel button
+    /// still asks it and ends the dialog.
+    #[test]
+    fn a_forged_wm_destroy_leaves_the_dialog_working() {
+        let running = started(|_| {});
+        let hwnd = running.hwnd;
+        wait_until_shown(hwnd);
+        // SAFETY: posts plain values to the dialog.
+        unsafe { PostMessageW(Some(hwnd), WM_DESTROY, WPARAM(0), LPARAM(0)) }.unwrap();
+        send(hwnd, WM_DESTROY, 0, 0);
+        assert!(
+            running.dialog.post(app(RECORD), 3, 4),
+            "the dialog is still published"
+        );
+        let seen = running.settle();
+        assert!(
+            seen.contains(&Seen::App {
+                offset: RECORD,
+                wparam: 3,
+                lparam: 4,
+                thread: running.thread,
+            }),
+            "{seen:?}"
+        );
+        send(item(hwnd, IDCANCEL), BM_CLICK, 0, 0);
+        let (seen, result) = running.closing();
+        assert!(seen.contains(&Seen::CloseRequested), "{seen:?}");
+        assert_eq!(result, Some(IDCANCEL as isize));
+        assert!(running.dialog.is_closed());
+        assert!(!is_window(hwnd));
+    }
+
+    /// After a forged `WM_DESTROY`, a handler that refuses to close is still asked, and
+    /// `dismiss` still closes the dialog.
+    #[test]
+    fn a_dialog_that_got_a_forged_wm_destroy_can_still_be_dismissed() {
+        let running = started(|probe| probe.allow_close = false);
+        let hwnd = running.hwnd;
+        wait_until_shown(hwnd);
+        send(hwnd, WM_DESTROY, 0, 0);
+        send(hwnd, WM_CLOSE, 0, 0);
+        assert!(is_window(hwnd));
+        assert!(!running.dialog.is_closed());
+        running.dialog.dismiss();
+        let (seen, result) = running.closing();
+        assert!(seen.contains(&Seen::CloseRequested), "{seen:?}");
+        assert_eq!(result, Some(IDCANCEL as isize));
+        assert!(running.dialog.is_closed());
+        assert!(!is_window(hwnd));
+    }
+
+    /// A forged `WM_DESTROY` sent to a nested dialog does not hide it from its parent:
+    /// dismissing the parent still closes both.
+    #[test]
+    fn a_nested_dialog_that_got_a_forged_wm_destroy_is_dismissed_with_its_parent() {
+        let (nested_sender, nested_seen) = mpsc::channel();
+        let nested = Probe::new(nested_sender);
+        let running = started(move |probe| probe.nested = Some(Box::new(nested)));
+        let wparam = usize::from(ID_NESTED);
+        // SAFETY: posts plain values (a button's command) to the dialog.
+        unsafe { PostMessageW(Some(running.hwnd), WM_COMMAND, WPARAM(wparam), LPARAM(0)) }.unwrap();
+        let Seen::Init {
+            hwnd: nested_hwnd, ..
+        } = next(&nested_seen)
+        else {
+            panic!("the nested dialog started with init");
+        };
+        let nested_hwnd = HWND(nested_hwnd as *mut core::ffi::c_void);
+        wait_until_shown(nested_hwnd);
+        send(nested_hwnd, WM_DESTROY, 0, 0);
+        assert!(is_window(nested_hwnd));
+        running.dialog.dismiss();
+        assert_eq!(running.closed(), Some(IDCANCEL as isize));
+        assert!(!is_window(nested_hwnd));
+        assert!(!is_window(running.hwnd));
+    }
+
+    /// A forged `WM_DESTROY` that reaches the dialog before Windows first shows it (here posted
+    /// by `init`, so it is handled before the modal loop shows the dialog) cannot be told from
+    /// the genuine one, which also finds the dialog hidden: the handler hears nothing until the
+    /// dialog is shown, and everything again from then on.
+    #[test]
+    fn a_forged_wm_destroy_before_the_dialog_is_shown_mutes_the_handler_only_until_then() {
+        let running = started(|probe| probe.forge_destroy = true);
+        let hwnd = running.hwnd;
+        wait_until_shown(hwnd);
+        send(item(hwnd, IDCANCEL), BM_CLICK, 0, 0);
+        let (seen, result) = running.closing();
+        assert!(seen.contains(&Seen::CloseRequested), "{seen:?}");
+        assert_eq!(result, Some(IDCANCEL as isize));
+    }
+
+    /// The genuine `WM_DESTROY` comes from `DestroyWindow`, which hides the shown dialog first,
+    /// on every way a dialog ends (the handler's `end`, a close request it agreed to,
+    /// `dismiss`): from then on the handler hears nothing, such as the `LVN_DELETEALLITEMS` or
+    /// `LVN_DELETEITEM` that the list view sends while it is destroyed with the dialog.
+    #[test]
+    fn the_handler_hears_nothing_once_the_dialog_is_destroyed() {
+        for how in ["end", "cancel", "dismiss"] {
+            let running = started(|_| {});
+            wait_until_shown(running.hwnd);
+            let _ = running.settle();
+            match how {
+                "end" => assert!(running.dialog.post(app(END), 5, 0)),
+                "cancel" => command(
+                    running.hwnd,
+                    IDCANCEL,
+                    notifications::BN_CLICKED,
+                    item(running.hwnd, IDCANCEL),
+                ),
+                _ => running.dialog.dismiss(),
+            }
+            let (seen, result) = running.closing();
+            assert!(result.is_some(), "{how}");
+            assert!(
+                !seen.iter().any(|seen| matches!(
+                    seen,
+                    Seen::Notify {
+                        code: LVN_DELETEALLITEMS | LVN_DELETEITEM,
+                        ..
+                    }
+                )),
+                "{how}: {seen:?}"
+            );
+        }
+    }
+
+    /// The dialog procedure honours its reserved messages only with the dialog's own cookie in
+    /// `wParam`, which only its `DetachedDialog` (and the dialog that runs it) knows: a dismiss
+    /// posted or sent by anyone else is ignored.
+    #[test]
+    fn a_reserved_message_without_the_dialogs_cookie_is_ignored() {
+        let running = started(|_| {});
+        let hwnd = running.hwnd;
+        for wparam in [0, 1, 0x1234_5678, usize::MAX] {
+            // SAFETY: posts plain values to the dialog.
+            unsafe { PostMessageW(Some(hwnd), DISMISS, WPARAM(wparam), LPARAM(0)) }.unwrap();
+            send(hwnd, DISMISS, wparam, 0);
+        }
+        let seen = running.settle();
+        assert!(
+            !seen.iter().any(|seen| matches!(seen, Seen::App { .. })),
+            "{seen:?}"
+        );
+        assert!(is_window(hwnd));
+        assert!(!running.dialog.is_closed());
+        running.dialog.dismiss();
+        assert_eq!(running.closed(), Some(IDCANCEL as isize));
+        assert!(!is_window(hwnd));
+    }
+
+    /// USER reads the index of `CB_SETCURSEL` and `LVM_SETITEMSTATE` as an `int`: an index
+    /// beyond `i32::MAX` is past the last item, so it fails and selects nothing instead of
+    /// selecting whatever its low 32 bits name.
+    #[test]
+    fn an_index_beyond_i32_max_fails_and_selects_nothing() {
+        let running = started(|_| {});
+        let hwnd = running.hwnd;
+        let (combo, list) = (item(hwnd, ID_COMBO), item(hwnd, ID_LIST));
+        let mut indexes = vec![i32::MAX as usize + 1, usize::MAX - 1];
+        // On 64-bit Windows: an index whose low 32 bits name item 1.
+        indexes.extend(usize::try_from((1_u64 << 32) | 1).ok());
+        for index in indexes {
+            assert!(running.dialog.post(app(SELECT), index, 0));
+            let seen = running.settle();
+            let failed = Err(WinErrorKind::InvalidInput);
+            assert!(
+                seen.contains(&Seen::Selected {
+                    combo: failed,
+                    list: failed
+                }),
+                "{index:#x}: {seen:?}"
+            );
+            assert_eq!(send(combo, CB_GETCURSEL, 0, 0), -1, "{index:#x}");
+            assert_eq!(list_selected(list), -1, "{index:#x}");
+        }
+    }
+
+    /// A panic while the handler is dropped, after the dialog closed, is contained: `on_close`
+    /// still gets the result the dialog ended with, and `run_dialog` returns it.
+    #[test]
+    fn the_result_survives_a_panic_while_the_handler_is_dropped() {
+        let running = started(|probe| probe.panic_on_drop = true);
+        assert!(running.dialog.post(app(END), 77, 0));
+        assert_eq!(running.closed(), Some(77));
+
+        let (sender, seen) = mpsc::channel();
+        let mut probe = Probe::new(sender);
+        probe.panic_on_drop = true;
+        let (result_sender, result) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = run_dialog(&template(), None, Box::new(probe));
+            let _ = result_sender.send(result.map_err(|error| error.kind()));
+        });
+        let Seen::Init { hwnd, .. } = next(&seen) else {
+            panic!("the dialog started with init");
+        };
+        let hwnd = HWND(hwnd as *mut core::ffi::c_void);
+        send(hwnd, WM_NULL, 0, 0);
+        // SAFETY: posts plain values to the dialog: END with 78.
+        unsafe { PostMessageW(Some(hwnd), app(END).id(), WPARAM(78), LPARAM(0)) }.unwrap();
+        let result = result.recv_timeout(WAIT).expect("run_dialog returned");
+        assert_eq!(result, Ok(78));
+    }
+
+    thread_local! {
+        /// The windows that a `WindowVeto` of this thread refused to create.
+        static VETOED: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// A `WH_CBT` hook of the calling thread only (no other thread is hooked) that refuses to
+    /// create any window, so that a message box shown by mistake fails, and is counted, instead
+    /// of appearing. Dropping it removes the hook.
+    struct WindowVeto(HHOOK);
+
+    impl WindowVeto {
+        fn install() -> Self {
+            VETOED.with(|vetoed| vetoed.set(0));
+            // SAFETY: a hook procedure of this process for the calling thread only, so no
+            // module handle is needed.
+            let hook =
+                unsafe { SetWindowsHookExW(WH_CBT, Some(veto_creation), None, current_thread()) };
+            Self(hook.unwrap())
+        }
+
+        /// The number of windows refused on this thread since `install`.
+        fn vetoed() -> u32 {
+            VETOED.with(Cell::get)
+        }
+    }
+
+    impl Drop for WindowVeto {
+        fn drop(&mut self) {
+            // SAFETY: removes the hook that `install` set on this thread.
+            let _ = unsafe { UnhookWindowsHookEx(self.0) };
+        }
+    }
+
+    unsafe extern "system" fn veto_creation(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        let vetoed = guard_value(false, || {
+            let creating = code == HCBT_CREATEWND as i32;
+            if creating {
+                VETOED.with(|vetoed| vetoed.set(vetoed.get().saturating_add(1)));
+            }
+            creating
+        });
+        if vetoed {
+            // Nonzero: the window is not created.
+            return LRESULT(1);
+        }
+        // SAFETY: forwards the unchanged arguments to the next hook.
+        unsafe { CallNextHookEx(None, code, wparam, lparam) }
+    }
+
+    /// `Dialog::message_box` asked in `init` of a dialog that was dismissed before its handle
+    /// was published fails with `E_ABORT` without creating a box (a `WindowVeto` would refuse
+    /// it), and the dialog ends unshown.
+    #[test]
+    fn a_message_box_asked_in_init_of_a_dismissed_dialog_fails_without_showing() {
+        type Answer = (Result<MessageResponse, WinErrorKind>, u32);
+        struct AskInInit {
+            started: Sender<()>,
+            gate: Receiver<()>,
+            answers: Sender<Answer>,
+        }
+        impl DialogHandler for AskInInit {
+            fn init(&mut self, dialog: &Dialog) {
+                move_off_screen(dialog.hwnd());
+                let veto = WindowVeto::install();
+                let _ = self.started.send(());
+                let _ = self.gate.recv_timeout(WAIT);
+                let answer =
+                    dialog.message_box("Lưu các thay đổi? (thử nghiệm)", MessageKind::Question);
+                let vetoed = WindowVeto::vetoed();
+                drop(veto);
+                let _ = self
+                    .answers
+                    .send((answer.map_err(|error| error.kind()), vetoed));
+            }
+        }
+        let (started, has_started) = mpsc::channel();
+        let (open, gate) = mpsc::channel();
+        let (answer_sender, answers) = mpsc::channel();
+        let (close_sender, closed) = mpsc::channel();
+        let handler = AskInInit {
+            started,
+            gate,
+            answers: answer_sender,
+        };
+        let dialog = spawn_dialog(template(), handler, move |result| {
+            let _ = close_sender.send(result);
+        })
+        .unwrap();
+        has_started.recv_timeout(WAIT).expect("init started");
+        dialog.dismiss();
+        let _ = open.send(());
+        let (answer, vetoed) = answers.recv_timeout(WAIT).expect("init asked");
+        assert_eq!(answer, Err(WinErrorKind::Cancelled));
+        assert_eq!(vetoed, 0, "no window was created for the box");
+        assert_eq!(closed.recv_timeout(WAIT).expect("on_close ran"), None);
+        assert!(dialog.is_closed());
     }
 
     #[test]

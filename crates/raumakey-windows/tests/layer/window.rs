@@ -1164,8 +1164,10 @@ mod win {
     }
 
     /// Passing the right to set the foreground window on succeeds only when this process has
-    /// it, which depends on the desktop (it fails with access denied otherwise).
+    /// it, which depends on the desktop (it fails with access denied otherwise). Manual test:
+    /// when it succeeds, it changes which processes of the desktop may take the foreground.
     #[test]
+    #[ignore = "manual: passes this process's right to set the foreground window to every process"]
     fn allowing_any_process_to_take_the_foreground_succeeds_or_is_denied() {
         if let Err(error) = allow_any_foreground() {
             assert_eq!(error.kind(), WinErrorKind::AccessDenied, "{error}");

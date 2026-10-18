@@ -42,6 +42,14 @@
 //! control other than a label or a group box, and when there are more than `u16::MAX`
 //! controls.
 //!
+//! It also refuses what would make the dialog manager read the template differently from how
+//! it was written, and possibly past its end: a text whose first unit is `0xFFFF` (U+FFFF), as
+//! a control's text is an `sz_Or_Ord` where that marker announces an ordinal and the unit after
+//! the ordinal is read as the creation-data size (the title and the typeface are plain strings,
+//! refused the same way so that no text starts with the marker; U+FFFF elsewhere is kept), and
+//! the point size [`MESSAGE_BOX_FONT_SIZE`]. A built template is therefore read exactly as laid
+//! out above, within its bytes.
+//!
 //! Texts may name user content (a label can show the path of the settings file), so `Debug`
 //! shows their lengths only.
 
@@ -160,13 +168,19 @@ pub const DROPPED_LIST_HEIGHT: i16 = 96;
 pub const DEFAULT_TYPEFACE: &str = "Segoe UI";
 /// The default point size.
 pub const DEFAULT_POINT_SIZE: u16 = 9;
+/// The point size that asks the dialog manager for the message box font, after which it reads
+/// no further font fields: an undocumented special value that USER honours, so the weight,
+/// style, and typeface written after it would be read as the first control.
+/// [`DialogTemplate::build`] refuses it.
+pub const MESSAGE_BOX_FONT_SIZE: u16 = 0x7FFF;
 /// `FW_NORMAL`: the default weight.
 pub const FW_NORMAL: u16 = 400;
 /// `DEFAULT_CHARSET`: the font's character set follows the system locale; with a TrueType
 /// typeface the dialog's Unicode text is shown whatever the locale.
 pub const DEFAULT_CHARSET: u8 = 1;
 
-/// `sz_Or_Ord` marker: an ordinal (here a class atom) follows.
+/// `sz_Or_Ord` marker: an ordinal (here a class atom) follows. No text of a template starts
+/// with it.
 const ORDINAL: u16 = 0xFFFF;
 /// The DWORD id written for [`STATIC_ID`].
 const STATIC_ID_DWORD: u32 = 0xFFFF_FFFF;
@@ -223,7 +237,8 @@ impl fmt::Debug for DialogFont {
 
 impl DialogFont {
     /// `typeface` at `point_size` points, [`FW_NORMAL`], upright, [`DEFAULT_CHARSET`]. A
-    /// typeface with a NUL makes [`DialogTemplate::build`] fail.
+    /// typeface with a NUL or that starts with U+FFFF, and the point size
+    /// [`MESSAGE_BOX_FONT_SIZE`], make [`DialogTemplate::build`] fail.
     pub fn new(typeface: &str, point_size: u16) -> Self {
         Self {
             typeface: typeface.to_owned(),
@@ -607,13 +622,17 @@ impl DialogTemplate {
     }
 
     /// Lays the dialog out as an extended template. Fails with `E_INVALIDARG` for a text with
-    /// a NUL, an id that is 0, repeated, or [`STATIC_ID`] on a control other than a label or a
-    /// group box, and for more than `u16::MAX` controls.
+    /// a NUL or that starts with U+FFFF, the point size [`MESSAGE_BOX_FONT_SIZE`], an id that is
+    /// 0, repeated, or [`STATIC_ID`] on a control other than a label or a group box, and for
+    /// more than `u16::MAX` controls (see "Validation" in the module documentation).
     pub fn build(&self) -> WinResult<TemplateBytes> {
         let count = u16::try_from(self.controls.len())
             .map_err(|_| WinError::new(E_INVALIDARG, "dialog item count"))?;
         let title = wide(&self.title, "dialog title")?;
         let typeface = wide(&self.font.typeface, "dialog typeface")?;
+        if self.font.point_size == MESSAGE_BOX_FONT_SIZE {
+            return Err(WinError::new(E_INVALIDARG, "dialog font point size"));
+        }
         let mut ids = HashSet::new();
         for control in &self.controls {
             let valid = match control.id {
@@ -668,10 +687,14 @@ impl DialogTemplate {
     }
 }
 
-/// `text` as a NUL-terminated wide string; a NUL in it fails with `E_INVALIDARG` for
-/// `context`.
+/// `text` as a NUL-terminated wide string; a NUL in it, or [`ORDINAL`] as its first unit (see
+/// "Validation" in the module documentation), fails with `E_INVALIDARG` for `context`.
 fn wide(text: &str, context: &'static str) -> WinResult<WideString> {
-    WideString::new(text).map_err(|error| error.with_context(context))
+    let wide = WideString::new(text).map_err(|error| error.with_context(context))?;
+    if wide.as_units_with_nul().first() == Some(&ORDINAL) {
+        return Err(WinError::new(E_INVALIDARG, context));
+    }
+    Ok(wide)
 }
 
 /// Writes little-endian fields into a growing byte buffer.

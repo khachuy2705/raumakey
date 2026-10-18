@@ -4,7 +4,8 @@
 //! with operations that are safe on a user's desktop: temporary files, uniquely named pipes and
 //! kernel objects, registry keys under `HKCU\Software\Raumakey\Tests-<pid>-<n>`, process-local
 //! windows that are never shown (created on a fresh thread and destroyed before it ends; nothing
-//! is broadcast), `WH_CBT` hooks of such a thread only (they see only that thread's windows),
+//! is broadcast), `WH_CBT` hooks of such a thread or of a test dialog's thread only (they see
+//! only that thread's windows),
 //! dialog boxes without a taskbar button (`WS_EX_NOACTIVATE`) that are moved far off-screen
 //! before Windows shows them, menus that are never shown, in-process COM objects that are never
 //! registered, system DLLs
@@ -14,8 +15,8 @@
 //! made with `NtCreateLowBoxToken` for a made-up package SID, with no AppContainer profile, or
 //! the anonymous logon), and read-only queries. Anything that sends input, hooks the keyboard or
 //! mouse, touches the real clipboard, writes `HKEY_LOCAL_MACHINE`, registers COM/TSF, schedules
-//! tasks, or shows a menu, a message box, or a notification icon is `#[ignore]`d and run
-//! manually.
+//! tasks, changes which processes may take the foreground, or shows a menu, a message box, or a
+//! notification icon is `#[ignore]`d and run manually.
 //!
 //! The quiet panic hook is tested in its own binary (`tests/panic_hook.rs`) because installing
 //! it would silence the failure messages of this suite.

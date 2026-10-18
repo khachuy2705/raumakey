@@ -5,7 +5,7 @@
 use raumakey_windows::dialog_template::{
     BUTTON_ATOM, COMBOBOX_ATOM, Control, ControlClass, DIALOG_STYLE, DROPPED_LIST_HEIGHT,
     DialogFont, DialogRect, DialogTemplate, EDIT_ATOM, IDCANCEL, IDOK, LIST_VIEW_CLASS,
-    STATIC_ATOM, STATIC_ID, TemplateBytes, styles,
+    MESSAGE_BOX_FONT_SIZE, STATIC_ATOM, STATIC_ID, TemplateBytes, styles,
 };
 use raumakey_windows::error::{E_INVALIDARG, WinErrorKind};
 
@@ -525,6 +525,63 @@ fn a_nul_in_any_text_is_rejected() {
             &DialogTemplate::new("a", 10, 10).with_control(control),
             &case,
         );
+    }
+}
+
+/// A control's text is an `sz_Or_Ord` in the template: one whose first unit is `0xFFFF`
+/// (U+FFFF) would be read as an ordinal followed by the creation-data size, so the dialog
+/// manager would misread the rest of the template and could read past its end. The title and
+/// the typeface are plain strings, refused the same way so that no text of a template starts
+/// with the marker; U+FFFF anywhere else is an ordinary character.
+#[test]
+fn a_text_that_starts_with_the_ordinal_marker_is_rejected() {
+    let at = rect(0, 0, 10, 10);
+    for control in [
+        Control::label(10, "\u{FFFF}AB", at),
+        Control::label(STATIC_ID, "\u{FFFF}", at),
+        Control::check_box(11, "\u{FFFF}A", at),
+        Control::push_button(12, "\u{FFFF}x", at),
+        Control::default_push_button(IDOK, "\u{FFFF}", at),
+        Control::group_box(STATIC_ID, "\u{FFFF}Kiểu gõ", at),
+    ] {
+        let case = format!("{control:?}");
+        assert_invalid(
+            &DialogTemplate::new("a", 10, 10).with_control(control),
+            &case,
+        );
+    }
+    assert_invalid(&DialogTemplate::new("\u{FFFF}", 10, 10), "title");
+    assert_invalid(
+        &DialogTemplate::new("a", 10, 10).with_font(DialogFont::new("\u{FFFF}Segoe UI", 9)),
+        "typeface",
+    );
+    let template = DialogTemplate::new("a\u{FFFF}", 10, 10)
+        .with_font(DialogFont::new("Segoe UI\u{FFFF}", 9))
+        .with_control(Control::label(10, "x\u{FFFF}y", at));
+    let (header, items) = decode(&template.build().unwrap());
+    assert_eq!(header.title, "a\u{FFFF}");
+    assert_eq!(header.typeface, "Segoe UI\u{FFFF}");
+    assert_eq!(items[0].title, "x\u{FFFF}y");
+}
+
+/// A point size of `0x7FFF` asks for the message box font, after which the dialog manager
+/// reads no further font fields (an undocumented special value that USER honours), so it
+/// would read the weight, the style, and the typeface as the first control. It is refused;
+/// every other size is written as given.
+#[test]
+fn the_point_size_that_asks_for_the_message_box_font_is_rejected() {
+    assert_eq!(MESSAGE_BOX_FONT_SIZE, 0x7FFF);
+    assert_invalid(
+        &DialogTemplate::new("a", 10, 10).with_font(DialogFont::new("Segoe UI", 0x7FFF)),
+        "point size 0x7FFF",
+    );
+    for size in [1, 72, 0x7FFE] {
+        let template = DialogTemplate::new("a", 10, 10)
+            .with_font(DialogFont::new("Segoe UI", size))
+            .with_control(Control::label(STATIC_ID, "x", rect(0, 0, 10, 10)));
+        let (header, items) = decode(&template.build().unwrap());
+        assert_eq!(header.point_size, size);
+        assert_eq!(items.len(), 1);
     }
 }
 
