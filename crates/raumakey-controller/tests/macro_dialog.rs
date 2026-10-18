@@ -152,7 +152,7 @@ fn the_template_lays_out_the_editor_with_its_controls_and_texts() {
     assert_eq!(
         HINT,
         "Chọn một dòng để sửa. Mục mới được bật sẵn; xoá rồi thêm lại một mục sẽ đặt lại các \
-         tuỳ chọn của nó."
+         tuỳ chọn của\u{a0}nó."
     );
     assert_eq!(
         COLUMNS.map(|(text, _)| text),
@@ -1216,4 +1216,12 @@ mod win {
         closed.recv().unwrap();
         assert!(dialog.is_closed());
     }
+}
+
+/// The hint never leaves its last word alone on a line: the space before it is a no-break
+/// space, which the wrap at spaces keeps.
+#[test]
+fn the_hint_keeps_its_last_two_words_together() {
+    let last = HINT.rfind(char::is_whitespace).unwrap();
+    assert_eq!(HINT[last..].chars().next(), Some('\u{a0}'), "{HINT:?}");
 }

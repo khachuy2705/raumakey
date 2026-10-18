@@ -120,14 +120,17 @@ pub const ID_CLOSE: u16 = IDCANCEL;
 /// The check boxes whose labels take two lines, and their labels: the template has them as
 /// they are, and the glue sets them again wrapped at spaces ([`PanelView::wrapped`]).
 const TWO_LINE_CHECK_BOXES: [(u16, &str); 3] = [
-    (ID_FREE_MARKING, "Cho gõ dấu sau phụ âm cuối (toans → toán)"),
+    (
+        ID_FREE_MARKING,
+        "Cho gõ dấu sau phụ âm cuối (toans\u{a0}→\u{a0}toán)",
+    ),
     (
         ID_AUTO_RESTORE,
         "Giữ nguyên phím đã gõ khi từ không phải tiếng Việt",
     ),
     (
         ID_MACRO_AUTO_CASE,
-        "Viết hoa theo cách gõ (Ko → Không, KO → KHÔNG)",
+        "Viết hoa theo cách gõ (Ko\u{a0}→\u{a0}Không,\u{a0}KO\u{a0}→\u{a0}KHÔNG)",
     ),
 ];
 
@@ -486,7 +489,7 @@ pub fn panel_template() -> DialogTemplate {
         .with_control(
             Control::check_box(
                 ID_MODERN_TONE,
-                "Đặt dấu kiểu mới (oà, uý)",
+                "Đặt dấu kiểu mới (oà,\u{a0}uý)",
                 rect(14, 52, 144, 10),
             )
             .group(),

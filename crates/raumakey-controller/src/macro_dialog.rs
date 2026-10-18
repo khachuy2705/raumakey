@@ -150,7 +150,7 @@ pub const ID_HINT: u16 = 109;
 pub const COLUMNS: [(&str, i16); 3] = [("Gõ tắt", 70), ("Thay bằng", 166), ("Trạng thái", 56)];
 /// The hint under the list.
 pub const HINT: &str = "Chọn một dòng để sửa. Mục mới được bật sẵn; xoá rồi thêm lại một mục sẽ \
-                        đặt lại các tuỳ chọn của nó.";
+                        đặt lại các tuỳ chọn của\u{a0}nó.";
 
 /// The icon group of the Raumakey application mark in the resources of `raumakey.exe`
 /// (`raumakey_resources::ICON_APP`, which the tests compare).

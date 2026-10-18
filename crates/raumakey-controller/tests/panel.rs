@@ -301,7 +301,7 @@ fn the_view_sets_every_control_from_the_state() {
             wrapped: vec![
                 (
                     ID_FREE_MARKING,
-                    "Cho gõ dấu sau phụ âm cuối (toans → toán)".to_owned()
+                    "Cho gõ dấu sau phụ âm cuối (toans\u{a0}→\u{a0}toán)".to_owned()
                 ),
                 (
                     ID_AUTO_RESTORE,
@@ -309,7 +309,8 @@ fn the_view_sets_every_control_from_the_state() {
                 ),
                 (
                     ID_MACRO_AUTO_CASE,
-                    "Viết hoa theo cách gõ (Ko → Không, KO → KHÔNG)".to_owned()
+                    "Viết hoa theo cách gõ (Ko\u{a0}→\u{a0}Không,\u{a0}KO\u{a0}→\u{a0}KHÔNG)"
+                        .to_owned()
                 ),
                 (ID_CONFIG_LOCATION, "(cạnh raumakey.exe)".to_owned()),
             ],
@@ -643,13 +644,13 @@ fn expected_controls() -> Vec<(u16, ControlClass, &'static str, u32)> {
         (
             ID_MODERN_TONE,
             Button,
-            "Đặt dấu kiểu mới (oà, uý)",
+            "Đặt dấu kiểu mới (oà,\u{a0}uý)",
             check | WS_GROUP,
         ),
         (
             ID_FREE_MARKING,
             Button,
-            "Cho gõ dấu sau phụ âm cuối (toans → toán)",
+            "Cho gõ dấu sau phụ âm cuối (toans\u{a0}→\u{a0}toán)",
             two_lines,
         ),
         (ID_SPELL_CHECK, Button, "Kiểm tra chính tả", check),
@@ -670,7 +671,7 @@ fn expected_controls() -> Vec<(u16, ControlClass, &'static str, u32)> {
         (
             ID_MACRO_AUTO_CASE,
             Button,
-            "Viết hoa theo cách gõ (Ko → Không, KO → KHÔNG)",
+            "Viết hoa theo cách gõ (Ko\u{a0}→\u{a0}Không,\u{a0}KO\u{a0}→\u{a0}KHÔNG)",
             two_lines,
         ),
         (ID_MACRO_LIST, Button, "Danh sách gõ tắt…", push | WS_GROUP),
@@ -1061,4 +1062,23 @@ fn the_labels_fit_their_controls() {
     assert!(estimated_width(method_label.text()) <= method_label.rect().cx);
     let longest = estimated_width("Kiểu gõ riêng") + 16;
     assert!(longest <= label(ID_METHOD).cx, "the longest method");
+}
+
+/// The examples in parentheses ("(oà, uý)", "(toans → toán)", "(Ko → Không, KO → KHÔNG)")
+/// stay whole when a label is wrapped: their spaces are no-break spaces, which the wrap at
+/// spaces never breaks, so a line never ends with "→".
+#[test]
+fn the_examples_of_the_labels_stay_on_one_line() {
+    for control in panel_template().controls() {
+        let text = control.text();
+        let mut depth = 0_u32;
+        for character in text.chars() {
+            match character {
+                '(' => depth += 1,
+                ')' => depth = depth.saturating_sub(1),
+                ' ' if depth > 0 => panic!("a breakable space in the example of {text:?}"),
+                _ => {}
+            }
+        }
+    }
 }
