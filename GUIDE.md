@@ -184,21 +184,56 @@ Thư mục này không được đưa lên Git.
 4. Lần chạy đầu, Raumakey tạo `raumakey.toml` ngay cạnh `raumakey.exe`. Từ lần chạy thứ hai,
    Raumakey đọc lại tệp đó. Nếu thư mục không ghi được, hoặc nằm trong `C:\Program Files`, thư mục
    Windows hay thư mục tạm (ví dụ khi bạn chạy exe ngay trong tệp ZIP), cấu hình được lưu ở
-   `%LOCALAPPDATA%\Raumakey\raumakey.toml`. Lần chạy đầu, một hộp thoại cho biết tệp cấu hình nằm
-   ở đâu; về sau, mục **Giới thiệu** trong menu cho biết đường dẫn đang dùng.
-5. Chỉ chạy được một Raumakey mỗi lúc: chạy lần nữa khi đang chạy thì lần sau tự thoát.
+   `%LOCALAPPDATA%\Raumakey\raumakey.toml`. Khi chạy, Raumakey mở **bảng cấu hình** (mục 5.3);
+   dòng cuối của bảng cho biết tệp cấu hình nằm ở đâu. Mục **Giới thiệu** trong menu cũng cho
+   biết đường dẫn đó.
+5. Chỉ chạy được một Raumakey mỗi lúc. Bấm đúp `raumakey.exe` khi Raumakey đang chạy thì bảng cấu
+   hình của bản đang chạy hiện ra, còn lần chạy mới tự thoát, giống UniKey.
 
 ### 5.2 Gõ và đổi chế độ
 
 - Mở Notepad, gõ `tieengs vieetj nguwowif`. Kết quả phải là "tiếng việt người".
 - **Ctrl+Shift** hoặc click vào biểu tượng để đổi giữa tiếng Việt (**V**) và tiếng Anh (**E**).
   Chế độ được lưu lại cho lần chạy sau.
-- Click phải vào biểu tượng để mở menu.
+- Click phải vào biểu tượng để mở menu. Mục đầu tiên, **Bảng cấu hình…**, mở bảng cấu hình.
 
-### 5.3 Menu khay
+### 5.3 Bảng cấu hình và menu khay
+
+Bảng cấu hình mở khi Raumakey khởi động, khi bạn chọn **Bảng cấu hình…** trong menu, hoặc khi bạn
+chạy lại `raumakey.exe`. Mỗi thay đổi trong bảng có hiệu lực ngay và được ghi ngay vào
+`raumakey.toml`, nên bảng không có nút Lưu. Bảng luôn hiện đúng trạng thái đang dùng: khi bạn nhấn
+Ctrl+Shift, chọn trong menu hay sửa tệp bằng tay, các ô trong bảng đổi theo.
+
+| Nhóm | Mục | Tác dụng | Khoá trong `raumakey.toml` |
+|---|---|---|---|
+| | Gõ tiếng Việt | Bật hoặc tắt tiếng Việt, như Ctrl+Shift | `[input] enabled` |
+| Cách gõ | Kiểu gõ | Telex, VNI hoặc VIQR. "Kiểu gõ riêng" chỉ có khi tệp cấu hình định nghĩa một bảng phím riêng | `[input] method` |
+| Cách gõ | Đặt dấu kiểu mới (oà, uý) | Đặt dấu thanh theo kiểu mới thay cho kiểu cũ (òa, úy) | `[input] modern_tone` |
+| Cách gõ | Cho gõ dấu sau phụ âm cuối (toans → toán) | Gõ dấu ở cuối từ, sau cả phụ âm cuối | `[input] free_marking` |
+| Cách gõ | Kiểm tra chính tả | Chỉ bỏ dấu khi từ đúng chính tả tiếng Việt | `[input] spell_check` |
+| Cách gõ | Giữ nguyên phím đã gõ khi từ không phải tiếng Việt | Ví dụ gõ `after` rồi dấu cách thì được "after", không thành chữ có dấu | `[input] auto_restore_invalid` |
+| Gõ tắt | Bật gõ tắt | Bật hoặc tắt các mục gõ tắt | `[macros] enabled` |
+| Gõ tắt | Gõ tắt cả khi đang gõ tiếng Anh | Gõ tắt vẫn chạy ở chế độ **E** | `[macros] when_disabled` |
+| Gõ tắt | Viết hoa theo cách gõ (Ko → Không, KO → KHÔNG) | Nội dung thay thế theo kiểu chữ hoa của từ gõ tắt | `[macros] auto_case` |
+| Gõ tắt | Danh sách gõ tắt… | Mở hộp thoại sửa danh sách gõ tắt (mục 5.5) | `raumakey-macros.toml` |
+| Hệ thống | Khởi động cùng Windows | Tạo hoặc xoá shortcut `Raumakey.lnk` trong thư mục Startup của bạn | `[system] startup` |
+| Hệ thống | Mở bảng này khi Raumakey chạy | Bỏ chọn nếu bạn không muốn bảng hiện mỗi lần khởi động (kể cả khi đăng nhập Windows) | `[system] show_panel_on_start` |
+
+Các nút ở cuối bảng:
+
+- **Mở file cấu hình**: mở `raumakey.toml` bằng Notepad.
+- **Mặc định**: hỏi lại, rồi đặt các mục của nhóm "Cách gõ" và "Gõ tắt" về mặc định. Chế độ V/E,
+  "Khởi động cùng Windows", "Mở bảng này khi Raumakey chạy" và danh sách gõ tắt không đổi.
+- **Đóng** (hoặc Enter, Esc): đóng bảng. Raumakey vẫn chạy ở khay hệ thống.
+
+Phím tắt bật/tắt, dạng Unicode (`normalization`) và bảng phím riêng chỉ sửa được trong tệp cấu hình
+(mục 5.4). Bảng chỉ hiển thị phím tắt đang dùng.
+
+Menu khay có các mục sau:
 
 | Mục | Tác dụng |
 |---|---|
+| Bảng cấu hình… | Mở bảng cấu hình, hoặc đưa bảng đang mở lên trước |
 | Gõ tiếng Việt (Ctrl+Shift) | Bật hoặc tắt tiếng Việt |
 | Telex, VNI, VIQR | Chọn kiểu gõ |
 | Kiểm tra chính tả | Chỉ bỏ dấu khi từ đúng chính tả tiếng Việt |
@@ -239,30 +274,55 @@ Các tệp Raumakey tạo cạnh `raumakey.exe`:
 |---|---|
 | `raumakey.toml` | Cấu hình: chế độ, kiểu gõ, tuỳ chọn, phím tắt, khởi động cùng Windows |
 | `raumakey.toml.lock` | Tệp khoá dùng khi ghi cấu hình; để nguyên |
-| `raumakey-macros.toml` | Macro (gõ tắt); không tự tạo, bạn tạo nếu cần |
+| `raumakey-macros.toml` | Macro (gõ tắt); được tạo ở lần lưu đầu tiên của "Danh sách gõ tắt…", hoặc bạn tự tạo |
 
-`raumakey.toml` có các bảng chính:
+Bảng cấu hình chỉnh được mọi khoá dưới đây. Nếu muốn, bạn vẫn có thể sửa thẳng `raumakey.toml`:
 
 ```toml
 [input]
-enabled = true          # đang gõ tiếng Việt
-method = "telex"        # "telex", "vni" hoặc "viqr"
-spell_check = true      # kiểm tra chính tả
-modern_tone = false     # đặt dấu kiểu mới (oà, uý)
+enabled = true                # đang gõ tiếng Việt
+method = "telex"              # "telex", "vni" hoặc "viqr"
+modern_tone = false           # đặt dấu kiểu mới (oà, uý)
+free_marking = true           # cho gõ dấu sau phụ âm cuối
+spell_check = true            # kiểm tra chính tả
+auto_restore_invalid = true   # giữ nguyên phím đã gõ khi từ không phải tiếng Việt
 
 [macros]
-enabled = true          # bật gõ tắt
+enabled = true                # bật gõ tắt
+when_disabled = false         # gõ tắt cả khi đang gõ tiếng Anh
+auto_case = true              # viết hoa theo cách gõ
 
 [system]
-startup = "none"        # "none" hoặc "shortcut" (khởi động cùng Windows)
+startup = "none"              # "none" hoặc "shortcut" (khởi động cùng Windows)
+show_panel_on_start = true    # mở bảng cấu hình khi Raumakey chạy
 ```
 
-Tên khoá đầy đủ và giá trị mặc định nằm trong tệp mà lần chạy đầu tạo ra; kế hoạch §5 mô tả toàn
-bộ schema.
+Một số khoá chỉ sửa được trong tệp: `[input] normalization`, `context_limit`, `user_keymap` cùng
+`[[keymaps]]`, bảng `[hotkeys]` (phím tắt bật/tắt), `[system] diagnostics` và `[conversion]`. Tên
+khoá đầy đủ và giá trị mặc định nằm trong tệp mà lần chạy đầu tạo ra; kế hoạch §5 mô tả toàn bộ
+schema.
 
 ### 5.5 Gõ tắt (macro)
 
-Tạo tệp `raumakey-macros.toml` (mã hoá UTF-8) cạnh `raumakey.toml`, ví dụ:
+Cách dễ nhất là dùng hộp thoại: mở bảng cấu hình, bấm **Danh sách gõ tắt…**.
+
+- Danh sách có ba cột: **Gõ tắt**, **Thay bằng** và **Trạng thái**. Cột trạng thái ghi "đang tắt"
+  cho mục bị tắt, và "không dùng" cho mục mà bộ gõ bỏ qua (mục sai quy tắc, hoặc trùng với một mục
+  khác).
+- Chọn một dòng thì hai ô bên dưới hiện nội dung của dòng đó. Sửa rồi bấm **Thêm / Sửa** (hoặc
+  Enter trong ô "Gõ tắt"). Nếu từ gõ tắt đã có, mục đó được sửa; nếu chưa có, một mục mới được
+  thêm.
+- Ô "Thay bằng" nhận nhiều dòng: Enter trong ô này xuống dòng. Trong danh sách, dấu ↵ đánh dấu chỗ
+  xuống dòng.
+- **Xoá** xoá dòng đang chọn. Nếu bạn xoá một mục rồi thêm lại, mục đó thành mục mới và các tuỳ
+  chọn riêng của nó (ví dụ `enabled = false`) được đặt lại.
+- **Lưu** ghi danh sách vào `raumakey-macros.toml` (tạo tệp nếu chưa có). Bộ gõ dùng danh sách mới
+  ngay sau đó. Nếu tệp vừa bị sửa ở nơi khác, Raumakey hỏi trước khi ghi đè.
+- **Đóng** (hoặc Esc): nếu còn thay đổi chưa lưu, Raumakey hỏi lại trước khi đóng.
+- Nếu tệp có giá trị Raumakey không đọc được, Raumakey cho biết trước khi mở danh sách, vì lần lưu
+  sẽ bỏ các giá trị đó. Nếu tệp hỏng hẳn, danh sách không mở; hãy sửa tệp bằng tay.
+
+Bạn cũng có thể tự viết `raumakey-macros.toml` (mã hoá UTF-8) cạnh `raumakey.toml`, ví dụ:
 
 ```toml
 version = 1
@@ -290,7 +350,8 @@ enabled = false         # tạm tắt mục này
 - Gõ từ gõ tắt rồi gõ dấu cách hoặc dấu câu thì từ đó được thay bằng nội dung thay thế. Kiểu chữ
   hoa của từ gõ tắt được áp cho nội dung thay thế: `ko` cho ra "không", `Ko` cho ra "Không", `KO`
   cho ra "KHÔNG".
-- Mục "Gõ tắt (macro)" trong menu phải đang bật. Raumakey nạp lại tệp vài giây sau khi bạn lưu.
+- "Bật gõ tắt" trong bảng (hay "Gõ tắt (macro)" trong menu) phải đang bật. Khi bạn sửa tệp bằng
+  tay, Raumakey nạp lại tệp vài giây sau khi bạn lưu.
 - Mục nào sai (thiếu `id`, từ gõ tắt quá dài…) sẽ bị bỏ qua, các mục còn lại vẫn dùng được.
 
 ### 5.6 Danh sách kiểm tra
@@ -314,6 +375,18 @@ như mô tả và báo lại.
 | 12 | Gõ `xin `, khoá máy, đổi Caps Lock ở màn hình khoá, mở lại, gõ `tieengs` | Cả từ cùng kiểu chữ ("TIẾNG" hoặc "tiếng"), không lẫn hoa thường |
 | 13 | Gõ `tie`, nhấn Alt một mình, rồi gõ `e` | Không có Backspace nào lọt vào menu của Notepad |
 | 14 | Gõ nhanh, nhấn chồng phím, giữ phím để lặp | Không mất chữ, không lặp chữ, không đảo thứ tự |
+| 15 | Chạy Raumakey lần đầu trong một thư mục trống | Bảng cấu hình hiện ra, có icon Raumakey trên thanh tiêu đề và thanh tác vụ; dòng cuối ghi đường dẫn của `raumakey.toml`; không có hộp thoại chào riêng |
+| 16 | Trong bảng, đổi kiểu gõ sang VNI, bỏ chọn "Kiểm tra chính tả" | Gõ `tie61ng` trong Notepad ra "tiếng" ngay; mở `raumakey.toml` thấy `method = "vni"` và `spell_check = false`; menu khay cũng đổi theo |
+| 17 | Để bảng mở, nhấn Ctrl+Shift, rồi chọn VIQR trong menu khay | Ô "Gõ tiếng Việt" và ô kiểu gõ trong bảng đổi theo ngay |
+| 18 | Bấm đúp `raumakey.exe` lần nữa khi Raumakey đang chạy (cả khi bảng đã đóng và khi bảng đang bị cửa sổ khác che) | Bảng cấu hình của bản đang chạy hiện lên trước; không có biểu tượng thứ hai |
+| 19 | Bỏ chọn "Mở bảng này khi Raumakey chạy", thoát rồi chạy lại | Bảng không hiện; biểu tượng vẫn có ở khay |
+| 20 | Chạy exe ngay trong tệp ZIP, chọn "Khởi động cùng Windows" trong bảng | Raumakey nhắc giải nén trước, ô trở lại trạng thái không chọn |
+| 21 | Bấm "Mặc định", chọn **Yes** | Các mục "Cách gõ" và "Gõ tắt" về mặc định (Telex, kiểm tra chính tả bật…); chế độ V/E không đổi |
+| 22 | Trong "Danh sách gõ tắt…", thêm `vn` → `Việt Nam`, bấm Lưu | Trong Notepad gõ `vn` rồi dấu cách ra "Việt Nam" ngay, không phải chờ |
+| 23 | Trong danh sách gõ tắt, gõ một chữ cái khi danh sách đang có focus | Dòng có từ gõ tắt bắt đầu bằng chữ đó được chọn; nội dung đang gõ dở trong hai ô không bị mất vì một dòng khác |
+| 24 | Sửa danh sách gõ tắt mà chưa lưu, bấm Đóng | Raumakey hỏi có bỏ thay đổi không |
+| 25 | Để bảng cấu hình và danh sách gõ tắt cùng mở, chọn **Thoát** trong menu khay; lần khác, đăng xuất khỏi Windows | Cả hai cửa sổ đóng ngay, Raumakey thoát, không treo |
+| 26 | Đặt màn hình ở mức phóng to 150% rồi mở bảng | Chữ rõ, không bị cắt; các ô chọn hai dòng hiện đủ chữ |
 
 ### 5.7 Dòng lệnh
 
@@ -331,8 +404,8 @@ còn trong bản phát hành (thiết kế §21.1).
 
 ## 6. Gỡ bỏ
 
-1. Nếu đã bật "Khởi động cùng Windows", tắt nó trong menu trước (để xoá shortcut trong thư mục
-   Startup).
+1. Nếu đã bật "Khởi động cùng Windows", tắt nó trong bảng cấu hình hoặc menu trước (để xoá
+   shortcut trong thư mục Startup).
 2. Chọn **Thoát**.
 3. Xoá thư mục chứa `raumakey.exe`. Nếu cấu hình nằm ở `%LOCALAPPDATA%\Raumakey`, xoá cả thư mục
    đó.
@@ -348,13 +421,18 @@ Raumakey không ghi gì vào registry.
   xử lý như ô thường.
 - Khi đang dùng bộ gõ tiếng Trung, Nhật hoặc Hàn của Windows, Raumakey để mọi phím đi thẳng.
 - Nếu Windows gỡ hook (ví dụ khi máy quá tải), Raumakey tự cài lại trong vòng khoảng 2 giây.
-- Chưa có bảng cài đặt; các tuỳ chọn khác ngoài menu phải sửa trong `raumakey.toml`.
-- Chưa có giao diện quản lý macro: bạn tự viết `raumakey-macros.toml`.
+- Bảng cấu hình chưa có phím tắt bật/tắt, dạng Unicode (NFC/NFD) hay bảng phím riêng; các khoá
+  này phải sửa trong `raumakey.toml` (mục 5.4). Phím tắt kiểu Alt+Z cần thêm việc ở hook, vì Alt
+  vẫn tới ứng dụng và làm cửa sổ mở menu.
+- Danh sách gõ tắt chưa sửa được từng tuỳ chọn riêng của một mục (bật/tắt, cách khớp, kiểu chữ);
+  muốn đổi thì sửa `raumakey-macros.toml` bằng tay. Chưa nhập được danh sách gõ tắt từ UniKey hay
+  EVKey.
 - Lệnh `migrate` (nhập cấu hình và macro từ EVKey) chưa có.
 - Gói chưa được ký số nên SmartScreen hoặc phần mềm diệt virus có thể cảnh báo, nhất là vì
   Raumakey dùng hook bàn phím toàn cục.
 
-Kế hoạch §16 ghi trạng thái của bản portable; §14 ghi phần còn lại của dự án.
+Kế hoạch §16 ghi trạng thái của bản portable, §17 ghi bảng cấu hình và danh sách gõ tắt; §14 ghi
+phần còn lại của dự án.
 
 ## 8. Xử lý sự cố
 
@@ -364,7 +442,7 @@ Kế hoạch §16 ghi trạng thái của bản portable; §14 ghi phần còn l
 | Gõ ra chữ bị lặp hoặc lộn xộn | Một bộ gõ khác (UniKey, EVKey, bàn phím tiếng Việt của Windows) đang chạy cùng; tắt nó đi. |
 | Ctrl+Shift chuyển bàn phím Windows thay vì đổi V/E | Windows đang dùng Ctrl+Shift để đổi layout. Đổi ở **Settings > Time & language > Typing > Advanced keyboard settings > Input language hot keys**. |
 | Không gõ được tiếng Việt trong một ứng dụng chạy quyền quản trị | Chạy `raumakey.exe` bằng **Run as administrator**. |
-| Cấu hình không được lưu cạnh exe | Thư mục không ghi được, hoặc nằm trong Program Files, thư mục Windows hay thư mục tạm; xem đường dẫn trong mục **Giới thiệu** (thường là `%LOCALAPPDATA%\Raumakey`). Muốn giữ cấu hình cạnh exe thì chép exe sang một thư mục bình thường, ví dụ `D:\Tools\Raumakey`. |
+| Cấu hình không được lưu cạnh exe | Thư mục không ghi được, hoặc nằm trong Program Files, thư mục Windows hay thư mục tạm; xem đường dẫn ở dòng cuối của bảng cấu hình hoặc trong mục **Giới thiệu** (thường là `%LOCALAPPDATA%\Raumakey`). Muốn giữ cấu hình cạnh exe thì chép exe sang một thư mục bình thường, ví dụ `D:\Tools\Raumakey`. |
 | Sửa `raumakey.toml` xong không thấy tác dụng | Kiểm tra lỗi cú pháp TOML; giá trị không hợp lệ được thay bằng mặc định. |
 | Build lỗi `LNK1181: cannot open input file 'kernel32.lib'` | Thiếu Windows SDK (cách A) hoặc sai đường dẫn `-Lnative`/`LIB` (cách B). Kiểm tra lại tên thư mục phiên bản MSVC và SDK. |
 | `cargo xtask package` báo thiếu artifact | Chạy `cargo xtask cross --release` trước. Cách A cần thêm thành phần MSVC ARM64. |
@@ -373,8 +451,9 @@ Kế hoạch §16 ghi trạng thái của bản portable; §14 ghi phần còn l
 ## 9. Tài liệu liên quan
 
 - `README.md`: giới thiệu dự án.
-- `docs/superpowers/specs/2026-10-16-raumakey-design.md`: thiết kế; §21 mô tả bản portable.
+- `docs/superpowers/specs/2026-10-16-raumakey-design.md`: thiết kế; §21 mô tả bản portable, §22
+  mô tả bảng cấu hình và danh sách gõ tắt.
 - `docs/superpowers/plans/2026-10-16-raumakey-implementation.md`: kế hoạch triển khai. §14 ghi
-  trạng thái, §15 ghi các quyết định, §16 ghi bản portable.
+  trạng thái, §15 ghi các quyết định, §16 ghi bản portable, §17 ghi bảng cấu hình.
 - `docs/reference/evkey_compatibility_test_matrix.md`: ma trận kiểm thử tương thích.
 - `THIRD_PARTY.md`: nguồn gốc mã và giấy phép bên thứ ba.

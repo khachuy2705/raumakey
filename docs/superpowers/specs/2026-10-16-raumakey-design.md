@@ -805,7 +805,9 @@ Mọi thay đổi có hiệu lực và được lưu ngay.
 ### 22.2 Danh sách gõ tắt (D44)
 
 - Nút "Danh sách gõ tắt…" trong bảng mở hộp thoại sửa `raumakey-macros.toml`. Hộp thoại có:
-  - một danh sách hai cột, "Gõ tắt" và "Thay bằng";
+  - một danh sách ba cột: "Gõ tắt", "Thay bằng" và "Trạng thái". Cột trạng thái ghi "đang tắt"
+    cho mục có `enabled = false`, và "không dùng" cho mục mà bảng macro của hook bỏ qua (mục sai
+    quy tắc, trùng id với một mục trước, hoặc trùng từ gõ tắt với một mục có id nhỏ hơn);
   - hai ô nhập cho từ gõ tắt và nội dung thay thế;
   - các nút "Thêm / Sửa", "Xoá", "Lưu", "Đóng".
 - Chọn một dòng thì hai ô nhập hiện nội dung của dòng đó. "Thêm / Sửa" sửa mục có cùng từ gõ tắt

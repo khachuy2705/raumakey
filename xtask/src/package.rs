@@ -159,10 +159,20 @@ Cách dùng
   2. Nhấp đúp vào raumakey.exe. Biểu tượng V/E hiện ở vùng thông báo, cạnh đồng
      hồ trên thanh tác vụ: V là đang gõ tiếng Việt, E là đang gõ tiếng Anh.
      Nếu không thấy, hãy bấm mũi tên ^ để xem các biểu tượng bị ẩn.
-  3. Nhấp vào biểu tượng hoặc nhấn Ctrl+Shift để chuyển giữa tiếng Việt và
+  3. Bảng cấu hình hiện ra. Chọn kiểu gõ và các tuỳ chọn ở đó; mỗi thay đổi
+     có hiệu lực ngay. Bấm Đóng: Raumakey vẫn chạy ở vùng thông báo.
+  4. Nhấp vào biểu tượng hoặc nhấn Ctrl+Shift để chuyển giữa tiếng Việt và
      tiếng Anh. Nhấp chuột phải vào biểu tượng để mở menu.
-  4. Mở Notepad và gõ thử: tieengs vieetj
+  5. Mở Notepad và gõ thử: tieengs vieetj
      Notepad sẽ hiện: tiếng việt
+
+Bảng cấu hình
+  Mở bảng bằng mục \"Bảng cấu hình…\" trong menu.
+  Nhấp đúp vào raumakey.exe lần nữa khi Raumakey đang chạy cũng mở bảng.
+  Bảng chỉnh kiểu gõ, cách đặt dấu, kiểm tra chính tả, gõ tắt và khởi động
+  cùng Windows. Bỏ chọn \"Mở bảng này khi Raumakey chạy\" nếu bạn không
+  muốn bảng hiện mỗi lần khởi động. Nút \"Danh sách gõ tắt…\" mở hộp thoại
+  thêm, sửa, xoá gõ tắt.
 
 Cấu hình
   Lần chạy đầu tiên, Raumakey tạo file raumakey.toml cạnh raumakey.exe;
@@ -171,6 +181,7 @@ Cấu hình
   %LOCALAPPDATA%\\Raumakey.
 
 Menu (nhấp chuột phải vào biểu tượng V/E)
+  Bảng cấu hình…               mở bảng cấu hình
   Gõ tiếng Việt (Ctrl+Shift)   bật hoặc tắt tiếng Việt
   Telex, VNI, VIQR             chọn kiểu gõ
   Kiểm tra chính tả            chỉ bỏ dấu khi chữ đang gõ là tiếng Việt hợp lệ
@@ -181,12 +192,15 @@ Menu (nhấp chuột phải vào biểu tượng V/E)
   Mở file cấu hình             mở raumakey.toml để sửa
   Giới thiệu                   thông tin về Raumakey
   Thoát                        đóng Raumakey
-  Mỗi thay đổi trong menu được lưu ngay vào raumakey.toml. Nếu bạn tự sửa
-  raumakey.toml, Raumakey nhận thay đổi sau vài giây.
+  Mỗi thay đổi trong bảng cấu hình hay trong menu được lưu ngay vào
+  raumakey.toml. Nếu bạn tự sửa raumakey.toml, Raumakey nhận thay đổi
+  sau vài giây.
 
 Gõ tắt (macro)
-  Danh sách gõ tắt lấy từ file raumakey-macros.toml nằm cùng thư mục với
-  raumakey.toml. File này không bắt buộc; cách viết xem trong GUIDE.md.
+  Danh sách gõ tắt nằm trong file raumakey-macros.toml, cùng thư mục với
+  raumakey.toml. Cách dễ nhất là sửa nó bằng nút \"Danh sách gõ tắt…\" của
+  bảng cấu hình; lần lưu đầu tiên tạo file. Cách tự viết file xem trong
+  GUIDE.md.
 
 Cửa sổ chạy với quyền quản trị viên
   Windows không cho Raumakey gõ vào cửa sổ của chương trình đang chạy với
@@ -492,8 +506,9 @@ mod tests {
         assert!(text.ends_with("\r\n"));
     }
 
-    /// The tray menu labels (D42), exactly as the menu shows them.
-    const MENU_LABELS: [&str; 11] = [
+    /// The tray menu labels (D42, D43), exactly as the menu shows them.
+    const MENU_LABELS: [&str; 12] = [
+        "Bảng cấu hình…",
         "Gõ tiếng Việt (Ctrl+Shift)",
         "Telex",
         "VNI",
@@ -540,6 +555,11 @@ mod tests {
             // The tray menu saves at once and picks up hand edits (D42).
             "được lưu ngay",
             "sau vài giây",
+            // The settings panel, how it opens, and the macro list editor (D43–D45).
+            "Bảng cấu hình",
+            "Nhấp đúp vào raumakey.exe lần nữa",
+            "Mở bảng này khi Raumakey chạy",
+            "Danh sách gõ tắt…",
             // Macros.
             "raumakey-macros.toml",
             "GUIDE.md",
