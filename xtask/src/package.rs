@@ -168,6 +168,7 @@ Cách dùng
 
 Bảng cấu hình
   Mở bảng bằng mục \"Bảng cấu hình…\" trong menu.
+  Nhấp đúp vào biểu tượng V/E cũng mở bảng; chế độ gõ giữ nguyên.
   Nhấp đúp vào raumakey.exe lần nữa khi Raumakey đang chạy cũng mở bảng.
   Bảng chỉnh kiểu gõ, cách đặt dấu, kiểm tra chính tả, gõ tắt và khởi động
   cùng Windows. Bỏ chọn \"Mở bảng này khi Raumakey chạy\" nếu bạn không
@@ -195,6 +196,12 @@ Menu (nhấp chuột phải vào biểu tượng V/E)
   Mỗi thay đổi trong bảng cấu hình hay trong menu được lưu ngay vào
   raumakey.toml. Nếu bạn tự sửa raumakey.toml, Raumakey nhận thay đổi
   sau vài giây.
+
+Loại trừ ứng dụng
+  Trong các ứng dụng có tên ở mục [exclusions] của raumakey.toml, Raumakey
+  luôn gõ tiếng Anh và biểu tượng hiện E. Mặc định gồm các ứng dụng điều
+  khiển máy từ xa như Remote Desktop Connection (mstsc.exe). Thêm hoặc bớt
+  tên tệp exe trong dòng apps = [...], rồi lưu raumakey.toml.
 
 Gõ tắt (macro)
   Danh sách gõ tắt nằm trong file raumakey-macros.toml, cùng thư mục với
@@ -560,6 +567,11 @@ mod tests {
             "Nhấp đúp vào raumakey.exe lần nữa",
             "Mở bảng này khi Raumakey chạy",
             "Danh sách gõ tắt…",
+            // Double-click on the icon (D46) and application exclusions (D47).
+            "Nhấp đúp vào biểu tượng",
+            "[exclusions]",
+            "mstsc.exe",
+            "luôn gõ tiếng Anh",
             // Macros.
             "raumakey-macros.toml",
             "GUIDE.md",

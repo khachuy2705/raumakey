@@ -196,11 +196,14 @@ Thư mục này không được đưa lên Git.
 - **Ctrl+Shift** hoặc click vào biểu tượng để đổi giữa tiếng Việt (**V**) và tiếng Anh (**E**).
   Chế độ được lưu lại cho lần chạy sau.
 - Click phải vào biểu tượng để mở menu. Mục đầu tiên, **Bảng cấu hình…**, mở bảng cấu hình.
+- Nháy đúp vào biểu tượng cũng mở bảng cấu hình, và chế độ V/E giữ nguyên như trước khi nháy.
+- Trong các ứng dụng bị loại trừ (mục 5.4), ví dụ cửa sổ Remote Desktop, Raumakey luôn gõ tiếng
+  Anh và biểu tượng hiện **E**.
 
 ### 5.3 Bảng cấu hình và menu khay
 
-Bảng cấu hình mở khi Raumakey khởi động, khi bạn chọn **Bảng cấu hình…** trong menu, hoặc khi bạn
-chạy lại `raumakey.exe`. Mỗi thay đổi trong bảng có hiệu lực ngay và được ghi ngay vào
+Bảng cấu hình mở khi Raumakey khởi động, khi bạn chọn **Bảng cấu hình…** trong menu, khi bạn nháy
+đúp vào biểu tượng, hoặc khi bạn chạy lại `raumakey.exe`. Mỗi thay đổi trong bảng có hiệu lực ngay và được ghi ngay vào
 `raumakey.toml`, nên bảng không có nút Lưu. Bảng luôn hiện đúng trạng thái đang dùng: khi bạn nhấn
 Ctrl+Shift, chọn trong menu hay sửa tệp bằng tay, các ô trong bảng đổi theo.
 
@@ -295,7 +298,34 @@ auto_case = true              # viết hoa theo cách gõ
 [system]
 startup = "none"              # "none" hoặc "shortcut" (khởi động cùng Windows)
 show_panel_on_start = true    # mở bảng cấu hình khi Raumakey chạy
+
+[exclusions]
+# Ứng dụng luôn gõ tiếng Anh: tên tệp exe, không phân biệt hoa thường
+apps = ["mstsc.exe", "msrdc.exe", "rdcman.exe", "vmconnect.exe"]
 ```
+
+**Loại trừ ứng dụng.** Trong các ứng dụng có tên trong `[exclusions] apps`, Raumakey không biến đổi
+phím nào và không mở rộng gõ tắt, dù đang ở chế độ V. Biểu tượng hiện **E** khi một ứng dụng như
+vậy ở trên cùng, với tooltip "Raumakey: đang gõ tiếng Anh trong … (ứng dụng loại trừ)". Ctrl+Shift
+vẫn đổi chế độ chung; khi bạn chuyển sang ứng dụng khác, biểu tượng hiện lại chế độ đó.
+
+- Danh sách mặc định gồm các ứng dụng điều khiển máy từ xa: Remote Desktop Connection
+  (`mstsc.exe`), ứng dụng Remote Desktop và Windows App (`msrdc.exe`), Remote Desktop Connection
+  Manager (`rdcman.exe`) và Hyper-V VM Connection (`vmconnect.exe`). Phím gõ vào các cửa sổ đó được
+  gửi sang máy kia, nơi bạn dùng bộ gõ của máy đó.
+- Muốn thêm một ứng dụng, thêm tên tệp exe của nó vào danh sách, ví dụ `"VirtualBoxVM.exe"` hoặc
+  `"vmware.exe"` cho máy ảo. Tên tệp exe của một cửa sổ xem ở thẻ **Details** của Task Manager.
+  Bạn có thể dán cả đường dẫn, hoặc bỏ đuôi (`"mstsc"`): Raumakey chỉ lấy tên tệp, tự thêm `.exe`,
+  rồi ghi lại tên đã chuẩn hoá ở lần lưu kế tiếp. Khi dán đường dẫn, hãy đặt nó trong **dấu nháy
+  đơn**, ví dụ `'C:\Windows\System32\mstsc.exe'`: trong dấu nháy kép của TOML, dấu `\` mở đầu một
+  ký tự đặc biệt và làm hỏng cả tệp. Đường dẫn chép bằng **Copy as path** của Explorer (có sẵn dấu
+  `"` ở hai đầu) cũng dùng được trong dấu nháy đơn.
+- `apps = []` tắt mọi loại trừ. Nếu tệp của bạn chưa có bảng `[exclusions]` (tạo bằng bản cũ),
+  Raumakey dùng danh sách mặc định, và ghi bảng này vào tệp ở lần lưu kế tiếp.
+- Sau khi bạn lưu tệp, thay đổi có hiệu lực trong vòng khoảng 2 giây. Một mục không phải tên tệp
+  hợp lệ bị bỏ qua và được báo một lần.
+- Muốn loại trừ chi tiết hơn (chỉ một lớp cửa sổ của một ứng dụng), dùng `[[rule]]` với
+  `window_class` trong `raumakey-app-rules.toml` (kế hoạch §5).
 
 Một số khoá chỉ sửa được trong tệp: `[input] normalization`, `context_limit`, `user_keymap` cùng
 `[[keymaps]]`, bảng `[hotkeys]` (phím tắt bật/tắt), `[system] diagnostics` và `[conversion]`. Tên
@@ -387,6 +417,10 @@ như mô tả và báo lại.
 | 24 | Sửa danh sách gõ tắt mà chưa lưu, bấm Đóng | Raumakey hỏi có bỏ thay đổi không |
 | 25 | Để bảng cấu hình và danh sách gõ tắt cùng mở, chọn **Thoát** trong menu khay; lần khác, đăng xuất khỏi Windows | Cả hai cửa sổ đóng ngay, Raumakey thoát, không treo |
 | 26 | Đặt màn hình ở mức phóng to 125%, 150% và 175% (và, nếu có, hai màn hình khác mức phóng to), mở bảng, danh sách gõ tắt và mục **Giới thiệu** | Chữ rõ, không bị cắt; không chữ nào bị ngắt giữa chừng (ví dụ "ti" / "ếng"); các ô chọn hai dòng hiện đủ chữ |
+| 27 | Ở chế độ V, nháy đúp vào biểu tượng; làm lại ở chế độ E | Bảng cấu hình mở; chế độ sau khi nháy đúp giống trước khi nháy (biểu tượng có thể nháy V/E trong chốc lát) |
+| 28 | Click một lần vào biểu tượng, rồi click lần nữa sau khoảng một giây | Mỗi click đổi chế độ một lần; bảng không mở |
+| 29 | Ở chế độ V, mở Remote Desktop Connection (`mstsc.exe`) và gõ `tieengs vieetj` vào ô tên máy | Ra nguyên văn "tieengs vieetj"; biểu tượng là **E**, tooltip ghi `mstsc.exe` và "ứng dụng loại trừ"; chuyển sang Notepad thì biểu tượng là **V** và gõ ra "tiếng việt" |
+| 30 | Trong `raumakey.toml` đặt `apps = []`, lưu, đợi 2 giây, mở lại Remote Desktop Connection và gõ `tieengs` | Ra "tiếng"; biểu tượng là **V**. Thêm `"notepad.exe"` vào danh sách: trong Notepad biểu tượng là **E** và phím không bị biến đổi |
 
 ### 5.7 Dòng lệnh
 

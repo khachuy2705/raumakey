@@ -1418,6 +1418,13 @@ Các quyết định ngày 2026-10-18 (thiết kế §22):
   `AllowSetForegroundWindow(ASFW_ANY)`, gửi thông điệp đăng ký `Raumakey.<sidhash>.show-panel` tới
   các cửa sổ cấp cao nhất, rồi thoát với mã 0. Bản đang chạy mở bảng hoặc đưa bảng lên trước.
   Controller chạy quyền quản trị cho thông điệp này qua UIPI.
+- **D46 — Nháy đúp vào biểu tượng mở bảng cấu hình.** Cú nháy vẫn đổi chế độ ngay; khi nhận ra
+  nháy đúp (`WM_LBUTTONDBLCLK`, hoặc hai `NIN_SELECT` trong thời gian nháy đúp của hệ thống), tray
+  trả chế độ về như trước rồi mở bảng (thiết kế §22.6).
+- **D47 — Loại trừ ứng dụng.** `[exclusions] apps` trong `raumakey.toml` liệt kê các exe luôn gõ
+  tiếng Anh; mặc định là `mstsc.exe`, `msrdc.exe`, `rdcman.exe`, `vmconnect.exe`. `Settings` thêm
+  vào đầu các quy tắc của snapshot một quy tắc `vietnamese = false`, `macros = false` cho mỗi exe.
+  Biểu tượng hiện E khi ứng dụng ở foreground bị loại trừ (thiết kế §22.7).
 
 ---
 
@@ -1487,7 +1494,7 @@ thủ công ở module `typing` và `desktop` của controller, và `GUIDE.md` �
 
 ## 17. Bảng cấu hình và danh sách gõ tắt (2026-10-18)
 
-Mục này theo dõi các task của D43–D45 (thiết kế §22). Mỗi task được làm trong một Git worktree
+Mục này theo dõi các task của D43–D47 (thiết kế §22). Mỗi task được làm trong một Git worktree
 riêng, theo TDD, được review độc lập rồi mới merge.
 
 ### 17.1 Task
@@ -1499,6 +1506,8 @@ riêng, theo TDD, được review độc lập rồi mới merge.
 | S3 | Danh sách gõ tắt | Mô hình danh sách (thuần): kiểm tra theo D29 và D30, giữ khoá lạ; hộp thoại có list view; đọc và ghi trên luồng của hộp thoại; kiểm tra tệp ngay sau khi lưu |
 | S4 | Tài liệu và bản phát hành | Thiết kế §22, kế hoạch §15 và §17, `GUIDE.md`, `README.md`, ghi chép task, bản build trong `release\` |
 | S5 | Ngắt dòng tiếng Việt | Thêm sau khi ảnh chụp bảng thật cho thấy GDI ngắt giữa chữ tiếng Việt: Raumakey tự ngắt dòng ở dấu cách cho nhãn nhiều dòng và mọi hộp thông báo; đóng đúng các hộp thông báo OK khi thoát |
+| S6 | Nháy đúp và biểu tượng khi loại trừ | D46; phần tray của D47: theo dõi cửa sổ foreground (`SetWinEventHook`), biểu tượng E và tooltip cho ứng dụng bị loại trừ |
+| S7 | Loại trừ ứng dụng | D47: bảng `[exclusions]` của `raumakey.toml` (giải mã từng trường, mặc định, ghi lại), nối vào chính sách của snapshot, kiểm chứng trên đường gõ |
 
 ### 17.2 Trạng thái
 

@@ -859,8 +859,8 @@ Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml
 
 - Thêm "Bảng cấu hình…" ở đầu menu, ngăn với "Gõ tiếng Việt (Ctrl+Shift)" bằng một separator. Các
   mục còn lại giữ nguyên.
-- Click vào biểu tượng vẫn đổi chế độ Việt/Anh. Double-click không mở bảng, vì cú click đầu đã đổi
-  chế độ.
+- Click vào biểu tượng vẫn đổi chế độ Việt/Anh. Từ D46 (§22.6), nháy đúp mở bảng cấu hình và giữ
+  nguyên chế độ.
 
 ### 22.5 Kiểm thử
 
@@ -874,3 +874,51 @@ Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml
   luồng test. Hộp thoại test nằm ngoài màn hình và không lấy focus.
 - Danh sách kiểm tra thủ công nằm ở module `desktop` của controller và ở `GUIDE.md` §5.6. Một test
   tự động thành công không phải bằng chứng về giao diện khi chạy thật.
+
+### 22.6 Nháy đúp vào biểu tượng (D46)
+
+- Nháy đúp vào biểu tượng V/E ở khay hệ thống mở bảng cấu hình, giống mục "Bảng cấu hình…".
+- Một cú nháy vẫn đổi chế độ ngay, không chờ: với một bộ gõ, chế độ phải đổi trước khi người dùng
+  gõ phím đầu tiên. Vì vậy cú nháy đầu của một lần nháy đúp đã đổi chế độ; khi nhận ra nháy đúp,
+  tray trả chế độ về như trước cú nháy đầu (qua đúng đường đổi chế độ: biểu tượng, hook, lưu tệp)
+  rồi mở bảng.
+- Tray nhận ra nháy đúp theo hai cách, vì các phiên bản shell có thể gửi thông báo khác nhau:
+  thông báo `WM_LBUTTONDBLCLK` của biểu tượng, hoặc (dự phòng) hai `NIN_SELECT` cách nhau không
+  quá thời gian nháy đúp của hệ thống (`GetDoubleClickTime`). Một `NIN_SELECT` tới ngay sau
+  `WM_LBUTTONDBLCLK` (cho cú nháy thứ hai) bị bỏ qua, nhưng chỉ trong thời gian nháy đúp và tới
+  lần nhấn chuột kế tiếp, nên một cú nháy thật về sau không bao giờ bị mất.
+- Chọn biểu tượng bằng bàn phím (`NIN_KEYSELECT`) vẫn chỉ đổi chế độ.
+
+### 22.7 Loại trừ ứng dụng (D47)
+
+- Chủ dự án yêu cầu: trong một số ứng dụng, ví dụ ô nhập trong cửa sổ Remote Desktop, Raumakey
+  luôn gõ tiếng Anh; danh sách nằm trong tệp cấu hình. Thiết kế: một bảng mới trong
+  `raumakey.toml`:
+
+```toml
+[exclusions]
+# Ứng dụng luôn gõ tiếng Anh: tên tệp exe, không phân biệt hoa thường
+apps = ["mstsc.exe", "msrdc.exe", "rdcman.exe", "vmconnect.exe"]
+```
+
+- Mặc định gồm các ứng dụng điều khiển máy từ xa: Remote Desktop Connection (`mstsc.exe`), ứng
+  dụng Remote Desktop và Windows App (`msrdc.exe`), Remote Desktop Connection Manager
+  (`rdcman.exe`) và Hyper-V VM Connection (`vmconnect.exe`). Phím gõ vào các cửa sổ đó được gửi
+  sang máy kia, nơi có bộ gõ riêng; Raumakey sửa chữ bằng Backspace ở đó sẽ làm lệch chữ.
+  `apps = []` tắt mọi loại trừ. Một tệp cũ không có bảng `[exclusions]` dùng danh sách mặc định.
+- Trong một ứng dụng bị loại trừ, Raumakey không biến đổi phím nào và không mở rộng gõ tắt, như
+  khi tắt tiếng Việt và tắt gõ tắt, bất kể chế độ đang chọn. Phím tắt Ctrl+Shift vẫn đổi chế độ
+  chung.
+- Cơ chế dùng lại chính sách ứng dụng sẵn có (§5.3, kế hoạch D13): `Settings` thêm vào đầu danh
+  sách quy tắc của snapshot một quy tắc cho mỗi exe bị loại trừ, với `vietnamese = false` và
+  `macros = false`. Theo thứ tự phân giải chính sách, quy tắc này thắng mọi quy tắc chỉ theo exe và
+  mọi named set của `raumakey-app-rules.toml`; chỉ một quy tắc có `window_class` cho cùng exe, đặt
+  trong `raumakey-app-rules.toml`, mới thắng nó, và chỉ với lớp cửa sổ đó.
+- Hook đã biết tên exe của cửa sổ foreground, nên việc gõ tuân theo loại trừ ngay ở phím đầu tiên.
+- Biểu tượng khay hiện **E** khi ứng dụng ở foreground bị loại trừ, với tooltip, ví dụ "Raumakey:
+  đang gõ tiếng Anh trong mstsc.exe (ứng dụng loại trừ)". Tray theo dõi cửa sổ foreground bằng
+  `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` (out-of-context, trên luồng của tray). Chế độ chung,
+  dấu chọn trong menu và bảng cấu hình không đổi; khi rời ứng dụng đó, biểu tượng hiện lại chế độ
+  chung.
+- Danh sách chỉ sửa trong tệp, như chủ dự án yêu cầu; sửa tay có hiệu lực sau khoảng 2 giây. Một
+  mục không phải tên exe hợp lệ bị bỏ qua và được báo theo đường dẫn schema (`exclusions.apps[2]`).
