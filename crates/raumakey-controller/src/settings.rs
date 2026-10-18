@@ -294,8 +294,9 @@ impl Stores {
     }
 }
 
-/// The file replacer of the stores: `ReplaceFileW` on Windows.
-fn replacer() -> Arc<dyn FileReplacer> {
+/// The file replacer of the stores: `ReplaceFileW` on Windows. The macro list editor
+/// ([`crate::macro_list`]) writes `raumakey-macros.toml` with it too.
+pub(crate) fn replacer() -> Arc<dyn FileReplacer> {
     #[cfg(windows)]
     {
         Arc::new(raumakey_windows::file_replace::ReplaceFileReplacer)

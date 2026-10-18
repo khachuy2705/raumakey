@@ -30,6 +30,9 @@
 //! - [`settings`]: the configuration lifecycle of the portable controller (D40): where
 //!   `raumakey.toml` lives, the first run, changes from the tray, hand edits, and the
 //!   snapshots for the session core;
+//! - [`macro_list`]: the model of the macro list editor (D44): the rows of
+//!   `raumakey-macros.toml`, their checks (D29, D30), and the save that keeps what the editor
+//!   does not show, with its Vietnamese messages;
 //! - [`startup`]: `startup <none|shortcut|elevated-task>`;
 //! - [`convert`]: `convert` of files and of the clipboard;
 //! - [`elevation`]: the elevated restart of the privileged commands;
@@ -73,6 +76,7 @@ pub mod convert;
 pub mod desktop;
 pub mod elevation;
 pub mod install;
+pub mod macro_list;
 pub mod notice;
 pub mod output;
 pub mod run;
