@@ -100,14 +100,44 @@ fn config_name(config_path: Option<&Path>) -> String {
     )
 }
 
-/// Where the configuration lives, as a parenthesis (also the footer of the settings panel,
-/// `crate::panel`).
-pub(crate) fn location_text(location: Location) -> &'static str {
+/// Where the configuration lives, as a parenthesis ("Giới thiệu").
+fn location_text(location: Location) -> &'static str {
     match location {
         Location::ExeDir => "(cạnh raumakey.exe)",
         Location::LocalAppData => "(trong %LOCALAPPDATA%\\Raumakey)",
         Location::Unavailable => "(không có thư mục để lưu)",
     }
+}
+
+/// Where the configuration lives, as a parenthesis that for `%LOCALAPPDATA%` also says why:
+/// the folder of `raumakey.exe` cannot be written or is protected (a ZIP opened in the
+/// temporary folder, Program Files). The welcome of a first run says it, and so do the
+/// settings panel (`crate::panel`), which replaces that welcome, and [`panel_error_notice`].
+pub(crate) fn location_explained(location: Location) -> &'static str {
+    match location {
+        Location::LocalAppData => {
+            "(trong %LOCALAPPDATA%\\Raumakey, vì thư mục của raumakey.exe không ghi được hoặc là \
+             thư mục được bảo vệ)"
+        }
+        Location::ExeDir | Location::Unavailable => location_text(location),
+    }
+}
+
+/// The configuration line without a folder ("Giới thiệu", [`panel_error_notice`]).
+const NO_CONFIG_FILE: &str = "Tệp cấu hình: không có (Raumakey không tìm được thư mục để lưu cấu \
+hình, nên các thay đổi không được lưu)";
+
+/// How the icon shows and switches the mode, with `toggle_hotkey` (`Ctrl+Shift`) when there
+/// is one.
+fn icon_help(toggle_hotkey: Option<&str>) -> String {
+    let switch = match toggle_hotkey {
+        Some(hotkey) => format!("Nhấp vào biểu tượng hoặc nhấn {hotkey} để đổi chế độ"),
+        None => "Nhấp vào biểu tượng để đổi chế độ".to_owned(),
+    };
+    format!(
+        "Biểu tượng V/E ở khay hệ thống cho biết chế độ gõ: V là tiếng Việt, E là tiếng Anh. \
+         {switch}; nhấp chuột phải vào biểu tượng để mở menu."
+    )
 }
 
 /// `a, b, c`, or the first [`LISTED_PATHS`] and how many more.
@@ -277,19 +307,11 @@ pub fn start_notice(report: &OpenReport, welcome: bool) -> Option<Notice> {
         match report.create_error {
             None if !welcome => {}
             None => {
-                let place = match report.location {
-                    Location::LocalAppData => {
-                        "(trong %LOCALAPPDATA%\\Raumakey, vì thư mục của raumakey.exe không ghi \
-                         được hoặc là thư mục được bảo vệ)"
-                    }
-                    other => location_text(other),
-                };
                 sections.push(format!(
-                    "Chào mừng bạn đến với Raumakey.\n\nRaumakey đã tạo tệp cấu hình {} {place}.\
-                     \n\nBiểu tượng V/E ở khay hệ thống cho biết chế độ gõ: V là tiếng Việt, E là \
-                     tiếng Anh. Nhấp vào biểu tượng hoặc nhấn Ctrl+Shift để đổi chế độ; nhấp chuột \
-                     phải vào biểu tượng để mở menu.",
-                    config_name(path)
+                    "Chào mừng bạn đến với Raumakey.\n\nRaumakey đã tạo tệp cấu hình {} {}.\n\n{}",
+                    config_name(path),
+                    location_explained(report.location),
+                    icon_help(Some("Ctrl+Shift"))
                 ));
             }
             Some(error) => {
@@ -508,13 +530,41 @@ pub fn about_text(location: Location, config_path: Option<&Path>) -> String {
                 location_text(location)
             )
         }
-        _ => "Tệp cấu hình: không có (Raumakey không tìm được thư mục để lưu cấu hình, nên các \
-              thay đổi không được lưu)"
-            .to_owned(),
+        _ => NO_CONFIG_FILE.to_owned(),
     };
     format!(
         "{PRODUCT_NAME} {PRODUCT_VERSION}\nBộ gõ tiếng Việt cho Windows.\n\n{config}\n\nGiấy phép: \
          {LICENSE}\n{REPOSITORY_URL}"
+    )
+}
+
+/// The settings panel could not be opened (its thread could not start). It tells what the
+/// panel would have shown, which matters at the start: the panel that opens there replaces
+/// the welcome of a first run ([`start_notice`]). So it names `raumakey.toml` and where it
+/// lives (with the reason for `%LOCALAPPDATA%`), and how the icon and `toggle_hotkey` (the
+/// first toggle hotkey, if any) switch the mode.
+pub fn panel_error_notice(
+    location: Location,
+    config_path: Option<&Path>,
+    toggle_hotkey: Option<&str>,
+    error: &WinError,
+) -> Notice {
+    let config = match config_path {
+        Some(path) if location != Location::Unavailable => format!(
+            "Tệp cấu hình: {}\n{}",
+            path.display(),
+            location_explained(location)
+        ),
+        _ => NO_CONFIG_FILE.to_owned(),
+    };
+    Notice::new(
+        NoticeKind::Warning,
+        format!(
+            "Raumakey không mở được bảng cấu hình ({}). Raumakey vẫn chạy, và menu của biểu \
+             tượng vẫn đổi được các lựa chọn.\n\n{config}\n\n{}",
+            win_error_text(error),
+            icon_help(toggle_hotkey)
+        ),
     )
 }
 

@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use raumakey_config::{ConfigError, FieldIssue, IssueReason};
 use raumakey_controller::notice::{
     LICENSE, Notice, NoticeKind, Question, REPOSITORY_URL, about_notice, about_text,
-    elevated_task_notice, heal_notice, open_error_notice, recovery_notice, save_error_notice,
-    start_notice, startup_error_notice, status_notice, temporary_exe_notice,
+    elevated_task_notice, heal_notice, open_error_notice, panel_error_notice, recovery_notice,
+    save_error_notice, start_notice, startup_error_notice, status_notice, temporary_exe_notice,
 };
 use raumakey_controller::settings::{
     DocumentStatus, Location, OpenReport, Recovery, Settings, Status,
@@ -84,8 +84,50 @@ fn the_first_run_tells_where_the_configuration_was_created() {
 
     let notice = start_notice(&report(Location::LocalAppData, true, clean()), true).unwrap();
     let text = shown(&notice);
-    assert!(text.contains(r"%LOCALAPPDATA%\Raumakey"), "{text}");
+    assert!(
+        text.contains(
+            "(trong %LOCALAPPDATA%\\Raumakey, vì thư mục của raumakey.exe không ghi được hoặc \
+             là thư mục được bảo vệ)"
+        ),
+        "{text}"
+    );
     assert!(!text.contains("cạnh raumakey.exe"), "{text}");
+}
+
+/// A settings panel that cannot be opened tells what it would have shown (the welcome is left
+/// out when the panel opens at the start): where `raumakey.toml` lives, with the reason for
+/// `%LOCALAPPDATA%`, and how to switch the mode with the toggle hotkey and the icon.
+#[test]
+fn a_panel_that_cannot_open_tells_where_the_file_is_and_how_to_switch() {
+    let error = WinError::new(E_ACCESSDENIED, "dialog thread");
+    let notice = panel_error_notice(Location::ExeDir, Some(&path()), Some("Ctrl+Shift"), &error);
+    assert_eq!(notice.kind, NoticeKind::Warning);
+    assert_eq!(notice.question, None);
+    assert_eq!(
+        shown(&notice),
+        "Raumakey không mở được bảng cấu hình (lỗi 0x80070005 tại dialog thread). Raumakey vẫn \
+         chạy, và menu của biểu tượng vẫn đổi được các lựa chọn.\n\nTệp cấu hình: \
+         D:\\Tools\\Raumakey\\raumakey.toml\n(cạnh raumakey.exe)\n\nBiểu tượng V/E ở khay hệ \
+         thống cho biết chế độ gõ: V là tiếng Việt, E là tiếng Anh. Nhấp vào biểu tượng hoặc \
+         nhấn Ctrl+Shift để đổi chế độ; nhấp chuột phải vào biểu tượng để mở menu."
+    );
+
+    let local = Path::new(r"C:\Users\An\AppData\Local\Raumakey\raumakey.toml");
+    let notice = panel_error_notice(Location::LocalAppData, Some(local), None, &error);
+    let text = shown(&notice);
+    assert!(
+        text.contains(
+            "Tệp cấu hình: C:\\Users\\An\\AppData\\Local\\Raumakey\\raumakey.toml\n(trong \
+             %LOCALAPPDATA%\\Raumakey, vì thư mục của raumakey.exe không ghi được hoặc là thư \
+             mục được bảo vệ)"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("Nhấp vào biểu tượng để đổi chế độ"), "{text}");
+
+    let notice = panel_error_notice(Location::Unavailable, None, Some("Ctrl+Shift"), &error);
+    let text = shown(&notice);
+    assert!(text.contains("không được lưu"), "{text}");
 }
 
 /// When the settings panel opens at the start (D43), it tells where the file is and how to

@@ -52,14 +52,27 @@
 //!   that arrived while the box was open did not reach it. The close (by the user, or
 //!   dismissed by an exit) arrives as [`Event::PanelClosed`] with the number of the latest
 //!   opening; the number and the close are read and marked together, so a reopening never
-//!   loses its close.
+//!   loses its close. The panel counts as closed from the moment its handler agrees to close,
+//!   before the dialog ends, so an opening in the instant it is going away starts a new panel
+//!   instead of renumbering the one that goes; so does a panel that was up and whose window
+//!   takes no message any more. A new number is given to the open panel only once a message
+//!   reached it, so the close of a replaced panel names an earlier opening, which the tray
+//!   ignores. A panel whose thread cannot start opens nothing: the tray learns it as a close,
+//!   and a box ([`panel_error_notice`]) tells what the panel would have shown, as the welcome
+//!   of a first run would (the panel opened at the start replaces it).
 //! - [`ShellTray`] also shows one macro list editor at a time (`crate::macro_dialog`, D44:
-//!   "Danh sách gõ tắt…" of the panel): `spawn_macro_list` on a thread of its own, which reads
-//!   and writes `raumakey-macros.toml` there. Opening it while it is open brings it to the
-//!   front; one that has closed (it counts as closed a moment after its window is gone) is
-//!   replaced by a new one. Each save arrives as [`Event::MacrosSaved`] in the inbox, then
-//!   [`WAKE`] (the tray has the worker poll at once); its close needs no message. An editor
-//!   whose thread cannot start opens nothing, without a notice: choosing it again tries again.
+//!   "Danh sách gõ tắt…" of the panel): `spawn_macro_list_with` (centered, its questions in
+//!   message boxes, as `spawn_macro_list`) on a thread of its own, which reads and writes
+//!   `raumakey-macros.toml` there. Opening it while it is open brings it to the front; one that
+//!   has closed is replaced by a new one, also in the moment after its window is gone and
+//!   before its thread has marked it closed: an editor that was created (its `init` ran, which
+//!   the shell learns through the editor's prompter) and whose window takes no message any
+//!   more counts as closed. One instant is left: between the editor's agreeing to close and
+//!   its window going away, an opening reaches the window, nothing comes to the front, and
+//!   choosing it again opens a new editor. Each save arrives as [`Event::MacrosSaved`] in the
+//!   inbox, then [`WAKE`] (the tray has the worker poll at once); its close needs no message.
+//!   An editor whose thread cannot start opens nothing, without a notice: choosing it again
+//!   tries again.
 //!
 //! # Threads and messages
 //!
@@ -167,8 +180,12 @@
 //!     and https://github.com/khachuy2705/raumakey. A copy in `C:\Program Files\Raumakey`
 //!     (copied there as administrator) shows a path in `%LOCALAPPDATA%\Raumakey`.
 //! 11. **Exit stops typing at once:** type `tiee` in Notepad, choose "Thoát": the icon goes,
-//!     `s` then types a plain `s`, and no key is stuck down. Also `taskkill /IM raumakey.exe`
-//!     (without `/F`) with the menu closed and with it open: the icon goes, typing is plain.
+//!     `s` then types a plain `s`, and no key is stuck down. `taskkill /F /IM raumakey.exe`
+//!     ends it at once: typing is plain (the hook goes with the process), and the icon goes
+//!     once the mouse passes over it. `taskkill` without `/F` sends `WM_CLOSE` only to the
+//!     visible windows of the process (plan §16.2), never to the hidden tray window: it closes
+//!     an open box, the panel, or the editor as their close box would, and Raumakey keeps
+//!     running.
 //! 12. **Explorer restart:** switch to E and VNI, restart Windows Explorer (Task Manager):
 //!     the icon comes back as E with its tooltip (matrix #58).
 //! 13. **Sign out while it runs:** no error box, no hang; a menu change made just before is
@@ -179,10 +196,11 @@
 //!     setting: one warning box says it cannot be saved and the change stays in effect. Make
 //!     the file writable again: within about 2 s the change is in the file (the retry), and
 //!     a change before "Thoát" is saved at the exit.
-//! 16. **Boxes never block:** on a first run, leave the welcome box open and run
-//!     `taskkill /PID <pid>` (without `/F`): the process ends within a second and the box
-//!     goes with it. With a box open, click the icon (it switches), restart Explorer (the icon
-//!     comes back), and sign out (no hang).
+//! 16. **Boxes never block:** leave a box open ("Giới thiệu", or the welcome of a first run
+//!     with `show_panel_on_start = false`) and run `taskkill /PID <pid>` (without `/F`): only
+//!     the box closes, as its OK would (plan §16.2), and Raumakey keeps running with its
+//!     icon. With a box open, click the icon (it switches), restart Explorer (the icon comes
+//!     back), choose "Thoát" (the box goes with the controller), and sign out (no hang).
 //! 17. **Temporary folder:** open the package ZIP in Explorer and run `raumakey.exe` from
 //!     inside it: "Khởi động cùng Windows" explains that Raumakey must be extracted first and
 //!     makes no shortcut; a saved `shortcut` is not repaired there.
@@ -198,10 +216,16 @@
 //! 20. **Panel at start:** on the first run the panel `Raumakey <version> – Bảng cấu hình`
 //!     opens after the icon, in the foreground, with the Raumakey icon in its title bar and on
 //!     its own taskbar button; it shows the defaults, the hint "Bật/tắt nhanh: Ctrl+Shift hoặc
-//!     nhấp biểu tượng V/E", and "Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml (cạnh
-//!     raumakey.exe)". Every label is whole (the three long check boxes on two lines). Turn off
-//!     "Mở bảng này khi Raumakey chạy", "Thoát", start again: no panel; turn it on in the
-//!     panel (open it from the menu), restart: it opens.
+//!     nhấp biểu tượng V/E", and under "Mọi thay đổi có hiệu lực và được lưu ngay." the line
+//!     "Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml" with "(cạnh raumakey.exe)" under it.
+//!     Every label is whole (the three long check boxes on two lines). Turn off "Mở bảng này
+//!     khi Raumakey chạy", "Thoát", start again: no panel; turn it on in the panel (open it
+//!     from the menu), restart: it opens. A first run of a copy in `C:\Program Files\Raumakey`
+//!     (copied there as administrator) and one from the package ZIP opened in Explorer show
+//!     no welcome box either: the path line ends with `raumakey.toml` (a long path loses
+//!     characters in its middle, never the file name), and the two lines under it say "(trong
+//!     %LOCALAPPDATA%\Raumakey, vì thư mục của raumakey.exe không ghi được hoặc là thư mục
+//!     được bảo vệ)", whole.
 //! 21. **Opening:** "Bảng cấu hình…" opens it; with it open (or minimized, or behind another
 //!     window) choose it again: the same panel comes to the front, no second one. Start
 //!     `raumakey.exe` again from Explorer while it runs: the panel comes to the front (opens
@@ -223,20 +247,29 @@
 //!     explained and it is checked again.
 //! 25. **"Mặc định":** change the method, the switches of "Cách gõ" and "Gõ tắt", the mode,
 //!     and "Khởi động cùng Windows"; click "Mặc định": a question box owned by the panel asks
-//!     first; "No" changes nothing; "Yes" resets the two groups (Telex, the defaults) and
-//!     leaves the mode, the start with Windows, "Mở bảng này…", and `raumakey-macros.toml`
-//!     as they were.
-//! 26. **Closing:** Esc, Enter (with the focus on a check box), "Đóng", and the close box each
-//!     close the panel; nothing is asked and every change stays saved.
-//! 27. **Exit and sign-out with the panel open:** "Thoát" from the menu, `taskkill /IM
-//!     raumakey.exe` (without `/F`), and a sign-out each close the panel at once with the
-//!     controller (also with the "Mặc định" question open); no hang.
+//!     first and names what stays (the mode, the start with Windows, the panel at start, and
+//!     the macro list); "No" changes nothing; "Yes" resets the two groups (Telex, the
+//!     defaults) and leaves the mode, the start with Windows, "Mở bảng này…", and
+//!     `raumakey-macros.toml` as they were.
+//! 26. **Keyboard and closing:** Tab moves through the controls in order. On a check box the
+//!     arrow keys move only among the check boxes of its own group ("Gõ tiếng Việt" alone,
+//!     "Cách gõ", "Gõ tắt", "Hệ thống"), never into the method list or onto a button, so the
+//!     method changes only in the list itself. Esc, Enter (with the focus on a check box),
+//!     "Đóng", and the close box each close the panel; nothing is asked and every change
+//!     stays saved.
+//! 27. **Exit and sign-out with the panel open:** "Thoát" from the menu and a sign-out each
+//!     close the panel at once with the controller (also with the "Mặc định" question open);
+//!     no hang. `taskkill /IM raumakey.exe` without `/F` is no exit: it sends `WM_CLOSE` only
+//!     to the visible windows (plan §16.2), so it closes just the panel, as its close box
+//!     would, and the controller keeps running with its icon; "Bảng cấu hình…" opens the
+//!     panel again.
 //! 28. **Elevated:** start it with "Run as administrator", then start `raumakey.exe` from a
 //!     normal prompt: the elevated controller's panel comes to the front; its controls work.
 //! 29. **No folder:** with no usable folder (`Location::Unavailable`, e.g. a read-only exe
-//!     folder and an unwritable `%LOCALAPPDATA%`), the footer says "Tệp cấu hình: không có,
-//!     nên các thay đổi không được lưu.", "Mở file cấu hình" and "Danh sách gõ tắt…" are
-//!     disabled, and the other controls still change typing until the exit.
+//!     folder and an unwritable `%LOCALAPPDATA%`), the path line says "Tệp cấu hình: không
+//!     có, nên các thay đổi không được lưu." with nothing under it, "Mở file cấu hình" and
+//!     "Danh sách gõ tắt…" are disabled, and the other controls still change typing until the
+//!     exit.
 //! 30. **DPI:** on a monitor at 150 % (and when the panel is dragged between monitors of
 //!     different scale), the text is sharp, every label fits, and the icons are not blurred.
 //!
@@ -245,18 +278,21 @@
 //! 31. **From the panel:** "Danh sách gõ tắt…" opens the editor ("Raumakey – Danh sách gõ
 //!     tắt") with the rows of `raumakey-macros.toml` beside `raumakey.toml`; click the button
 //!     again (or with the editor minimized or behind the panel): the same editor comes to the
-//!     front, no second one. Close it and click again: a new one opens. Then go through items
-//!     1–8 of the editor's list.
+//!     front, no second one. Close it and click again at once: a new one opens. Then go
+//!     through items 1–8 of the editor's list.
 //! 32. **Saving reaches typing at once:** add a macro and "Lưu": it expands in Notepad right
 //!     away, without waiting for the 2-second poll; also while a hand edit of `raumakey.toml`
 //!     is being reloaded.
 //! 33. **Exit with the editor open:** with unsaved rows and with one of its boxes open, choose
-//!     "Thoát", run `taskkill /IM raumakey.exe` (without `/F`), and sign out: the editor and its
-//!     box close at once with the controller, nothing is asked, and `raumakey-macros.toml` is
-//!     unchanged (the editor's item 9).
+//!     "Thoát" and sign out: each time the editor and its box close at once with the controller,
+//!     nothing is asked, and `raumakey-macros.toml` is unchanged (the editor's item 9).
+//!     `taskkill /IM raumakey.exe` without `/F` is no exit: it sends `WM_CLOSE` only to the
+//!     visible windows (plan §16.2), so with unsaved rows (and no box open) the editor asks
+//!     its discard question, as its close box would, and the controller keeps running.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
@@ -284,8 +320,8 @@ use raumakey_windows::window::{
 };
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 
-use crate::macro_dialog::{Placement, Prompt, Prompter, spawn_macro_list, spawn_macro_list_with};
-use crate::notice::{Notice, NoticeKind};
+use crate::macro_dialog::{MessageBoxes, Placement, Prompt, Prompter, spawn_macro_list_with};
+use crate::notice::{Notice, NoticeKind, panel_error_notice};
 use crate::panel::{
     ControlValue, ID_METHOD, PANEL_REFRESH, PanelRequest, PanelState, PanelView, ValueKind,
     confirmation, off_screen_panel_template, panel_template, request, value_kind,
@@ -976,7 +1012,7 @@ pub struct ShellTray<A: NotifyArea = WinNotifyArea> {
     /// The panel opened last, which may still be open.
     panel: Option<OpenPanel>,
     /// The macro list editor opened last, which may still be open.
-    macro_list: Option<DetachedDialog>,
+    macro_list: Option<OpenEditor>,
     /// The panel and the editor open off every monitor, never activated, and the editor asks
     /// nothing (tests).
     off_screen_dialogs: bool,
@@ -1011,21 +1047,23 @@ impl<A: NotifyArea> ShellTray<A> {
 
     /// The same shell with the dialogs of the tests: the settings panel
     /// ([`off_screen_panel_template`]) and the macro list editor ([`Placement::OffScreen`])
-    /// open off every monitor, are never activated or brought to the front, and the editor
-    /// answers its own questions "no" without showing a box.
+    /// open off every monitor, are never activated or brought to the front (an open editor
+    /// gets a private message, `EDITOR_PROBE`, instead), the editor answers its own questions
+    /// "no" without showing a box, and a panel that cannot be opened shows no box either.
     #[must_use]
     pub fn with_off_screen_dialogs(mut self) -> Self {
         self.off_screen_dialogs = true;
         self
     }
 
-    /// Starts a panel showing `state` as opening `serial`; `None` when it cannot be shown,
-    /// which the tray learns as a close.
-    fn spawn_panel(&self, serial: u64, state: PanelState) -> Option<OpenPanel> {
+    /// Starts a panel showing `state` as opening `serial`; fails when its thread cannot start
+    /// (or its template cannot be built).
+    fn spawn_panel(&self, serial: u64, state: PanelState) -> WinResult<OpenPanel> {
         let shared = Arc::new(Mutex::new(PanelShared {
             state,
             serial,
             closed: false,
+            up: false,
         }));
         let template = if self.off_screen_dialogs {
             off_screen_panel_template()
@@ -1056,18 +1094,36 @@ impl<A: NotifyArea> ShellTray<A> {
                 wake(&target);
             }
         };
-        match template
-            .build()
-            .and_then(|template| spawn_dialog(template, handler, on_close))
+        let dialog = spawn_dialog(template.build()?, handler, on_close)?;
+        Ok(OpenPanel { dialog, shared })
+    }
+
+    /// Shows `state` in the panel `open` as opening `serial`, and brings it to the front
+    /// (never the test dialogs). False, and the panel counts as closed, when it is closed or
+    /// closing (see [`PanelShared::closed`]), or when it was up and its window takes no
+    /// message any more: the caller starts a new panel then. The close of this one names an
+    /// earlier opening, which the tray ignores, since the number is set only once the panel
+    /// was reached.
+    fn reuse_panel(&self, open: &OpenPanel, serial: u64, state: &PanelState) -> bool {
         {
-            Ok(dialog) => Some(OpenPanel { dialog, shared }),
-            Err(_) => {
-                // No panel: the tray takes it as closed (the inbox is drained after this).
-                let _ = self.inbox.send(Event::PanelClosed(serial));
-                wake(&self.wake);
-                None
+            let mut shared = lock(&open.shared);
+            if shared.closed {
+                return false;
             }
+            shared.state = state.clone();
         }
+        // Both fail while the panel is starting, before its window is published: it shows the
+        // shared state once it is up, and a new window comes to the front by itself. Both
+        // also fail once its window is gone.
+        let reached = open.dialog.post(PANEL_REFRESH, 0, 0)
+            && (self.off_screen_dialogs || open.dialog.bring_to_front());
+        let mut shared = lock(&open.shared);
+        if shared.closed || (!reached && shared.up) {
+            shared.closed = true;
+            return false;
+        }
+        shared.serial = serial;
+        true
     }
 }
 
@@ -1078,8 +1134,15 @@ struct PanelShared {
     state: PanelState,
     /// The opening the panel belongs to ([`Effect::OpenPanel`]).
     serial: u64,
-    /// The panel was closed (set on its thread, after the dialog is gone).
+    /// The panel is closed or closing, and an opening starts a new one. Set on its thread
+    /// when its handler agrees to close (before the dialog ends, so an opening in the instant
+    /// the dialog is going away does not reuse it) and once the dialog is gone; by the tray's
+    /// thread when the panel was up and its window took no message any more.
     closed: bool,
+    /// The panel's window took a message after `init` (its handle was published by then): a
+    /// message that cannot be posted to it any more means that it is gone, while one posted
+    /// before is only early.
+    up: bool,
 }
 
 type SharedPanel = Arc<Mutex<PanelShared>>;
@@ -1148,6 +1211,11 @@ impl PanelDialog {
         let _ = self.inbox.send(Event::Panel(request));
         wake(&self.wake);
     }
+
+    /// The panel's window took a message after `init` ([`PanelShared::up`]).
+    fn mark_up(&self) {
+        lock(&self.shared).up = true;
+    }
 }
 
 impl DialogHandler for PanelDialog {
@@ -1166,6 +1234,7 @@ impl DialogHandler for PanelDialog {
     }
 
     fn command(&mut self, dialog: &Dialog<'_>, id: u16, code: u16) {
+        self.mark_up();
         let value = match value_kind(id) {
             Some(ValueKind::Check) => Some(ControlValue::Checked(dialog.checked(id))),
             Some(ValueKind::Choice) => Some(ControlValue::Selected(dialog.combo_selected(id))),
@@ -1186,13 +1255,17 @@ impl DialogHandler for PanelDialog {
     }
 
     fn app_message(&mut self, dialog: &Dialog<'_>, message: AppMessage, _: usize, _: isize) {
+        // The refresh that `init` posted to the panel arrives first.
+        self.mark_up();
         if message == PANEL_REFRESH {
             self.show(dialog);
         }
     }
 
     fn close_requested(&mut self, _dialog: &Dialog<'_>) -> bool {
-        // Every change is saved already: nothing to ask.
+        // Every change is saved already: nothing to ask. The panel counts as closed from now
+        // on: the dialog ends once this returns.
+        lock(&self.shared).closed = true;
         true
     }
 }
@@ -1268,22 +1341,33 @@ impl<A: NotifyArea> TrayShell for ShellTray<A> {
     }
 
     fn open_panel(&mut self, serial: u64, state: PanelState) {
-        if let Some(open) = &self.panel {
-            let mut shared = lock(&open.shared);
-            if !shared.closed {
-                shared.state = state;
-                shared.serial = serial;
-                drop(shared);
-                // Both are refused while the panel is still starting: it shows the shared
-                // state when it is up, and a new window comes to the front by itself.
-                let _ = open.dialog.post(PANEL_REFRESH, 0, 0);
+        if let Some(open) = &self.panel
+            && self.reuse_panel(open, serial, &state)
+        {
+            return;
+        }
+        if let Some(old) = self.panel.take() {
+            // Gone or going already; this only makes sure that one panel is left.
+            old.dialog.dismiss();
+        }
+        match self.spawn_panel(serial, state.clone()) {
+            Ok(open) => self.panel = Some(open),
+            Err(error) => {
+                // No panel: the tray takes it as closed (the inbox is drained after this), and
+                // a box tells what the panel would have shown (at the start, the panel takes
+                // the place of the welcome); the test dialogs show no box.
+                let _ = self.inbox.send(Event::PanelClosed(serial));
+                wake(&self.wake);
                 if !self.off_screen_dialogs {
-                    let _ = open.dialog.bring_to_front();
+                    self.notify(panel_error_notice(
+                        state.location,
+                        state.config_path.as_deref(),
+                        state.toggle_hotkey.as_deref(),
+                        &error,
+                    ));
                 }
-                return;
             }
         }
-        self.panel = self.spawn_panel(serial, state);
     }
 
     fn refresh_panel(&mut self, state: PanelState) {
@@ -1306,14 +1390,24 @@ impl<A: NotifyArea> TrayShell for ShellTray<A> {
 
     fn open_macro_list(&mut self, folder: PathBuf) {
         if let Some(open) = &self.macro_list
-            && !open.is_closed()
+            && !open.dialog.is_closed()
         {
-            // Refused while the editor is still starting: a new window comes to the front by
-            // itself.
-            if !self.off_screen_dialogs {
-                let _ = open.bring_to_front();
+            // Both fail while the editor is starting, before its window is published (a new
+            // window comes to the front by itself), and once its window is gone.
+            let reached = if self.off_screen_dialogs {
+                open.dialog.post(EDITOR_PROBE, 0, 0)
+            } else {
+                open.dialog.bring_to_front()
+            };
+            if reached || !open.created.load(Ordering::Acquire) {
+                return;
             }
-            return;
+            // Created, yet its window takes no message: it is gone, though its thread has not
+            // marked it closed yet. A new editor.
+        }
+        if let Some(old) = self.macro_list.take() {
+            // Gone or going already; this only makes sure that one editor is left.
+            old.dialog.dismiss();
         }
         let inbox = self.inbox.clone();
         let target = Arc::clone(&self.wake);
@@ -1324,25 +1418,78 @@ impl<A: NotifyArea> TrayShell for ShellTray<A> {
         };
         // Its close needs no answer: the next opening finds it closed.
         let on_closed = || {};
+        let created = Arc::new(AtomicBool::new(false));
         let spawned = if self.off_screen_dialogs {
             spawn_macro_list_with(
                 Placement::OffScreen,
-                SilentOffScreen,
+                Tracked::new(SilentOffScreen, &created),
                 folder,
                 on_saved,
                 on_closed,
             )
         } else {
-            spawn_macro_list(folder, on_saved, on_closed)
+            // `spawn_macro_list`, with the creation tracked.
+            spawn_macro_list_with(
+                Placement::Centered,
+                Tracked::new(MessageBoxes, &created),
+                folder,
+                on_saved,
+                on_closed,
+            )
         };
         // An editor whose thread cannot start opens nothing; choosing it again tries again.
-        self.macro_list = spawned.ok();
+        self.macro_list = spawned.ok().map(|dialog| OpenEditor { dialog, created });
     }
 
     fn close_macro_list(&mut self) {
         if let Some(open) = self.macro_list.take() {
-            open.dismiss();
+            open.dialog.dismiss();
         }
+    }
+}
+
+/// The macro list editor opened last.
+#[derive(Debug)]
+struct OpenEditor {
+    dialog: DetachedDialog,
+    /// Its `init` ran ([`Tracked`]): from then on a message that cannot be posted to it means
+    /// that its window is gone, while before it means only that it is not up yet.
+    created: Arc<AtomicBool>,
+}
+
+/// What the test variant posts to an open editor in place of bringing it to the front, to
+/// learn whether its window still takes messages: a private message the editor does not use
+/// (it uses the first offsets only), the last below the range the dialog box keeps.
+const EDITOR_PROBE: AppMessage = match AppMessage::new(0x3FEF) {
+    Some(message) => message,
+    None => panic!("offset outside the WM_APP range"),
+};
+
+/// The questions of the editor through `P`, marking `created` once the editor's `init` ran
+/// ([`Prompter::created`], which `P` is told too).
+#[derive(Debug)]
+struct Tracked<P> {
+    prompter: P,
+    created: Arc<AtomicBool>,
+}
+
+impl<P> Tracked<P> {
+    fn new(prompter: P, created: &Arc<AtomicBool>) -> Self {
+        Self {
+            prompter,
+            created: Arc::clone(created),
+        }
+    }
+}
+
+impl<P: Prompter> Prompter for Tracked<P> {
+    fn created(&mut self, dialog: &Dialog<'_>) {
+        self.created.store(true, Ordering::Release);
+        self.prompter.created(dialog);
+    }
+
+    fn ask(&mut self, dialog: &Dialog<'_>, prompt: &Prompt) -> bool {
+        self.prompter.ask(dialog, prompt)
     }
 }
 

@@ -13,18 +13,25 @@
 //! test name, so a Raumakey running on this desktop never sees it). A watchdog ends the
 //! message loop with [`WATCHDOG`] if the code under test never does.
 //!
-//! One test runs the real settings panel (`ShellTray` with its off-screen variant): it stays
-//! off every monitor and is never activated or brought to the front, and it is driven with
-//! `SendMessageW` from the test thread; no test clicks "Mặc định", whose question would show a
-//! message box. Every wait has a timeout.
+//! Some tests run the real settings panel and the real macro list editor (`ShellTray` with its
+//! off-screen variant), one test at a time ([`real_shell`]): they stay off every monitor and
+//! are never activated or brought to the front, and they are driven with `SendMessageW` from
+//! the test thread; no test clicks "Mặc định", whose question would show a message box. Every
+//! wait has a timeout.
 
 #![cfg(windows)]
+
+/// Common Controls 6 for the real panel, as `raumakey.exe`'s manifest asks for it; shared with
+/// the tests of `raumakey-windows`.
+#[path = "../../raumakey-windows/tests/layer/common_controls_v6.rs"]
+mod common_controls_v6;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use raumakey_config::{ConfigError, StartupMode};
@@ -36,10 +43,10 @@ use raumakey_controller::notice::{
     Notice, NoticeKind, Question, save_error_notice, temporary_exe_notice,
 };
 use raumakey_controller::panel::{
-    ID_AUTO_RESTORE, ID_CLOSE, ID_CONFIG_FILE, ID_FREE_MARKING, ID_HINT, ID_MACRO_AUTO_CASE,
-    ID_MACRO_LIST, ID_MACROS, ID_MACROS_WHEN_ENGLISH, ID_METHOD, ID_MODERN_TONE, ID_OPEN_CONFIG,
-    ID_SHOW_ON_START, ID_SPELL_CHECK, ID_STARTUP, ID_VIETNAMESE, PanelRequest, PanelState,
-    panel_title,
+    ID_AUTO_RESTORE, ID_CLOSE, ID_CONFIG_FILE, ID_CONFIG_LOCATION, ID_FREE_MARKING, ID_HINT,
+    ID_MACRO_AUTO_CASE, ID_MACRO_LIST, ID_MACROS, ID_MACROS_WHEN_ENGLISH, ID_METHOD,
+    ID_MODERN_TONE, ID_OPEN_CONFIG, ID_SHOW_ON_START, ID_SPELL_CHECK, ID_STARTUP, ID_VIETNAMESE,
+    PanelRequest, PanelState, panel_title,
 };
 use raumakey_controller::settings::{Change, DocumentStatus, Location, Status};
 use raumakey_controller::tray::{
@@ -59,20 +66,25 @@ use raumakey_windows::window::{
     Window, WindowClass, post_quit, register_user_message, run_message_loop,
 };
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    DT_CALCRECT, DT_MODIFYSTRING, DT_NOPREFIX, DT_PATH_ELLIPSIS, DT_SINGLELINE, DT_WORDBREAK,
+    GetDC, HDC, HGDIOBJ, ReleaseDC, SelectObject,
+};
 use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use windows::Win32::UI::WindowsAndMessaging::{
     BM_CLICK, BM_GETCHECK, CB_GETCOUNT, CB_GETCURSEL, CB_SETCURSEL, CHANGEFILTERSTRUCT,
-    ChangeWindowMessageFilterEx, EnumWindows, GA_PARENT, GetAncestor, GetClassNameW,
-    GetDesktopWindow, GetDlgItem, GetWindowRect, GetWindowThreadProcessId, InternalGetWindowText,
-    IsWindow, IsWindowVisible, MSGFLT_ALLOW, MSGFLTINFO_ALREADYALLOWED_FORWND, MSGFLTINFO_NONE,
-    MSGFLTINFO_STATUS, PostMessageW, PostThreadMessageW, SMTO_NORMAL, SendMessageTimeoutW,
-    SendMessageW, WM_CLOSE, WM_COMMAND, WM_ENDSESSION, WM_GETTEXT, WM_GETTEXTLENGTH, WM_NULL,
-    WM_QUIT, WM_SETTEXT,
+    ChangeWindowMessageFilterEx, EnumWindows, GA_PARENT, GetAncestor, GetClassNameW, GetClientRect,
+    GetDesktopWindow, GetDlgCtrlID, GetDlgItem, GetNextDlgGroupItem, GetWindowRect,
+    GetWindowThreadProcessId, InternalGetWindowText, IsWindow, IsWindowVisible, MSGFLT_ALLOW,
+    MSGFLTINFO_ALREADYALLOWED_FORWND, MSGFLTINFO_NONE, MSGFLTINFO_STATUS, PostMessageW,
+    PostThreadMessageW, SMTO_NORMAL, SendMessageTimeoutW, SendMessageW, WM_CLOSE, WM_COMMAND,
+    WM_ENDSESSION, WM_GETFONT, WM_GETTEXT, WM_GETTEXTLENGTH, WM_NULL, WM_QUIT, WM_SETTEXT,
 };
 use windows::core::BOOL;
 
 use InputMode::{English, Vietnamese};
+use common_controls_v6::CommonControls6;
 
 /// Exit code of a message loop that the watchdog ended.
 const WATCHDOG: i32 = -77;
@@ -1282,8 +1294,8 @@ struct Found {
     windows: Vec<HWND>,
 }
 
-/// The top-level dialog windows of this process with the panel's title (only one test of this
-/// executable shows a real panel).
+/// The top-level dialog windows of this process with the panel's title (the tests that show a
+/// real panel take turns, [`real_shell`]).
 fn panel_windows() -> Vec<HWND> {
     dialog_windows(&panel_title())
 }
@@ -1357,6 +1369,150 @@ fn next_event(events: &mpsc::Receiver<Event>) -> Event {
     events.recv_timeout(PANEL_WAIT).expect("an event in time")
 }
 
+/// The tests that show real dialogs take turns: [`panel_windows`] and [`dialog_windows`] find
+/// them by their titles among all windows of this process.
+static REAL_DIALOGS: Mutex<()> = Mutex::new(());
+
+/// A real shell with the test dialogs (off every monitor, never activated), for one test at a
+/// time. Dropped, also when the test failed, it closes its panel and its editor and waits (for
+/// a bounded time) until they are gone, so the next test finds no window of this one.
+struct RealShell {
+    shell: ShellTray<FakeArea>,
+    _turn: MutexGuard<'static, ()>,
+}
+
+impl core::ops::Deref for RealShell {
+    type Target = ShellTray<FakeArea>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.shell
+    }
+}
+
+impl core::ops::DerefMut for RealShell {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.shell
+    }
+}
+
+impl Drop for RealShell {
+    fn drop(&mut self) {
+        self.shell.close_panel();
+        self.shell.close_macro_list();
+        let deadline = Instant::now() + PANEL_WAIT;
+        while (!panel_windows().is_empty() || !dialog_windows(macro_dialog::TITLE).is_empty())
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+/// The real shell of a test, once it is this test's turn, answering into `inbox`.
+fn real_shell(inbox: mpsc::Sender<Event>) -> RealShell {
+    let turn = REAL_DIALOGS.lock().unwrap_or_else(PoisonError::into_inner);
+    let area = FakeArea {
+        log: AreaLog::default(),
+        adds: VecDeque::new(),
+        modifies: VecDeque::new(),
+    };
+    RealShell {
+        shell: ShellTray::with_area(area, inbox, WakeTarget::default()).with_off_screen_dialogs(),
+        _turn: turn,
+    }
+}
+
+// `DrawTextW` with an explicit buffer: the `windows` crate passes the length of a slice as the
+// text's length, while `DT_MODIFYSTRING` needs four more units of room after the text.
+#[link(name = "user32")]
+unsafe extern "system" {
+    #[link_name = "DrawTextW"]
+    fn draw_text(dc: HDC, text: *mut u16, length: i32, rect: *mut RECT, format: u32) -> i32;
+}
+
+/// Runs `body` with a device context of `control` that has the control's font selected.
+fn with_font_of<T>(control: HWND, body: impl FnOnce(HDC) -> T) -> T {
+    let font = send_to(control, WM_GETFONT, 0, 0);
+    // SAFETY: a device context of a window of this process, released below; the font is the
+    // control's own, which outlives the call, and it is deselected before the release.
+    unsafe {
+        let dc = GetDC(Some(control));
+        let previous = SelectObject(dc, HGDIOBJ(font as *mut core::ffi::c_void));
+        let result = body(dc);
+        SelectObject(dc, previous);
+        ReleaseDC(Some(control), dc);
+        result
+    }
+}
+
+/// The text of the label `control` as it draws it with `SS_PATHELLIPSIS`: one line in its
+/// client width, a path that does not fit shortened in its middle (`DT_PATH_ELLIPSIS`).
+fn path_as_shown(control: HWND) -> String {
+    let text = window_text(control);
+    let mut client = RECT::default();
+    // SAFETY: `client` is a valid out buffer.
+    unsafe { GetClientRect(control, &mut client) }.unwrap();
+    with_font_of(control, |dc| {
+        let mut buffer: Vec<u16> = text.encode_utf16().collect();
+        let length = i32::try_from(buffer.len()).unwrap();
+        // Room for the four units `DT_MODIFYSTRING` may add, and the NUL after them.
+        buffer.extend([0; 5]);
+        let mut rect = client;
+        let format = DT_SINGLELINE | DT_PATH_ELLIPSIS | DT_MODIFYSTRING | DT_NOPREFIX;
+        // SAFETY: the buffer holds `length` units of text and five more, as the call may write
+        // four units more and a NUL; `rect` is a valid in/out rectangle.
+        unsafe { draw_text(dc, buffer.as_mut_ptr(), length, &mut rect, format.0) };
+        let end = buffer.iter().position(|&unit| unit == 0).unwrap();
+        String::from_utf16(&buffer[..end]).unwrap()
+    })
+}
+
+/// How many pixels the label `control` needs for its text, wrapped at its client width, and
+/// how many it has.
+fn wrapped_height(control: HWND) -> (i32, i32) {
+    let mut text: Vec<u16> = window_text(control).encode_utf16().collect();
+    let mut client = RECT::default();
+    // SAFETY: `client` is a valid out buffer.
+    unsafe { GetClientRect(control, &mut client) }.unwrap();
+    let needed = with_font_of(control, |dc| {
+        let mut rect = RECT {
+            right: client.right,
+            ..RECT::default()
+        };
+        let length = i32::try_from(text.len()).unwrap();
+        let format = DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX;
+        // SAFETY: the buffer holds `length` units, which the call only reads; `rect` is a
+        // valid in/out rectangle.
+        unsafe { draw_text(dc, text.as_mut_ptr(), length, &mut rect, format.0) };
+        rect.bottom
+    });
+    (needed, client.bottom)
+}
+
+/// The ids of the controls that the arrow keys reach from control `id` of `dialog`, in both
+/// directions (`GetNextDlgGroupItem`, which `IsDialogMessageW` follows), without `id` itself.
+fn arrow_targets(dialog: HWND, id: u16) -> Vec<i32> {
+    let from = item(dialog, id);
+    let mut targets = Vec::new();
+    for previous in [false, true] {
+        let mut at = from;
+        for _ in 0..32 {
+            // SAFETY: only reads the dialog's list of children.
+            at = unsafe { GetNextDlgGroupItem(dialog, Some(at), previous) }.unwrap();
+            if at == from {
+                break;
+            }
+            // SAFETY: only reads the control's id.
+            let target = unsafe { GetDlgCtrlID(at) };
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
+        }
+    }
+    targets.sort_unstable();
+    targets
+}
+
 /// The real panel, through the real shell (off every monitor, never activated): it shows the
 /// state it was opened with; clicks and a new selection become requests in the inbox; a
 /// refresh puts every control to the new state (a refused click is put back, "Kiểu gõ riêng"
@@ -1365,14 +1521,8 @@ fn next_event(events: &mpsc::Receiver<Event>) -> Event {
 /// closes a panel without waiting.
 #[test]
 fn the_real_panel_shows_the_state_sends_requests_and_closes() {
-    let area = FakeArea {
-        log: AreaLog::default(),
-        adds: VecDeque::new(),
-        modifies: VecDeque::new(),
-    };
     let (inbox, events) = mpsc::channel();
-    let mut shell =
-        ShellTray::with_area(area, inbox, WakeTarget::default()).with_off_screen_dialogs();
+    let mut shell = real_shell(inbox);
     let state = panel_state(Vietnamese);
     shell.open_panel(1, state.clone());
     let panel = wait_for_panel();
@@ -1385,6 +1535,10 @@ fn the_real_panel_shows_the_state_sends_requests_and_closes() {
     assert_eq!(
         window_text(item(panel, ID_CONFIG_FILE)),
         state.config_file()
+    );
+    assert_eq!(
+        window_text(item(panel, ID_CONFIG_LOCATION)),
+        state.config_location()
     );
     assert!(is_enabled(item(panel, ID_OPEN_CONFIG)));
     assert!(is_enabled(item(panel, ID_MACRO_LIST)));
@@ -1445,6 +1599,7 @@ fn the_real_panel_shows_the_state_sends_requests_and_closes() {
         window_text(item(panel, ID_CONFIG_FILE)),
         "Tệp cấu hình: không có, nên các thay đổi không được lưu."
     );
+    assert_eq!(window_text(item(panel, ID_CONFIG_LOCATION)), "");
     assert!(!is_enabled(item(panel, ID_OPEN_CONFIG)));
     assert!(!is_enabled(item(panel, ID_MACRO_LIST)));
 
@@ -1478,6 +1633,124 @@ fn the_real_panel_shows_the_state_sends_requests_and_closes() {
     shell.close_panel();
     assert_eq!(next_event(&events), Event::PanelClosed(3));
     wait_until("the panel was destroyed", || !is_window(panel));
+    assert_eq!(panel_windows(), []);
+}
+
+/// The real panel at its font, under Common Controls 6 as `raumakey.exe` shows it: the path
+/// label keeps the file name when it shortens a long path, also for `%LOCALAPPDATA%`; the
+/// location note (with its reason) fits its label; and the arrow keys move from a check box
+/// only to the check boxes of its own group, never to the method list or a button.
+#[test]
+fn the_real_panel_keeps_the_file_name_and_the_arrow_keys_in_their_groups() {
+    let (inbox, events) = mpsc::channel();
+    let mut shell = real_shell(inbox);
+    let mut state = panel_state(Vietnamese);
+    state.location = Location::LocalAppData;
+    state.config_path = Some(PathBuf::from(
+        r"C:\Users\Nguyen Van Anh\AppData\Local\Raumakey\raumakey.toml",
+    ));
+    {
+        // The panel's thread inherits the context; the guard may go once it started.
+        let _v6 = CommonControls6::activate();
+        shell.open_panel(1, state.clone());
+    }
+    let panel = wait_for_panel();
+
+    let groups: [&[u16]; 4] = [
+        &[ID_VIETNAMESE],
+        &[
+            ID_MODERN_TONE,
+            ID_FREE_MARKING,
+            ID_SPELL_CHECK,
+            ID_AUTO_RESTORE,
+        ],
+        &[ID_MACROS, ID_MACROS_WHEN_ENGLISH, ID_MACRO_AUTO_CASE],
+        &[ID_STARTUP, ID_SHOW_ON_START],
+    ];
+    for group in groups {
+        for &id in group {
+            let mut expected: Vec<i32> = group
+                .iter()
+                .filter(|&&other| other != id)
+                .map(|&other| i32::from(other))
+                .collect();
+            expected.sort_unstable();
+            assert_eq!(arrow_targets(panel, id), expected, "from {id}");
+        }
+    }
+
+    let footer = item(panel, ID_CONFIG_FILE);
+    for (location, path, shortened) in [
+        (
+            Location::LocalAppData,
+            r"C:\Users\Nguyen Van Anh\AppData\Local\Raumakey\raumakey.toml",
+            false,
+        ),
+        (
+            Location::LocalAppData,
+            concat!(
+                r"C:\Users\Nguyen Van Anh Tuan.CONTOSO-VIETNAM-HANOI",
+                r"\AppData\Local\Raumakey\raumakey.toml"
+            ),
+            true,
+        ),
+        (
+            Location::ExeDir,
+            concat!(
+                r"C:\Users\Nguyen Van Anh\Downloads",
+                r"\raumakey-0.1.0-x86_64-pc-windows-msvc\raumakey-0.1.0\raumakey.toml"
+            ),
+            true,
+        ),
+    ] {
+        state.location = location;
+        state.config_path = Some(PathBuf::from(path));
+        shell.refresh_panel(state.clone());
+        wait_until("the refresh was shown", || {
+            window_text(footer) == state.config_file()
+        });
+        let shown = path_as_shown(footer);
+        assert!(shown.ends_with(r"\raumakey.toml"), "{shown}");
+        assert_eq!(shown.contains("..."), shortened, "{shown}");
+        let note = item(panel, ID_CONFIG_LOCATION);
+        assert_eq!(window_text(note), state.config_location());
+        let (needed, height) = wrapped_height(note);
+        assert!(needed <= height, "{location:?}: {needed} > {height}");
+    }
+
+    shell.close_panel();
+    assert_eq!(next_event(&events), Event::PanelClosed(1));
+    wait_until("the panel was destroyed", || !is_window(panel));
+}
+
+/// Opened again at once after the user closed it (its dialog has ended, but its thread has
+/// not marked it closed yet): a new panel opens, and only the close of the old opening is
+/// reported, so the tray keeps the new one.
+#[test]
+fn a_panel_opened_again_while_it_closes_opens_a_new_one() {
+    let (inbox, events) = mpsc::channel();
+    let mut shell = real_shell(inbox);
+    let state = panel_state(Vietnamese);
+    shell.open_panel(1, state.clone());
+    let panel = wait_for_panel();
+    // The close box; the handler has agreed once this returns.
+    send_to(panel, WM_CLOSE, 0, 0);
+    shell.open_panel(2, state.clone());
+    assert_eq!(next_event(&events), Event::PanelClosed(1));
+    let mut again = None;
+    wait_until("a new panel came up", || {
+        again = panel_windows().into_iter().find(|&window| window != panel);
+        again.is_some()
+    });
+    let again = again.unwrap();
+    send_to(again, WM_NULL, 0, 0);
+    assert_eq!(shown_checks(again), checks_of(&state));
+    assert!(events.try_recv().is_err(), "the new panel stays open");
+    shell.close_panel();
+    assert_eq!(next_event(&events), Event::PanelClosed(2));
+    wait_until("the panels were destroyed", || {
+        !is_window(panel) && !is_window(again)
+    });
     assert_eq!(panel_windows(), []);
 }
 
@@ -1516,18 +1789,12 @@ fn type_into(edit: HWND, text: &str) {
 /// The real macro list editor through the real shell (off every monitor, never activated, its
 /// questions answered "no" without a box): one editor at a time, a save reaches the inbox as
 /// `MacrosSaved`, the exit closes it without waiting, and once it is closed (by the exit or by
-/// "Đóng") the next opening shows a new one.
+/// "Đóng"), the next opening shows a new one, also the moment its window is gone.
 #[test]
 fn the_real_macro_list_editor_opens_once_reports_saves_and_closes() {
     let folder = tempfile::tempdir().unwrap();
-    let area = FakeArea {
-        log: AreaLog::default(),
-        adds: VecDeque::new(),
-        modifies: VecDeque::new(),
-    };
     let (inbox, events) = mpsc::channel();
-    let mut shell =
-        ShellTray::with_area(area, inbox, WakeTarget::default()).with_off_screen_dialogs();
+    let mut shell = real_shell(inbox);
     let title = macro_dialog::TITLE;
     shell.open_macro_list(folder.path().to_path_buf());
     let editor = wait_for_dialog(title);
@@ -1555,14 +1822,14 @@ fn the_real_macro_list_editor_opens_once_reports_saves_and_closes() {
     shell.open_macro_list(folder.path().to_path_buf());
     let editor = wait_for_dialog(title);
     send_to(item(editor, IDCANCEL), BM_CLICK, 0, 0);
-    wait_until("the editor was closed", || !is_window(editor));
-    // The editor counts as closed a moment after its window is gone (once its thread has left
-    // the dialog box); until then an opening only finds it open. The next opening after that
-    // shows a new editor.
-    wait_until("a new editor was asked for", || {
-        shell.open_macro_list(folder.path().to_path_buf());
-        !dialog_windows(title).is_empty()
-    });
+    // Opened again the moment its window is gone, also before its thread has marked it
+    // closed: a new editor opens.
+    let deadline = Instant::now() + PANEL_WAIT;
+    while is_window(editor) {
+        assert!(Instant::now() < deadline, "the editor was closed in time");
+        std::thread::yield_now();
+    }
+    shell.open_macro_list(folder.path().to_path_buf());
     let editor = wait_for_dialog(title);
     shell.close_macro_list();
     wait_until("the editor was destroyed", || !is_window(editor));

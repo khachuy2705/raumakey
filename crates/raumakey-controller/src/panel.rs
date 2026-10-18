@@ -33,17 +33,29 @@
 //!                              | [ ] Khởi động cùng Windows         |
 //!                              | [x] Mở bảng này khi Raumakey chạy  |
 //!                              +------------------------------------+
-//! Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml (cạnh raumakey.exe)
 //! Mọi thay đổi có hiệu lực và được lưu ngay.
+//! Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml
+//! (cạnh raumakey.exe)
 //! [Mở file cấu hình]  [Mặc định]                               [Đóng]
 //! ```
 //!
 //! The three long check boxes wrap onto two lines (`BS_MULTILINE`). "Đóng" is `IDCANCEL` and
 //! the default button, so Enter, Esc, and the close box all close the panel. The hint and the
-//! footer are labels that the glue fills from [`PanelState::hint`] and
-//! [`PanelState::config_file`]; the footer shortens a long path in its middle
-//! (`SS_PATHELLIPSIS`). Without a folder ([`Location::Unavailable`]) "Mở file cấu hình" and
-//! "Danh sách gõ tắt…" are disabled.
+//! two lines of the footer are labels that the glue fills from [`PanelState::hint`],
+//! [`PanelState::config_file`], and [`PanelState::config_location`]. The path stands alone on
+//! its line, which shortens a long path in its middle (`SS_PATHELLIPSIS` keeps what follows
+//! the last backslash: the file name). The line under it says where the file lives, and for
+//! `%LOCALAPPDATA%` why, on up to two lines ("(trong %LOCALAPPDATA%\Raumakey, vì thư mục của
+//! raumakey.exe không ghi được hoặc là thư mục được bảo vệ)"), as the welcome of a first run
+//! does: the panel opened at the start replaces that welcome. Without a folder
+//! ([`Location::Unavailable`]) the path line says that changes are not saved, the line under
+//! it is empty, and "Mở file cấu hình" and "Danh sách gõ tắt…" are disabled.
+//!
+//! The arrow keys move the focus within a group (`WS_GROUP` starts one), and Windows counts
+//! labels and group boxes as members (`GetNextDlgGroupItem`). So every group holds check
+//! boxes only, the method list alone, push buttons only, or texts only: an arrow key on a
+//! check box never reaches the method list, where the next arrow would change (and save) the
+//! method, nor a button or a label.
 //!
 //! Strings shown to the user are new Raumakey strings in Vietnamese (design §22; not taken
 //! from any other input method). Nothing here holds keystrokes, document text, or macro text:
@@ -62,7 +74,7 @@ use raumakey_windows::dialog_template::{
 use raumakey_windows::window::AppMessage;
 
 use crate::install::PRODUCT_VERSION;
-use crate::notice::location_text;
+use crate::notice::location_explained;
 use crate::settings::{Change, Location};
 
 /// "Gõ tiếng Việt": Vietnamese mode (check box).
@@ -91,12 +103,14 @@ pub const ID_MACRO_LIST: u16 = 123;
 pub const ID_STARTUP: u16 = 130;
 /// "Mở bảng này khi Raumakey chạy" (check box).
 pub const ID_SHOW_ON_START: u16 = 131;
-/// The path of `raumakey.toml` and where it lives (label).
+/// The path of `raumakey.toml` (label, shortened in its middle).
 pub const ID_CONFIG_FILE: u16 = 140;
 /// "Mở file cấu hình" (button).
 pub const ID_OPEN_CONFIG: u16 = 141;
 /// "Mặc định" (button).
 pub const ID_DEFAULTS: u16 = 142;
+/// Where `raumakey.toml` lives, and why for `%LOCALAPPDATA%` (label, two lines).
+pub const ID_CONFIG_LOCATION: u16 = 143;
 /// "Đóng": the Cancel button, which the dialog box answers by closing.
 pub const ID_CLOSE: u16 = IDCANCEL;
 
@@ -124,10 +138,11 @@ const METHODS: [(InputMethod, &str); 4] = [
 ];
 
 /// The question of "Mặc định" ("Reset the items of the groups … to their defaults? The
-/// typing mode, the start with Windows, and the macro list do not change."), in a yes/no box
-/// owned by the panel.
+/// typing mode, the start with Windows, the panel at start, and the macro list do not
+/// change."), in a yes/no box owned by the panel.
 pub const DEFAULTS_QUESTION: &str = "Đặt lại các mục của nhóm \"Cách gõ\" và \"Gõ tắt\" về mặc \
-định? Chế độ gõ, việc khởi động cùng Windows và danh sách gõ tắt không đổi.";
+định? Chế độ gõ, việc khởi động cùng Windows, việc mở bảng khi Raumakey chạy và danh sách gõ tắt \
+không đổi.";
 
 /// The footer without a folder: "Configuration file: none, so changes are not saved."
 const CONFIG_FILE_UNAVAILABLE: &str = "Tệp cấu hình: không có, nên các thay đổi không được lưu.";
@@ -142,7 +157,7 @@ pub const PANEL_REFRESH: AppMessage = match AppMessage::new(1) {
 /// Width of the panel in dialog units.
 pub const PANEL_WIDTH: i16 = 330;
 /// Height of the panel in dialog units.
-pub const PANEL_HEIGHT: i16 = 205;
+pub const PANEL_HEIGHT: i16 = 220;
 /// Where [`off_screen_panel_template`] places the panel (both coordinates), far off every
 /// monitor.
 pub const OFF_SCREEN: i16 = -30_000;
@@ -234,16 +249,24 @@ impl PanelState {
         }
     }
 
-    /// The footer: the path of `raumakey.toml` and where it lives, as "Giới thiệu" names it;
-    /// without a folder, that changes are not saved.
+    /// The path line of the footer: the path of `raumakey.toml` alone, so that the label,
+    /// which shortens a long path in its middle, keeps the file name; without a folder, that
+    /// changes are not saved.
     pub fn config_file(&self) -> String {
         match &self.config_path {
-            Some(path) if self.can_save() => format!(
-                "Tệp cấu hình: {} {}",
-                path.display(),
-                location_text(self.location)
-            ),
+            Some(path) if self.can_save() => format!("Tệp cấu hình: {}", path.display()),
             _ => CONFIG_FILE_UNAVAILABLE.to_owned(),
+        }
+    }
+
+    /// The line under the path: where `raumakey.toml` lives, and for `%LOCALAPPDATA%` why, as
+    /// the welcome of a first run says it (the panel opened at the start replaces that
+    /// welcome); empty without a folder.
+    pub fn config_location(&self) -> &'static str {
+        if self.can_save() {
+            location_explained(self.location)
+        } else {
+            ""
         }
     }
 
@@ -261,7 +284,11 @@ impl PanelState {
             method: methods
                 .iter()
                 .position(|(method, _)| *method == self.method),
-            texts: vec![(ID_HINT, self.hint()), (ID_CONFIG_FILE, self.config_file())],
+            texts: vec![
+                (ID_HINT, self.hint()),
+                (ID_CONFIG_FILE, self.config_file()),
+                (ID_CONFIG_LOCATION, self.config_location().to_owned()),
+            ],
             enabled: vec![(ID_OPEN_CONFIG, can_save), (ID_MACRO_LIST, can_save)],
         }
     }
@@ -294,7 +321,8 @@ pub struct PanelView {
     pub methods: Vec<&'static str>,
     /// The selected item of the method list.
     pub method: Option<usize>,
-    /// Each label filled from the state ([`ID_HINT`], [`ID_CONFIG_FILE`]) and its text.
+    /// Each label filled from the state ([`ID_HINT`], [`ID_CONFIG_FILE`],
+    /// [`ID_CONFIG_LOCATION`]) and its text.
     pub texts: Vec<(u16, String)>,
     /// Each button that needs a folder and whether it is enabled.
     pub enabled: Vec<(u16, bool)>,
@@ -417,7 +445,8 @@ pub fn panel_template() -> DialogTemplate {
         )
         .with_control(
             Control::label(ID_HINT, "", rect(90, 8, 233, 8))
-                .with_style(styles::SS_NOPREFIX | styles::SS_ENDELLIPSIS),
+                .with_style(styles::SS_NOPREFIX | styles::SS_ENDELLIPSIS)
+                .group(),
         )
         .with_control(Control::group_box(
             STATIC_ID,
@@ -426,11 +455,14 @@ pub fn panel_template() -> DialogTemplate {
         ))
         .with_control(Control::label(STATIC_ID, "Kiểu gõ:", rect(14, 37, 34, 8)))
         .with_control(Control::drop_down_list(ID_METHOD, rect(50, 35, 108, 12)).group())
-        .with_control(Control::check_box(
-            ID_MODERN_TONE,
-            "Đặt dấu kiểu mới (oà, uý)",
-            rect(14, 52, 144, 10),
-        ))
+        .with_control(
+            Control::check_box(
+                ID_MODERN_TONE,
+                "Đặt dấu kiểu mới (oà, uý)",
+                rect(14, 52, 144, 10),
+            )
+            .group(),
+        )
         .with_control(two_line_check_box(
             ID_FREE_MARKING,
             "Cho gõ dấu sau phụ âm cuối (toans → toán)",
@@ -446,11 +478,7 @@ pub fn panel_template() -> DialogTemplate {
             "Giữ nguyên phím đã gõ khi từ không phải tiếng Việt",
             rect(14, 99, 144, 18),
         ))
-        .with_control(Control::group_box(
-            STATIC_ID,
-            "Gõ tắt",
-            rect(169, 22, 154, 84),
-        ))
+        .with_control(Control::group_box(STATIC_ID, "Gõ tắt", rect(169, 22, 154, 84)).group())
         .with_control(Control::check_box(ID_MACROS, "Bật gõ tắt", rect(176, 35, 140, 10)).group())
         .with_control(Control::check_box(
             ID_MACROS_WHEN_ENGLISH,
@@ -462,16 +490,10 @@ pub fn panel_template() -> DialogTemplate {
             "Viết hoa theo cách gõ (Ko → Không, KO → KHÔNG)",
             rect(176, 61, 140, 18),
         ))
-        .with_control(Control::push_button(
-            ID_MACRO_LIST,
-            "Danh sách gõ tắt…",
-            rect(176, 84, 84, 14),
-        ))
-        .with_control(Control::group_box(
-            STATIC_ID,
-            "Hệ thống",
-            rect(169, 110, 154, 42),
-        ))
+        .with_control(
+            Control::push_button(ID_MACRO_LIST, "Danh sách gõ tắt…", rect(176, 84, 84, 14)).group(),
+        )
+        .with_control(Control::group_box(STATIC_ID, "Hệ thống", rect(169, 110, 154, 42)).group())
         .with_control(
             Control::check_box(
                 ID_STARTUP,
@@ -486,26 +508,33 @@ pub fn panel_template() -> DialogTemplate {
             rect(176, 136, 140, 10),
         ))
         .with_control(
-            Control::label(ID_CONFIG_FILE, "", rect(7, 159, 316, 8))
+            Control::label(
+                STATIC_ID,
+                "Mọi thay đổi có hiệu lực và được lưu ngay.",
+                rect(7, 158, 316, 8),
+            )
+            .group(),
+        )
+        .with_control(
+            Control::label(ID_CONFIG_FILE, "", rect(7, 169, 316, 8))
                 .with_style(styles::SS_NOPREFIX | styles::SS_PATHELLIPSIS),
         )
-        .with_control(Control::label(
-            STATIC_ID,
-            "Mọi thay đổi có hiệu lực và được lưu ngay.",
-            rect(7, 170, 316, 8),
-        ))
         .with_control(
-            Control::push_button(ID_OPEN_CONFIG, "Mở file cấu hình", rect(7, 184, 76, 14)).group(),
+            Control::label(ID_CONFIG_LOCATION, "", rect(7, 179, 316, 16))
+                .with_style(styles::SS_NOPREFIX),
+        )
+        .with_control(
+            Control::push_button(ID_OPEN_CONFIG, "Mở file cấu hình", rect(7, 199, 76, 14)).group(),
         )
         .with_control(Control::push_button(
             ID_DEFAULTS,
             "Mặc định",
-            rect(87, 184, 56, 14),
+            rect(87, 199, 56, 14),
         ))
         .with_control(Control::default_push_button(
             ID_CLOSE,
             "Đóng",
-            rect(267, 184, 56, 14),
+            rect(267, 199, 56, 14),
         ))
 }
 

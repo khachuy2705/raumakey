@@ -9,8 +9,8 @@ use raumakey_config::StartupMode;
 use raumakey_controller::install::PRODUCT_VERSION;
 use raumakey_controller::panel::{
     CHECK_BOXES, ControlValue, DEFAULTS_QUESTION, ID_AUTO_RESTORE, ID_CLOSE, ID_CONFIG_FILE,
-    ID_DEFAULTS, ID_FREE_MARKING, ID_HINT, ID_MACRO_AUTO_CASE, ID_MACRO_LIST, ID_MACROS,
-    ID_MACROS_WHEN_ENGLISH, ID_METHOD, ID_MODERN_TONE, ID_OPEN_CONFIG, ID_SHOW_ON_START,
+    ID_CONFIG_LOCATION, ID_DEFAULTS, ID_FREE_MARKING, ID_HINT, ID_MACRO_AUTO_CASE, ID_MACRO_LIST,
+    ID_MACROS, ID_MACROS_WHEN_ENGLISH, ID_METHOD, ID_MODERN_TONE, ID_OPEN_CONFIG, ID_SHOW_ON_START,
     ID_SPELL_CHECK, ID_STARTUP, ID_VIETNAMESE, OFF_SCREEN, PANEL_REFRESH, PanelRequest, PanelState,
     PanelView, ValueKind, confirmation, off_screen_panel_template, panel_template, request,
     value_kind,
@@ -198,14 +198,16 @@ fn the_hint_names_the_toggle_hotkey_and_the_icon() {
     );
 }
 
-/// The footer names `raumakey.toml` and where it lives, as "Giới thiệu" does; without a
-/// folder it says that changes are not saved.
+/// The footer names `raumakey.toml` on a line of its own and where it lives on the next, as
+/// the welcome of a first run does (with the reason for `%LOCALAPPDATA%`); without a folder
+/// its one line says that changes are not saved.
 #[test]
 fn the_footer_names_the_configuration_file_and_where_it_lives() {
     assert_eq!(
         state().config_file(),
-        r"Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml (cạnh raumakey.exe)"
+        r"Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml"
     );
+    assert_eq!(state().config_location(), "(cạnh raumakey.exe)");
     let local = Path::new(r"C:\Users\An\AppData\Local\Raumakey\raumakey.toml");
     let state = PanelState::new(
         &runtime(),
@@ -216,10 +218,12 @@ fn the_footer_names_the_configuration_file_and_where_it_lives() {
     );
     assert_eq!(
         state.config_file(),
-        concat!(
-            r"Tệp cấu hình: C:\Users\An\AppData\Local\Raumakey\raumakey.toml ",
-            r"(trong %LOCALAPPDATA%\Raumakey)"
-        )
+        r"Tệp cấu hình: C:\Users\An\AppData\Local\Raumakey\raumakey.toml"
+    );
+    assert_eq!(
+        state.config_location(),
+        "(trong %LOCALAPPDATA%\\Raumakey, vì thư mục của raumakey.exe không ghi được hoặc là thư \
+         mục được bảo vệ)"
     );
     let nowhere = PanelState::new(
         &runtime(),
@@ -232,6 +236,36 @@ fn the_footer_names_the_configuration_file_and_where_it_lives() {
         nowhere.config_file(),
         "Tệp cấu hình: không có, nên các thay đổi không được lưu."
     );
+    assert_eq!(nowhere.config_location(), "");
+}
+
+/// The path label shortens a long path in its middle (`SS_PATHELLIPSIS`), which keeps what
+/// follows its last backslash: that is the file name, never a part of the location note.
+#[test]
+fn the_path_label_ends_with_the_file_name() {
+    for (location, path) in [
+        (Location::ExeDir, r"D:\Tools\Raumakey\raumakey.toml"),
+        (
+            Location::LocalAppData,
+            r"C:\Users\anh\AppData\Local\Raumakey\raumakey.toml",
+        ),
+        (
+            Location::LocalAppData,
+            r"C:\Users\Nguyen Van Anh\AppData\Local\Raumakey\raumakey.toml",
+        ),
+    ] {
+        let state = PanelState::new(
+            &runtime(),
+            StartupMode::None,
+            true,
+            location,
+            Some(Path::new(path)),
+        );
+        let text = state.config_file();
+        let last = text.rsplit('\\').next().unwrap();
+        assert!(last.starts_with("raumakey.toml"), "{text}");
+        assert!(!state.config_location().is_empty(), "{location:?}");
+    }
 }
 
 /// What every control shows for a state: the handler sets exactly this.
@@ -261,8 +295,9 @@ fn the_view_sets_every_control_from_the_state() {
                 ),
                 (
                     ID_CONFIG_FILE,
-                    r"Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml (cạnh raumakey.exe)".to_owned()
+                    r"Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml".to_owned()
                 ),
+                (ID_CONFIG_LOCATION, "(cạnh raumakey.exe)".to_owned()),
             ],
             enabled: vec![(ID_OPEN_CONFIG, true), (ID_MACRO_LIST, true)],
         }
@@ -364,6 +399,7 @@ fn without_a_folder_the_file_buttons_are_disabled() {
         ID_CONFIG_FILE,
         "Tệp cấu hình: không có, nên các thay đổi không được lưu.".to_owned()
     )));
+    assert!(view.texts.contains(&(ID_CONFIG_LOCATION, String::new())));
 }
 
 // --- Requests ---------------------------------------------------------------------------------
@@ -380,6 +416,7 @@ fn check_boxes_and_the_method_list_hold_values() {
         ID_HINT,
         ID_MACRO_LIST,
         ID_CONFIG_FILE,
+        ID_CONFIG_LOCATION,
         ID_OPEN_CONFIG,
         ID_DEFAULTS,
         ID_CLOSE,
@@ -445,6 +482,7 @@ fn every_action_on_every_control_makes_its_request_or_none() {
         ID_STARTUP,
         ID_SHOW_ON_START,
         ID_CONFIG_FILE,
+        ID_CONFIG_LOCATION,
         ID_OPEN_CONFIG,
         ID_DEFAULTS,
         ID_CLOSE,
@@ -518,7 +556,7 @@ fn only_the_defaults_ask_first() {
     assert_eq!(
         DEFAULTS_QUESTION,
         "Đặt lại các mục của nhóm \"Cách gõ\" và \"Gõ tắt\" về mặc định? Chế độ gõ, việc khởi \
-         động cùng Windows và danh sách gõ tắt không đổi."
+         động cùng Windows, việc mở bảng khi Raumakey chạy và danh sách gõ tắt không đổi."
     );
     assert_eq!(
         confirmation(PanelRequest::Change(Change::TypingDefaults)),
@@ -547,21 +585,27 @@ fn the_refresh_message_is_private_and_not_reserved_by_the_dialog() {
 /// The controls in tab order: (id, class, text, extra style bits that must be set).
 fn expected_controls() -> Vec<(u16, ControlClass, &'static str, u32)> {
     use ControlClass::{Button, ComboBox, Static};
+    use styles::WS_GROUP;
     let check = styles::BS_AUTOCHECKBOX | styles::WS_TABSTOP;
     let two_lines = check | styles::BS_MULTILINE;
     let push = styles::BS_PUSHBUTTON | styles::WS_TABSTOP;
     vec![
-        (ID_VIETNAMESE, Button, "Gõ tiếng Việt", check),
-        (ID_HINT, Static, "", styles::SS_NOPREFIX),
+        (ID_VIETNAMESE, Button, "Gõ tiếng Việt", check | WS_GROUP),
+        (ID_HINT, Static, "", styles::SS_NOPREFIX | WS_GROUP),
         (STATIC_ID, Button, "Cách gõ", styles::BS_GROUPBOX),
         (STATIC_ID, Static, "Kiểu gõ:", 0),
         (
             ID_METHOD,
             ComboBox,
             "",
-            styles::CBS_DROPDOWNLIST | styles::WS_TABSTOP,
+            styles::CBS_DROPDOWNLIST | styles::WS_TABSTOP | WS_GROUP,
         ),
-        (ID_MODERN_TONE, Button, "Đặt dấu kiểu mới (oà, uý)", check),
+        (
+            ID_MODERN_TONE,
+            Button,
+            "Đặt dấu kiểu mới (oà, uý)",
+            check | WS_GROUP,
+        ),
         (
             ID_FREE_MARKING,
             Button,
@@ -575,8 +619,8 @@ fn expected_controls() -> Vec<(u16, ControlClass, &'static str, u32)> {
             "Giữ nguyên phím đã gõ khi từ không phải tiếng Việt",
             two_lines,
         ),
-        (STATIC_ID, Button, "Gõ tắt", styles::BS_GROUPBOX),
-        (ID_MACROS, Button, "Bật gõ tắt", check),
+        (STATIC_ID, Button, "Gõ tắt", styles::BS_GROUPBOX | WS_GROUP),
+        (ID_MACROS, Button, "Bật gõ tắt", check | WS_GROUP),
         (
             ID_MACROS_WHEN_ENGLISH,
             Button,
@@ -589,9 +633,19 @@ fn expected_controls() -> Vec<(u16, ControlClass, &'static str, u32)> {
             "Viết hoa theo cách gõ (Ko → Không, KO → KHÔNG)",
             two_lines,
         ),
-        (ID_MACRO_LIST, Button, "Danh sách gõ tắt…", push),
-        (STATIC_ID, Button, "Hệ thống", styles::BS_GROUPBOX),
-        (ID_STARTUP, Button, "Khởi động cùng Windows", check),
+        (ID_MACRO_LIST, Button, "Danh sách gõ tắt…", push | WS_GROUP),
+        (
+            STATIC_ID,
+            Button,
+            "Hệ thống",
+            styles::BS_GROUPBOX | WS_GROUP,
+        ),
+        (
+            ID_STARTUP,
+            Button,
+            "Khởi động cùng Windows",
+            check | WS_GROUP,
+        ),
         (
             ID_SHOW_ON_START,
             Button,
@@ -599,18 +653,19 @@ fn expected_controls() -> Vec<(u16, ControlClass, &'static str, u32)> {
             check,
         ),
         (
+            STATIC_ID,
+            Static,
+            "Mọi thay đổi có hiệu lực và được lưu ngay.",
+            WS_GROUP,
+        ),
+        (
             ID_CONFIG_FILE,
             Static,
             "",
             styles::SS_NOPREFIX | styles::SS_PATHELLIPSIS,
         ),
-        (
-            STATIC_ID,
-            Static,
-            "Mọi thay đổi có hiệu lực và được lưu ngay.",
-            0,
-        ),
-        (ID_OPEN_CONFIG, Button, "Mở file cấu hình", push),
+        (ID_CONFIG_LOCATION, Static, "", styles::SS_NOPREFIX),
+        (ID_OPEN_CONFIG, Button, "Mở file cấu hình", push | WS_GROUP),
         (ID_DEFAULTS, Button, "Mặc định", push),
         (
             IDCANCEL,
@@ -648,6 +703,11 @@ fn the_template_has_the_title_and_the_controls_of_the_design() {
     assert_eq!(actual, expected);
     for (control, (id, _, _, bits)) in controls.iter().zip(expected_controls()) {
         assert_eq!(control.style() & bits, bits, "{id}");
+        assert_eq!(
+            control.style() & styles::WS_GROUP,
+            bits & styles::WS_GROUP,
+            "{id}: the first of a group or not"
+        );
         assert_eq!(control.ex_style(), 0, "{id}");
     }
     // Only the multi-line boxes wrap.
@@ -661,6 +721,87 @@ fn the_template_has_the_title_and_the_controls_of_the_design() {
         );
     }
     template.build().unwrap();
+}
+
+/// What a control of the panel is, for the arrow keys.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Kind {
+    Check,
+    MethodList,
+    PushButton,
+    /// A label or a group box, which never takes the focus.
+    Text,
+}
+
+fn kind_of(control: &Control) -> Kind {
+    let style = control.style() & 0x0F;
+    match control.class() {
+        ControlClass::ComboBox => Kind::MethodList,
+        ControlClass::Button if style == styles::BS_AUTOCHECKBOX => Kind::Check,
+        ControlClass::Button
+            if style == styles::BS_PUSHBUTTON || style == styles::BS_DEFPUSHBUTTON =>
+        {
+            Kind::PushButton
+        }
+        _ => Kind::Text,
+    }
+}
+
+/// The groups of the dialog in order (`WS_GROUP` starts a group).
+fn groups(template: &DialogTemplate) -> Vec<Vec<&Control>> {
+    let mut groups: Vec<Vec<&Control>> = Vec::new();
+    for control in template.controls() {
+        if control.style() & styles::WS_GROUP != 0 || groups.is_empty() {
+            groups.push(Vec::new());
+        }
+        groups.last_mut().unwrap().push(control);
+    }
+    groups
+}
+
+/// The arrow keys move the focus to the next or previous control of the same group
+/// (`GetNextDlgGroupItem`, which also returns labels and group boxes): so each group holds
+/// check boxes only, the method list alone, push buttons only, or texts only. An arrow key on
+/// a check box never reaches the method list (where the next arrow would change and save the
+/// method), a button, or a label, which would take the focus out of sight.
+#[test]
+fn arrow_keys_stay_within_each_group_of_check_boxes() {
+    let template = panel_template();
+    let focusable: Vec<Vec<u16>> = groups(&template)
+        .iter()
+        .map(|group| {
+            group
+                .iter()
+                .filter(|control| kind_of(control) != Kind::Text)
+                .map(|control| control.id())
+                .collect::<Vec<_>>()
+        })
+        .filter(|group| !group.is_empty())
+        .collect();
+    assert_eq!(
+        focusable,
+        [
+            vec![ID_VIETNAMESE],
+            vec![ID_METHOD],
+            vec![
+                ID_MODERN_TONE,
+                ID_FREE_MARKING,
+                ID_SPELL_CHECK,
+                ID_AUTO_RESTORE
+            ],
+            vec![ID_MACROS, ID_MACROS_WHEN_ENGLISH, ID_MACRO_AUTO_CASE],
+            vec![ID_MACRO_LIST],
+            vec![ID_STARTUP, ID_SHOW_ON_START],
+            vec![ID_OPEN_CONFIG, ID_DEFAULTS, ID_CLOSE],
+        ]
+    );
+    for group in groups(&template) {
+        let kinds: Vec<Kind> = group.iter().map(|control| kind_of(control)).collect();
+        assert!(kinds.iter().all(|kind| *kind == kinds[0]), "{kinds:?}");
+        if kinds[0] == Kind::MethodList {
+            assert_eq!(group.len(), 1, "the method list alone");
+        }
+    }
 }
 
 /// "Đóng" is the Cancel button and the only default button: Enter, Esc, and the close box all
@@ -848,6 +989,30 @@ fn the_labels_fit_their_controls() {
             .rect()
     };
     assert!(estimated_width(&state().hint()) <= label(ID_HINT).cx);
+    // The note of `%LOCALAPPDATA%`, the longest, wraps onto the location label's two lines:
+    // the label cuts nothing off.
+    let note = template
+        .controls()
+        .iter()
+        .find(|control| control.id() == ID_CONFIG_LOCATION)
+        .unwrap();
+    assert_eq!(
+        note.style() & (styles::SS_PATHELLIPSIS | styles::SS_ENDELLIPSIS),
+        0
+    );
+    let local = PanelState::new(
+        &runtime(),
+        StartupMode::None,
+        true,
+        Location::LocalAppData,
+        Some(Path::new(
+            r"C:\Users\An\AppData\Local\Raumakey\raumakey.toml",
+        )),
+    );
+    let place = label(ID_CONFIG_LOCATION);
+    assert!(place.cy >= 16, "two lines need the height");
+    assert!(estimated_width(local.config_location()) <= place.cx + place.cx * 4 / 5);
+    assert!(estimated_width(state().config_location()) <= place.cx);
     let method_label = template
         .controls()
         .iter()
