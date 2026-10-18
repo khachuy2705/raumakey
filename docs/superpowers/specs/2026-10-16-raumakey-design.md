@@ -882,12 +882,30 @@ Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml
   gõ phím đầu tiên. Vì vậy cú nháy đầu của một lần nháy đúp đã đổi chế độ; khi nhận ra nháy đúp,
   tray trả chế độ về như trước cú nháy đầu (qua đúng đường đổi chế độ: biểu tượng, hook, lưu tệp)
   rồi mở bảng.
-- Tray nhận ra nháy đúp theo hai cách, vì các phiên bản shell có thể gửi thông báo khác nhau:
-  thông báo `WM_LBUTTONDBLCLK` của biểu tượng, hoặc (dự phòng) hai `NIN_SELECT` cách nhau không
-  quá thời gian nháy đúp của hệ thống (`GetDoubleClickTime`). Một `NIN_SELECT` tới ngay sau
-  `WM_LBUTTONDBLCLK` (cho cú nháy thứ hai) bị bỏ qua, nhưng chỉ trong thời gian nháy đúp và tới
-  lần nhấn chuột kế tiếp, nên một cú nháy thật về sau không bao giờ bị mất.
-- Chọn biểu tượng bằng bàn phím (`NIN_KEYSELECT`) vẫn chỉ đổi chế độ.
+- Shell báo một lần nháy đúp theo thứ tự: nhấn (`WM_LBUTTONDOWN`), nhả (`WM_LBUTTONUP`),
+  `NIN_SELECT`, `WM_LBUTTONDBLCLK` (thay cho lần nhấn thứ hai), nhả, và tuỳ phiên bản Windows,
+  thêm một `NIN_SELECT` nữa. Lần nhấn thứ hai không thành nháy đúp (quá chậm, hoặc chuột đã dịch
+  đi) thì tới dưới dạng `WM_LBUTTONDOWN`. `NIN_SELECT` tới lúc nhả chuột, dù giữ chuột lâu đến
+  đâu, nên tray dựa vào các lần nhấn, không dựa vào khoảng cách giữa hai `NIN_SELECT`:
+  - `WM_LBUTTONDBLCLK` là nháy đúp. Tray trả lại chế độ mà `NIN_SELECT` gần nhất đã đổi, nếu sau
+    `NIN_SELECT` đó không có lần nhấn nào (tức nó là cú nháy đầu của lần nháy đúp này) và nó tới
+    trước `WM_LBUTTONDBLCLK` không quá thời gian nháy đúp của hệ thống (`GetDoubleClickTime`)
+    cộng 2 giây. Bảng luôn mở.
+  - `NIN_SELECT` đầu tiên sau `WM_LBUTTONDBLCLK`, trước lần nhấn kế tiếp, là của cú nháy thứ hai.
+    Nó bị bỏ qua nếu tới trong thời gian nháy đúp kể từ lần nhả chuột sau `WM_LBUTTONDBLCLK`;
+    khi chưa thấy lần nhả nào, trong thời gian nháy đúp cộng 2 giây kể từ `WM_LBUTTONDBLCLK`.
+    Một lần nhấn mới kết thúc việc chờ này, nên một cú nháy thật về sau không bao giờ bị mất.
+  - Khi shell đã báo một lần nhấn hay một `WM_LBUTTONDBLCLK`, chỉ `WM_LBUTTONDBLCLK` mới là nháy
+    đúp, và hai `NIN_SELECT` là hai cú nháy. Với shell chưa báo lần nhấn nào (dự phòng), hai
+    `NIN_SELECT` cách nhau không quá thời gian nháy đúp là một lần nháy đúp.
+- Các mốc thời gian là lúc tray xử lý thông báo; 2 giây cộng thêm dành cho lúc luồng của tray
+  hay Explorer bận. Nháy ba lần là một lần nháy đúp và một cú nháy; nháy bốn lần là hai lần nháy
+  đúp.
+- Ở mỗi nhịp 2 giây của bộ hẹn giờ, tray đọc lại thời gian nháy đúp, và quên cú nháy hay lần nhả
+  đã quá hạn, để chúng không sống lại khi đồng hồ `GetTickCount` quay vòng sau 49,7 ngày. Lần
+  nhấn thứ hai đang được giữ thì vẫn được chờ: lần nhả của nó mới tính.
+- Chọn biểu tượng bằng bàn phím (`NIN_KEYSELECT`) vẫn chỉ đổi chế độ. Sau nó, hay sau menu chuột
+  phải, một lần nháy đúp không trả lại chế độ của cú nháy trước đó.
 
 ### 22.7 Loại trừ ứng dụng (D47)
 
@@ -915,10 +933,17 @@ apps = ["mstsc.exe", "msrdc.exe", "rdcman.exe", "vmconnect.exe"]
   mọi named set của `raumakey-app-rules.toml`; chỉ một quy tắc có `window_class` cho cùng exe, đặt
   trong `raumakey-app-rules.toml`, mới thắng nó, và chỉ với lớp cửa sổ đó.
 - Hook đã biết tên exe của cửa sổ foreground, nên việc gõ tuân theo loại trừ ngay ở phím đầu tiên.
+- Ứng dụng UWP chạy bên trong cửa sổ khung của `ApplicationFrameHost.exe`, và đó là exe
+  foreground mà hook và tray thấy, nên một mục `[exclusions]` ghi exe riêng của một ứng dụng UWP
+  không có tác dụng.
 - Biểu tượng khay hiện **E** khi ứng dụng ở foreground bị loại trừ, với tooltip, ví dụ "Raumakey:
   đang gõ tiếng Anh trong mstsc.exe (ứng dụng loại trừ)". Tray theo dõi cửa sổ foreground bằng
   `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` (out-of-context, trên luồng của tray). Chế độ chung,
   dấu chọn trong menu và bảng cấu hình không đổi; khi rời ứng dụng đó, biểu tượng hiện lại chế độ
   chung.
+- Tray phân giải chính sách với cùng exe và lớp cửa sổ như hook: lớp của cửa sổ đang có focus bàn
+  phím trong luồng của cửa sổ foreground, không có thì lớp của chính cửa sổ foreground. Nhờ vậy
+  một quy tắc có `window_class` cho biểu tượng và việc gõ cùng một kết quả. Watcher chỉ báo khi
+  cửa sổ foreground đổi; focus chuyển bên trong một cửa sổ được tray thấy ở nhịp 2 giây kế tiếp.
 - Danh sách chỉ sửa trong tệp, như chủ dự án yêu cầu; sửa tay có hiệu lực sau khoảng 2 giây. Một
   mục không phải tên exe hợp lệ bị bỏ qua và được báo theo đường dẫn schema (`exclusions.apps[2]`).

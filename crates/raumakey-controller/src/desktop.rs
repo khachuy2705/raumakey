@@ -40,12 +40,17 @@
 //!   notices, panel, and the application in front) and on [`TrayServices`] (hook and worker),
 //!   and then drains the inbox ([`Tray::on_event`]), the hotkey changes coalesced
 //!   ([`coalesce`]). For [`Effect::ReadForeground`] it reads the application of the window
-//!   ([`TrayShell::foreground_app`]: the executable basename of its process and its class,
-//!   never its title or path) and hands it to [`Tray::on_foreground`]. At each tick of the
-//!   poll timer it first checks the typing hook ([`TrayServices::keep_typing_alive`]), which
-//!   Windows may have removed silently, and makes sure the icon is shown. [`ShellTray`] (over
-//!   a [`NotifyArea`], [`WinNotifyArea`] for real) and [`WinServices`] are the real ones;
-//!   tests use fakes on a real window, message loop, and timer.
+//!   ([`TrayShell::foreground_app`]: the executable basename of its process and the class of
+//!   the window with the keyboard focus in its thread, else its own class, as the typing hook
+//!   reads them; never its title or path) and hands it to [`Tray::on_foreground`]. The
+//!   foreground watcher reports a new window in front, not a focus that moves inside it: such
+//!   a move reaches the icon at the next tick of the poll timer. At each tick it first checks
+//!   the typing hook ([`TrayServices::keep_typing_alive`]), which Windows may have removed
+//!   silently, and gives the tray the user's double-click time again
+//!   ([`TrayShell::double_click_ms`], [`Tray::set_double_click_ms`]); the tray makes sure the
+//!   icon is shown. [`ShellTray`] (over a [`NotifyArea`], [`WinNotifyArea`] for real) and
+//!   [`WinServices`] are the real ones; tests use fakes on a real window, message loop, and
+//!   timer.
 //! - [`ShellTray`] shows one settings panel at a time (`crate::panel`): a dialog box without
 //!   owner on a thread of its own (`raumakey_windows::dialog_box::spawn_dialog`), with the app
 //!   icon of `raumakey.exe` ([`ICON_APP`]). The tray's thread and the panel share the state to
@@ -345,8 +350,7 @@ use raumakey_windows::dialog::{
 use raumakey_windows::dialog_box::{DetachedDialog, Dialog, DialogHandler, spawn_dialog};
 use raumakey_windows::error::{E_UNEXPECTED, WinError, WinResult};
 use raumakey_windows::foreground::{
-    ForegroundWatcher, foreground_window, process_image_basename, window_class_name,
-    window_process_id,
+    ForegroundWatcher, describe_window, foreground_window, process_image_basename,
 };
 use raumakey_windows::icon::{Icon, IconKind, IconSize, icon_size};
 use raumakey_windows::input::{double_click_time, tick_count};
@@ -718,9 +722,15 @@ pub trait TrayShell {
     fn close_macro_list(&mut self);
 
     /// The application of window `window` (`None`: of the window in the foreground now): the
-    /// executable of its process and its class; `None` when there is no such window, it is
-    /// gone, or its process cannot be queried.
+    /// executable of its process and the class it is known by ([`ForegroundApp::new`]: of the
+    /// window with the keyboard focus in its thread, else its own, as the typing hook knows
+    /// the window in front); `None` when there is no such window, it is gone, or its process
+    /// cannot be queried.
     fn foreground_app(&mut self, window: Option<isize>) -> Option<ForegroundApp>;
+
+    /// The user's double-click time in milliseconds (`GetDoubleClickTime`), read again at every
+    /// tick of the poll timer ([`Tray::set_double_click_ms`]).
+    fn double_click_ms(&mut self) -> u32;
 }
 
 /// The notification icon as the shell sees it; [`WinNotifyArea`] is the real one.
@@ -861,6 +871,8 @@ impl<S: TrayShell, V: TrayServices> WindowHandler for TrayWindow<S, V> {
     ) -> Option<LRESULT> {
         if message == WM_TIMER && wparam.0 == POLL_TIMER && self.tray.is_running() {
             self.services.keep_typing_alive();
+            let double_click_ms = self.shell.double_click_ms();
+            self.tray.set_double_click_ms(double_click_ms);
         }
         let reply = self
             .tray
@@ -1519,21 +1531,28 @@ impl<A: NotifyArea> TrayShell for ShellTray<A> {
     fn foreground_app(&mut self, window: Option<isize>) -> Option<ForegroundApp> {
         read_foreground_app(window)
     }
+
+    fn double_click_ms(&mut self) -> u32 {
+        double_click_time()
+    }
 }
 
 /// The application of window `window` (`None`: of the window in the foreground now): the
 /// executable basename of its process (`None` when the window is gone or its process cannot
-/// be queried) and its class. Neither the title nor the path is read.
+/// be queried) and the class it is known by: of the window with the keyboard focus in its
+/// thread, else its own (`ForegroundApp::new`), as the typing hook reads the window in front
+/// (`crate::typing`). Neither the title nor the path is read.
 fn read_foreground_app(window: Option<isize>) -> Option<ForegroundApp> {
-    let hwnd = match window {
-        Some(hwnd) => hwnd,
-        None => foreground_window()?.hwnd,
+    let window = match window {
+        Some(hwnd) => describe_window(hwnd)?,
+        None => foreground_window()?,
     };
-    let exe = process_image_basename(window_process_id(hwnd)?).ok()?;
-    Some(ForegroundApp {
+    let exe = process_image_basename(window.process_id).ok()?;
+    Some(ForegroundApp::new(
         exe,
-        window_class: window_class_name(hwnd),
-    })
+        window.window_class,
+        window.focus_window_class,
+    ))
 }
 
 /// The macro list editor opened last.

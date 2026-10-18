@@ -5,11 +5,11 @@
 //! basename and window class names, which the design allows in diagnostics.
 //!
 //! On Windows, [`foreground_window`] and [`foreground_info`] describe the window in the
-//! foreground; [`window_process_id`], [`process_image_basename`], and [`window_class_name`]
-//! describe any window; and a [`ForegroundWatcher`] (an out-of-context
-//! `EVENT_SYSTEM_FOREGROUND` hook) posts a private message to a window of its thread each time
-//! another window comes to the foreground, so the controller's icon can follow the
-//! application in front (D47).
+//! foreground; [`describe_window`] (with the focus of the window's thread),
+//! [`window_process_id`], [`process_image_basename`], and [`window_class_name`] describe any
+//! window; and a [`ForegroundWatcher`] (an out-of-context `EVENT_SYSTEM_FOREGROUND` hook) posts
+//! a private message to a window of its thread each time another window comes to the
+//! foreground, so the controller's icon can follow the application in front (D47).
 
 /// `ES_PASSWORD` edit style.
 const ES_PASSWORD: u32 = 0x0020;
@@ -24,8 +24,8 @@ pub fn is_password_edit(class: &str, style: u32) -> bool {
 
 #[cfg(windows)]
 pub use win::{
-    ForegroundInfo, ForegroundWatcher, ForegroundWindow, foreground_info, foreground_window,
-    process_image_basename, window_class_name, window_process_id,
+    ForegroundInfo, ForegroundWatcher, ForegroundWindow, describe_window, foreground_info,
+    foreground_window, process_image_basename, window_class_name, window_process_id,
 };
 
 #[cfg(windows)]
@@ -109,11 +109,21 @@ mod win {
     pub fn foreground_window() -> Option<ForegroundWindow> {
         // SAFETY: no preconditions.
         let hwnd = unsafe { GetForegroundWindow() };
-        if hwnd.is_invalid() {
+        describe_window(hwnd.0 as isize)
+    }
+
+    /// Describes window `hwnd` as [`foreground_window`] describes the foreground window: its
+    /// process and thread, its class, and the window with keyboard focus in its (GUI) thread;
+    /// `None` for 0 or a window that no longer exists. For the window that came to the
+    /// foreground (a [`ForegroundWatcher`] names it), the focus is the one its thread has now.
+    pub fn describe_window(hwnd: isize) -> Option<ForegroundWindow> {
+        if hwnd == 0 {
             return None;
         }
+        let hwnd = HWND(hwnd as *mut core::ffi::c_void);
         let mut process_id = 0_u32;
-        // SAFETY: valid window handle value (stale handles fail gracefully) and out pointer.
+        // SAFETY: a window handle value (a stale or made-up one makes the call fail, returning
+        // 0) and a valid out pointer.
         let thread_id = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
         if thread_id == 0 {
             return None;

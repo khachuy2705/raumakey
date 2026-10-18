@@ -50,8 +50,9 @@ use raumakey_controller::panel::{
 };
 use raumakey_controller::settings::{Change, DocumentStatus, Location, Status};
 use raumakey_controller::tray::{
-    Event, FOREGROUND, ForegroundApp, IconState, InputMode, LOOP_EXIT_CODE, POLL_INTERVAL_MS,
-    RegisteredMessages, START, TRAY_CALLBACK, TRAY_ICON_ID, Tray, TrayCommand, TrayStart, WAKE,
+    DEFAULT_DOUBLE_CLICK_MS, Event, FOREGROUND, ForegroundApp, IconState, InputMode,
+    LOOP_EXIT_CODE, POLL_INTERVAL_MS, RegisteredMessages, START, TRAY_CALLBACK, TRAY_ICON_ID, Tray,
+    TrayCommand, TrayStart, WAKE,
 };
 use raumakey_controller::worker::{Answer, Outcome, PollReport, WorkerCommand};
 use raumakey_ipc::message::RuntimeSnapshot;
@@ -60,11 +61,14 @@ use raumakey_model::options::InputMethod;
 use raumakey_model::policy::{AppRule, RuleAction};
 use raumakey_windows::dialog_box::notifications::{BN_CLICKED, CBN_SELCHANGE};
 use raumakey_windows::dialog_template::{IDCANCEL, styles};
+use raumakey_windows::foreground::window_class_name;
 use raumakey_windows::icon::{IconKind, icon_size};
+use raumakey_windows::input::double_click_time;
 use raumakey_windows::menu::MenuItem;
 use raumakey_windows::module::Module;
 use raumakey_windows::shell::{
-    NIN_SELECT, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, taskbar_created_message,
+    NIN_SELECT, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    taskbar_created_message,
 };
 use raumakey_windows::window::{
     Window, WindowClass, post_quit, register_user_message, run_message_loop,
@@ -121,6 +125,8 @@ enum Call {
     HookRuntime(Box<RuntimeSnapshot>),
     StopTyping,
     KeepTypingAlive,
+    /// The glue read the user's double-click time.
+    DoubleClickTime,
     Send(u64, WorkerCommand),
     FinishWorker,
 }
@@ -135,7 +141,8 @@ type Reads = Rc<RefCell<Vec<Option<isize>>>>;
 /// block; a queued "yes" is answered into the inbox as `Event::Answered`, as the box's thread
 /// does. The first panel opened sends the queued panel events into the inbox, as the panel's
 /// thread does. Reads of the application in front answer the queued applications in turn
-/// (then "unknown") and are recorded apart from the calls.
+/// (then "unknown") and are recorded apart from the calls. The double-click time is the
+/// default of Windows.
 struct FakeShell {
     log: Log,
     choices: VecDeque<Option<u16>>,
@@ -273,6 +280,11 @@ impl TrayShell for FakeShell {
     fn foreground_app(&mut self, window: Option<isize>) -> Option<ForegroundApp> {
         self.reads.borrow_mut().push(window);
         self.foreground.pop_front().flatten()
+    }
+
+    fn double_click_ms(&mut self) -> u32 {
+        self.log.borrow_mut().push(Call::DoubleClickTime);
+        DEFAULT_DOUBLE_CLICK_MS
     }
 }
 
@@ -560,9 +572,9 @@ fn start_shows_the_icon_a_click_switches_it_and_exit_from_the_menu_ends_the_loop
     });
 }
 
-/// The glue hands the tray the clock with the icon's messages: a click and a double-click
-/// right after it open the panel and leave the mode as it was; the select of the second click
-/// is swallowed (D46).
+/// The glue hands the tray the clock with the icon's messages: a double-click as the shell
+/// reports it (press, release, select, double-click, release, select) opens the panel and
+/// leaves the mode as it was; the select of the second click is swallowed (D46).
 #[test]
 fn a_double_click_on_the_icon_opens_the_panel_and_keeps_the_mode() {
     on_fresh_thread(|| {
@@ -578,8 +590,10 @@ fn a_double_click_on_the_icon_opens_the_panel_and_keeps_the_mode() {
             NO_TICKS,
         );
         post_icon(&window, WM_LBUTTONDOWN, 0, 0);
+        post_icon(&window, WM_LBUTTONUP, 0, 0);
         post_icon(&window, NIN_SELECT, 0, 0);
         post_icon(&window, WM_LBUTTONDBLCLK, 0, 0);
+        post_icon(&window, WM_LBUTTONUP, 0, 0);
         post_icon(&window, NIN_SELECT, 0, 0);
         post(&window, WM_CLOSE, 0, 0);
         assert_eq!(run_loop_with_watchdog(), LOOP_EXIT_CODE);
@@ -865,8 +879,8 @@ fn a_window_destroyed_while_the_menu_is_open_still_stops_everything_and_ends_the
 
 /// The window timer asks the worker to poll; the next tick polls again once the answer came.
 /// Each tick also checks the typing hook first (Windows removes a slow low-level hook without
-/// telling it, and `TypingHook::ensure_alive` installs it again, design §21.2) and makes sure
-/// the icon is shown.
+/// telling it, and `TypingHook::ensure_alive` installs it again, design §21.2), gives the tray
+/// the user's double-click time again (D46), and makes sure the icon is shown.
 #[test]
 fn the_poll_timer_asks_the_worker_to_poll_again_and_again() {
     on_fresh_thread(|| {
@@ -897,17 +911,65 @@ fn the_poll_timer_asks_the_worker_to_poll_again_and_again() {
             [
                 Call::Show(icon(Vietnamese, InputMethod::Telex)),
                 Call::KeepTypingAlive,
+                Call::DoubleClickTime,
                 shown.clone(),
                 Call::Send(1, WorkerCommand::Poll),
                 Call::KeepTypingAlive,
+                Call::DoubleClickTime,
                 shown.clone(),
                 Call::Send(2, WorkerCommand::Poll),
                 Call::KeepTypingAlive,
+                Call::DoubleClickTime,
                 shown,
                 Call::Send(3, WorkerCommand::Poll),
             ]
         );
         assert_eq!(POLL_INTERVAL_MS, 2_000);
+    });
+}
+
+/// The real shell reads the application of a window: the executable of its process, and the
+/// class it is known by (`ForegroundApp::new`: the focus in the window's thread, else its own;
+/// this thread never took the focus, and nothing here takes it); nothing for a window that is
+/// gone or for none. Its double-click time is the user's.
+#[test]
+fn the_shell_reads_the_application_of_a_window() {
+    on_fresh_thread(|| {
+        let log = Log::default();
+        let (services, _feed) = FakeServices::new(&log);
+        let window = tray_window(
+            "test-tray-read-app",
+            Vietnamese,
+            FakeShell::new(&log),
+            services,
+            NO_TICKS,
+        );
+        let hwnd = window.hwnd().0 as isize;
+        let area = FakeArea {
+            log: AreaLog::default(),
+            adds: VecDeque::new(),
+            modifies: VecDeque::new(),
+        };
+        let (inbox, _events) = mpsc::channel();
+        let mut shell = ShellTray::with_area(area, inbox, WakeTarget::default());
+        let test_exe = std::env::current_exe().unwrap();
+        let test_exe = test_exe
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_lowercase();
+        let app = shell.foreground_app(Some(hwnd)).unwrap();
+        assert_eq!(app.exe.as_str(), test_exe);
+        assert!(app.window_class.is_some());
+        assert_eq!(app.window_class, window_class_name(hwnd));
+        drop(window);
+        assert_eq!(
+            shell.foreground_app(Some(hwnd)),
+            None,
+            "a window that is gone"
+        );
+        assert_eq!(shell.foreground_app(Some(0)), None);
+        assert_eq!(shell.double_click_ms(), double_click_time());
     });
 }
 

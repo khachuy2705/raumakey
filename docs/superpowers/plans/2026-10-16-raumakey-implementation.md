@@ -1418,9 +1418,10 @@ Các quyết định ngày 2026-10-18 (thiết kế §22):
   `AllowSetForegroundWindow(ASFW_ANY)`, gửi thông điệp đăng ký `Raumakey.<sidhash>.show-panel` tới
   các cửa sổ cấp cao nhất, rồi thoát với mã 0. Bản đang chạy mở bảng hoặc đưa bảng lên trước.
   Controller chạy quyền quản trị cho thông điệp này qua UIPI.
-- **D46 — Nháy đúp vào biểu tượng mở bảng cấu hình.** Cú nháy vẫn đổi chế độ ngay; khi nhận ra
-  nháy đúp (`WM_LBUTTONDBLCLK`, hoặc hai `NIN_SELECT` trong thời gian nháy đúp của hệ thống), tray
-  trả chế độ về như trước rồi mở bảng (thiết kế §22.6).
+- **D46 — Nháy đúp vào biểu tượng mở bảng cấu hình.** Cú nháy vẫn đổi chế độ ngay; khi shell báo
+  nháy đúp (`WM_LBUTTONDBLCLK`), tray trả chế độ về như trước cú nháy đầu rồi mở bảng. Mốc là các
+  lần nhấn chuột mà shell báo; hai `NIN_SELECT` trong thời gian nháy đúp chỉ được tính là nháy đúp
+  khi shell không báo lần nhấn nào (thiết kế §22.6).
 - **D47 — Loại trừ ứng dụng.** `[exclusions] apps` trong `raumakey.toml` liệt kê các exe luôn gõ
   tiếng Anh; mặc định là `mstsc.exe`, `msrdc.exe`, `rdcman.exe`, `vmconnect.exe`. `Settings` thêm
   vào đầu các quy tắc của snapshot một quy tắc `vietnamese = false`, `macros = false` cho mỗi exe.

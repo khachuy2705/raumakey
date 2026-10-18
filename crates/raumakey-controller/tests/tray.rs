@@ -803,15 +803,383 @@ fn without_a_second_select_the_next_click_still_switches() {
         then(switched(English, 3), vec![refresh(tray.panel_state())])
     );
 
-    // After the double-click time, a select alone is a click too.
+    // A select alone more than the double-click time after the release of the second press
+    // is a click too; within it, it is the second click's select, late.
     let mut tray = running(Vietnamese);
     send_at(&mut tray, click(), 1_090);
     send_at(&mut tray, double_click(), 1_250);
-    let effects = send_at(&mut tray, click(), 1_751).effects;
+    send_at(&mut tray, release(), 1_330);
+    let effects = send_at(&mut tray, click(), 1_831).effects;
     assert_eq!(
         effects,
         then(switched(English, 3), vec![refresh(tray.panel_state())])
     );
+    let mut tray = running(Vietnamese);
+    send_at(&mut tray, click(), 1_090);
+    send_at(&mut tray, double_click(), 1_250);
+    send_at(&mut tray, release(), 1_330);
+    assert_eq!(send_at(&mut tray, click(), 1_830), answered(Vec::new()));
+
+    // A shell that reports no release: a select more than the double-click time and 2 s after
+    // the double-click is a click.
+    let mut tray = running(Vietnamese);
+    send_at(&mut tray, click(), 1_090);
+    send_at(&mut tray, double_click(), 1_250);
+    let effects = send_at(&mut tray, click(), 3_751).effects;
+    assert_eq!(
+        effects,
+        then(switched(English, 3), vec![refresh(tray.panel_state())])
+    );
+}
+
+/// The panels that `effects` open.
+fn panels_opened(effects: &[Effect]) -> usize {
+    effects
+        .iter()
+        .filter(|effect| matches!(effect, Effect::OpenPanel { .. }))
+        .count()
+}
+
+/// Sends each message at its time to `tray`; the number of panels they opened.
+fn play(tray: &mut Tray, messages: &[(Message, u32)]) -> usize {
+    messages
+        .iter()
+        .map(|&(message, at)| panels_opened(&send_at(tray, message, at).effects))
+        .sum()
+}
+
+/// A double-click as the shell reports it, from its first press at `at`: press, release,
+/// select, double-click, release, select.
+fn double_click_at(at: u32) -> [(Message, u32); 6] {
+    [
+        (press(), at),
+        (release(), at + 60),
+        (click(), at + 70),
+        (double_click(), at + 150),
+        (release(), at + 210),
+        (click(), at + 220),
+    ]
+}
+
+/// The select of the second click comes when the second press is released, however long it
+/// was held: it is swallowed within the double-click time after that release, whenever the
+/// double-click itself came, and a tray that sees no release swallows it within the
+/// double-click time and 2 s after the double-click (the reviewer's probe: 200 ms, the second
+/// press held 240 ms). The mode stays as it was, and the panel opens once.
+#[test]
+fn the_select_of_a_second_press_held_long_is_swallowed() {
+    let mut tray = running_with(start(Vietnamese)).with_double_click_ms(200);
+    let opened = play(
+        &mut tray,
+        &[
+            (press(), 1_000),
+            (release(), 1_070),
+            (click(), 1_080),
+            (double_click(), 1_180),
+            (release(), 1_415),
+            (click(), 1_420),
+        ],
+    );
+    assert_eq!((opened, tray.mode()), (1, Vietnamese));
+
+    let mut tray = running_with(start(Vietnamese)).with_double_click_ms(200);
+    let opened = play(
+        &mut tray,
+        &[
+            (press(), 1_000),
+            (click(), 1_080),
+            (double_click(), 1_180),
+            (click(), 1_420),
+        ],
+    );
+    assert_eq!((opened, tray.mode()), (1, Vietnamese));
+
+    // Held for seconds while the poll timer ticks.
+    let mut tray = running_with(start(Vietnamese)).with_double_click_ms(200);
+    let opened = play(
+        &mut tray,
+        &[
+            (press(), 1_000),
+            (release(), 1_070),
+            (click(), 1_080),
+            (double_click(), 1_180),
+            (tick(), 3_180),
+            (tick(), 5_180),
+            (tick(), 7_180),
+            (release(), 8_000),
+            (click(), 8_010),
+        ],
+    );
+    assert_eq!((opened, tray.mode()), (1, Vietnamese));
+    // The click after it is a click.
+    play(
+        &mut tray,
+        &[(press(), 8_100), (release(), 8_150), (click(), 8_160)],
+    );
+    assert_eq!(tray.mode(), English);
+}
+
+/// The first select may be handled late after its press, and the double-click late after it
+/// (the first switch waited on a busy Explorer): the double-click still restores the mode from
+/// before its first click, within the double-click time and 2 s after that click (the
+/// reviewer's probe: select at 1100, double-click at 1700).
+#[test]
+fn a_late_double_click_still_restores_the_mode_before_its_first_click() {
+    let mut tray = running(Vietnamese);
+    assert_eq!(
+        play(&mut tray, &[(click(), 1_100), (double_click(), 1_700)]),
+        1
+    );
+    assert_eq!(tray.mode(), Vietnamese);
+
+    let late = |double_click_at: u32| {
+        [
+            (press(), 1_000),
+            (release(), 1_090),
+            (click(), 1_100),
+            (double_click(), double_click_at),
+            (release(), double_click_at + 10),
+            (click(), double_click_at + 20),
+        ]
+    };
+    let mut tray = running(Vietnamese);
+    assert_eq!(play(&mut tray, &late(3_600)), 1);
+    assert_eq!(tray.mode(), Vietnamese);
+    // Beyond that bound the click is not its first one: the panel opens, the switch stays.
+    let mut tray = running(Vietnamese);
+    assert_eq!(play(&mut tray, &late(3_601)), 1);
+    assert_eq!(tray.mode(), English);
+}
+
+/// Once the shell reports presses, its double-click is the only double-click: a second press
+/// that is no double-click (too late, or the mouse moved) comes as a press, and two such
+/// clicks switch twice, however close their selects (the reviewer's probe: presses 520 ms
+/// apart at 500 ms, the first held 400 ms). A double-click reported once is as good as a press.
+#[test]
+fn with_presses_reported_two_selects_are_two_clicks() {
+    let mut tray = running(Vietnamese);
+    send_at(&mut tray, press(), 1_000);
+    send_at(&mut tray, release(), 1_400);
+    assert_eq!(
+        send_at(&mut tray, click(), 1_400),
+        answered(switched(English, 1))
+    );
+    send_at(&mut tray, press(), 1_520);
+    send_at(&mut tray, release(), 1_600);
+    assert_eq!(
+        send_at(&mut tray, click(), 1_600),
+        answered(switched(Vietnamese, 2))
+    );
+
+    // Two quick clicks that the shell did not take for a double-click.
+    let mut tray = running(Vietnamese);
+    send_at(&mut tray, press(), 1_000);
+    send_at(&mut tray, release(), 1_050);
+    assert_eq!(
+        send_at(&mut tray, click(), 1_060),
+        answered(switched(English, 1))
+    );
+    send_at(&mut tray, press(), 1_150);
+    send_at(&mut tray, release(), 1_200);
+    assert_eq!(
+        send_at(&mut tray, click(), 1_210),
+        answered(switched(Vietnamese, 2))
+    );
+
+    // One press is enough, for good.
+    let mut tray = running(Vietnamese);
+    play(
+        &mut tray,
+        &[(press(), 1_000), (release(), 1_050), (click(), 1_060)],
+    );
+    assert_eq!(
+        send_at(&mut tray, click(), 30_000),
+        answered(switched(Vietnamese, 2))
+    );
+    assert_eq!(
+        send_at(&mut tray, click(), 30_100),
+        answered(switched(English, 3))
+    );
+
+    // So is one double-click.
+    let mut tray = running(Vietnamese);
+    play(&mut tray, &[(click(), 1_000), (double_click(), 1_100)]);
+    assert_eq!(tray.mode(), Vietnamese);
+    assert_eq!(
+        send_at(&mut tray, click(), 10_000).effects[..3],
+        switched(English, 3)[..]
+    );
+    assert_eq!(
+        send_at(&mut tray, click(), 10_100).effects[..3],
+        switched(Vietnamese, 4)[..]
+    );
+}
+
+/// A triple click is a double-click and a click (the shell reports the third press as a
+/// press); a quadruple click is two double-clicks. With or without the second selects.
+#[test]
+fn a_triple_click_switches_once_and_a_quadruple_click_opens_the_panel_twice() {
+    let mut tray = running(Vietnamese);
+    let mut opened = play(&mut tray, &double_click_at(1_000));
+    opened += play(
+        &mut tray,
+        &[(press(), 1_300), (release(), 1_360), (click(), 1_370)],
+    );
+    assert_eq!((opened, tray.mode()), (1, English));
+    opened += play(
+        &mut tray,
+        &[
+            (double_click(), 1_450),
+            (release(), 1_510),
+            (click(), 1_520),
+        ],
+    );
+    assert_eq!((opened, tray.mode()), (2, Vietnamese));
+
+    let mut tray = running(Vietnamese);
+    let opened = play(
+        &mut tray,
+        &[
+            (press(), 1_000),
+            (release(), 1_060),
+            (click(), 1_070),
+            (double_click(), 1_150),
+            (release(), 1_210),
+            (press(), 1_300),
+            (release(), 1_360),
+            (click(), 1_370),
+        ],
+    );
+    assert_eq!((opened, tray.mode()), (1, English));
+    let opened = play(&mut tray, &[(double_click(), 1_450), (release(), 1_510)]);
+    assert_eq!((opened, tray.mode()), (1, Vietnamese));
+}
+
+/// A real click right after a double-click switches the mode, within the double-click time
+/// or after it.
+#[test]
+fn a_click_right_after_a_double_click_switches() {
+    for after in [10, 499, 500, 501, 5_000] {
+        let mut tray = running(Vietnamese);
+        assert_eq!(play(&mut tray, &double_click_at(1_000)), 1);
+        let first = 1_220 + after;
+        play(
+            &mut tray,
+            &[
+                (press(), first),
+                (release(), first + 50),
+                (click(), first + 60),
+            ],
+        );
+        assert_eq!(tray.mode(), English, "{after} ms after the double-click");
+    }
+}
+
+/// A busy tray handles the shell's messages late, then close together: the times they are
+/// handled at count, and a double-click still keeps the mode and opens the panel once.
+#[test]
+fn a_busy_tray_still_tells_a_double_click() {
+    // Busy after the first switch.
+    let mut tray = running(Vietnamese);
+    let opened = play(
+        &mut tray,
+        &[
+            (press(), 1_000),
+            (release(), 1_060),
+            (click(), 1_070),
+            (double_click(), 3_000),
+            (release(), 3_001),
+            (click(), 3_002),
+        ],
+    );
+    assert_eq!((opened, tray.mode()), (1, Vietnamese));
+    // Busy after the double-click (the panel opening).
+    let mut tray = running(Vietnamese);
+    let opened = play(
+        &mut tray,
+        &[
+            (press(), 1_000),
+            (release(), 1_060),
+            (click(), 1_070),
+            (double_click(), 1_150),
+            (release(), 6_000),
+            (click(), 6_001),
+        ],
+    );
+    assert_eq!((opened, tray.mode()), (1, Vietnamese));
+    // Busy from the first press on: everything at once.
+    let mut tray = running(Vietnamese);
+    let opened = play(
+        &mut tray,
+        &[
+            (press(), 9_000),
+            (release(), 9_000),
+            (click(), 9_000),
+            (double_click(), 9_000),
+            (release(), 9_000),
+            (click(), 9_000),
+        ],
+    );
+    assert_eq!((opened, tray.mode()), (1, Vietnamese));
+}
+
+/// The clock wraps around after 49.7 days, so a remembered click or double-click whose time
+/// has passed is forgotten at the next tick of the poll timer: it does not come back when the
+/// clock comes round to its time again. A tick forgets nothing whose time has not passed.
+#[test]
+fn a_tick_forgets_a_click_and_a_double_click_whose_time_has_passed() {
+    // A shell without presses: the click.
+    let mut tray = running(Vietnamese);
+    send_at(&mut tray, click(), 1_000);
+    send_at(&mut tray, tick(), 4_000);
+    assert_eq!(
+        send_at(&mut tray, click(), 1_300),
+        answered(switched(Vietnamese, 3))
+    );
+    let mut tray = running(Vietnamese);
+    send_at(&mut tray, click(), 1_000);
+    send_at(&mut tray, tick(), 1_200);
+    assert_eq!(
+        play(&mut tray, &[(click(), 1_300)]),
+        1,
+        "a fresh click is kept"
+    );
+
+    // The double-click whose second select never came, released or not.
+    for released in [true, false] {
+        let mut tray = running(Vietnamese);
+        play(
+            &mut tray,
+            &[(press(), 1_000), (release(), 1_060), (click(), 1_070)],
+        );
+        send_at(&mut tray, double_click(), 1_150);
+        if released {
+            send_at(&mut tray, release(), 1_210);
+        }
+        send_at(&mut tray, tick(), 4_000);
+        assert_eq!(
+            send_at(&mut tray, click(), 1_300).effects[..3],
+            switched(English, 4)[..],
+            "released: {released}"
+        );
+    }
+}
+
+/// The glue gives the tray the user's double-click time again at every tick of the poll
+/// timer: a change in the mouse settings counts from then on.
+#[test]
+fn the_double_click_time_may_change_while_the_tray_runs() {
+    let mut tray = running(Vietnamese);
+    tray.set_double_click_ms(300);
+    send_at(&mut tray, click(), 1_000);
+    assert_eq!(
+        send_at(&mut tray, click(), 1_301),
+        answered(switched(Vietnamese, 2))
+    );
+    tray.set_double_click_ms(900);
+    send_at(&mut tray, click(), 3_000);
+    assert_eq!(play(&mut tray, &[(click(), 3_900)]), 1);
+    assert_eq!(tray.mode(), Vietnamese);
 }
 
 /// A shell that reports no double-click: a second select within the double-click time of the
@@ -835,15 +1203,6 @@ fn two_selects_within_the_double_click_time_make_a_double_click() {
         effects,
         then(switched(English, 3), vec![refresh(tray.panel_state())])
     );
-
-    // With presses between them, likewise.
-    let mut tray = running(English);
-    send_at(&mut tray, press(), 5_000);
-    send_at(&mut tray, click(), 5_090);
-    send_at(&mut tray, press(), 5_200);
-    let effects = send_at(&mut tray, click(), 5_290).effects;
-    assert!(matches!(effects.last(), Some(Effect::OpenPanel { .. })));
-    assert_eq!(tray.mode(), English);
 }
 
 #[test]
@@ -882,6 +1241,21 @@ fn the_double_click_time_is_measured_across_the_wrap_of_the_clock() {
     assert_eq!(send_at(&mut tray, click(), 50), answered(Vec::new()));
     assert_eq!(tray.mode(), Vietnamese);
 
+    // The shell's double-click across the wrap.
+    let mut tray = running(Vietnamese);
+    let opened = play(
+        &mut tray,
+        &[
+            (press(), u32::MAX - 150),
+            (release(), u32::MAX - 100),
+            (click(), u32::MAX - 90),
+            (double_click(), 49),
+            (release(), 120),
+            (click(), 130),
+        ],
+    );
+    assert_eq!((opened, tray.mode()), (1, Vietnamese));
+
     // A clock that went back is far apart, never a double-click.
     let mut tray = running(Vietnamese);
     send_at(&mut tray, click(), 1_000);
@@ -891,8 +1265,9 @@ fn the_double_click_time_is_measured_across_the_wrap_of_the_clock() {
     );
 }
 
-/// The double-click restores the mode from before its first click only when that click was
-/// within the double-click time, and only when the mode is not back already (the hotkey).
+/// The double-click restores the mode from before its first click only when that click came
+/// within the double-click time and 2 s before it, and only when the mode is not back already
+/// (the hotkey).
 #[test]
 fn a_double_click_restores_only_a_mode_its_first_click_changed() {
     let mut tray = running(Vietnamese);
@@ -909,7 +1284,7 @@ fn a_double_click_restores_only_a_mode_its_first_click_changed() {
     // A double-click without a click shortly before opens the panel and changes nothing.
     let mut tray = running(Vietnamese);
     send_at(&mut tray, click(), 1_000);
-    let effects = send_at(&mut tray, double_click(), 3_000).effects;
+    let effects = send_at(&mut tray, double_click(), 3_501).effects;
     assert!(
         matches!(effects[..], [Effect::OpenPanel { serial: 1, .. }]),
         "{effects:?}"
@@ -952,18 +1327,54 @@ fn the_keyboard_and_the_menu_never_make_a_double_click() {
         send_at(&mut tray, click(), 1_600),
         answered(switched(Vietnamese, 6))
     );
+
+    // Between the first click and the shell's double-click, they take that click from the
+    // double-click: the panel opens, and the mode stays as they left it.
+    let menu = || callback(WM_CONTEXTMENU, TRAY_ICON_ID, 1, 2);
+    let second = [
+        (double_click(), 1_150),
+        (release(), 1_210),
+        (click(), 1_220),
+    ];
+    let mut tray = running(Vietnamese);
+    play(
+        &mut tray,
+        &[(press(), 1_000), (release(), 1_060), (click(), 1_070)],
+    );
+    send_at(&mut tray, menu(), 1_100);
+    assert_eq!(play(&mut tray, &second), 1);
+    assert_eq!(tray.mode(), English);
+    let mut tray = running(Vietnamese);
+    play(
+        &mut tray,
+        &[(press(), 1_000), (release(), 1_060), (click(), 1_070)],
+    );
+    send_at(&mut tray, key_select(), 1_100);
+    send_at(&mut tray, key_select(), 1_110);
+    assert_eq!(play(&mut tray, &second), 1);
+    assert_eq!(tray.mode(), English);
 }
 
 #[test]
 fn a_double_click_before_the_start_or_after_the_exit_does_nothing() {
     let mut tray = Tray::new(start(Vietnamese), messages());
-    for (message, at) in [(click(), 1_000), (double_click(), 1_100), (click(), 1_200)] {
+    for (message, at) in double_click_at(1_000) {
         assert_eq!(send_at(&mut tray, message, at), answered(Vec::new()));
     }
+    // Nothing of it was kept: a shell that reports no presses, as far as the tray knows.
+    send(&mut tray, (START.id(), 0, 0));
+    assert_eq!(play(&mut tray, &[(click(), 2_000), (click(), 2_100)]), 1);
+    assert_eq!(tray.mode(), Vietnamese);
+
     let mut tray = running(Vietnamese);
     send_at(&mut tray, click(), 1_000);
     choose(&mut tray, TrayCommand::Exit);
-    for (message, at) in [(double_click(), 1_100), (click(), 1_200)] {
+    for (message, at) in [
+        (press(), 1_050),
+        (double_click(), 1_100),
+        (release(), 1_150),
+        (click(), 1_200),
+    ] {
         assert_eq!(send_at(&mut tray, message, at), answered(Vec::new()));
     }
     assert_eq!(tray.mode(), English);
@@ -1252,6 +1663,42 @@ fn only_a_known_application_whose_rules_forbid_vietnamese_is_excluded() {
     assert_eq!(
         tray.on_foreground(app_in("rdcman.exe", "windowsforms10.window.8.app.0.1")),
         [Effect::UpdateIcon(excluded_icon("rdcman.exe"))]
+    );
+}
+
+/// The application in front is known by the class the typing hook resolves the rules with:
+/// the class of the window with the keyboard focus in the foreground window's thread, else
+/// the class of the foreground window itself. So a rule narrowed to a class (in
+/// `raumakey-app-rules.toml`, the one way past `[exclusions]`, design §22.7) shows on the icon
+/// as it acts on typing.
+#[test]
+fn the_application_in_front_is_known_by_the_class_of_its_focus() {
+    let class = |name: &str| Some(name.to_owned());
+    let mstsc = exe("mstsc.exe");
+    let in_edit = ForegroundApp::new(mstsc.clone(), class("#32770"), class("Edit"));
+    assert_eq!(in_edit.exe, mstsc);
+    assert_eq!(in_edit.window_class, class("Edit"));
+    let no_focus = ForegroundApp::new(mstsc.clone(), class("#32770"), None);
+    assert_eq!(no_focus.window_class, class("#32770"));
+    assert_eq!(ForegroundApp::new(mstsc, None, None).window_class, None);
+
+    // `[exclusions]` lists mstsc.exe, and an app rule lets the edit boxes of its dialog type
+    // Vietnamese.
+    let mut start = start(Vietnamese);
+    start.runtime = excluding_mstsc(Vietnamese);
+    start
+        .runtime
+        .compatibility
+        .rules
+        .push(rule("mstsc.exe", Some("Edit"), true));
+    let mut tray = running_with(start);
+    assert_eq!(
+        tray.on_foreground(Some(no_focus)),
+        [Effect::UpdateIcon(excluded_icon("mstsc.exe"))]
+    );
+    assert_eq!(
+        tray.on_foreground(Some(in_edit)),
+        [Effect::UpdateIcon(icon(Vietnamese, InputMethod::Telex))]
     );
 }
 

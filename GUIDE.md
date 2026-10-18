@@ -320,6 +320,8 @@ vẫn đổi chế độ chung; khi bạn chuyển sang ứng dụng khác, bi�
   đơn**, ví dụ `'C:\Windows\System32\mstsc.exe'`: trong dấu nháy kép của TOML, dấu `\` mở đầu một
   ký tự đặc biệt và làm hỏng cả tệp. Đường dẫn chép bằng **Copy as path** của Explorer (có sẵn dấu
   `"` ở hai đầu) cũng dùng được trong dấu nháy đơn.
+- Ứng dụng kiểu mới tải từ Microsoft Store (UWP) chạy trong cửa sổ của `ApplicationFrameHost.exe`,
+  nên tên exe riêng của chúng không có tác dụng trong danh sách.
 - `apps = []` tắt mọi loại trừ. Nếu tệp của bạn chưa có bảng `[exclusions]` (tạo bằng bản cũ),
   Raumakey dùng danh sách mặc định, và ghi bảng này vào tệp ở lần lưu kế tiếp.
 - Sau khi bạn lưu tệp, thay đổi có hiệu lực trong vòng khoảng 2 giây. Một mục không phải tên tệp

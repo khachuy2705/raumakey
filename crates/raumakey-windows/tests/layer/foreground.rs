@@ -21,11 +21,12 @@ mod win {
 
     use raumakey_windows::error::WinErrorKind;
     use raumakey_windows::foreground::{
-        ForegroundWatcher, current_process_is_elevated, foreground_info, foreground_window,
-        process_image_basename, window_class_name, window_process_id,
+        ForegroundWatcher, current_process_is_elevated, describe_window, foreground_info,
+        foreground_window, process_image_basename, window_class_name, window_process_id,
     };
     use raumakey_windows::window::{AppMessage, Window, WindowClass};
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, GetDesktopWindow, MSG, PM_REMOVE, PeekMessageW,
     };
@@ -62,6 +63,30 @@ mod win {
             drop(window);
             assert_eq!(window_process_id(hwnd), None, "a window that is gone");
             assert_eq!(window_process_id(0), None);
+        });
+    }
+
+    /// Any window is described the way the foreground window is, with the window that has
+    /// the keyboard focus in its thread: a fresh thread whose window never took the focus
+    /// names none (nothing here takes the focus), and a window that is gone is not described.
+    #[test]
+    fn a_window_and_the_focus_of_its_thread_are_described() {
+        on_fresh_thread(|| {
+            let (window, _seen) = recording_window("test-foreground-describe");
+            let hwnd = window.hwnd().0 as isize;
+            let described = describe_window(hwnd).unwrap();
+            assert_eq!(described.hwnd, hwnd);
+            assert_eq!(described.process_id, std::process::id());
+            // SAFETY: no preconditions.
+            assert_eq!(described.thread_id, unsafe { GetCurrentThreadId() });
+            assert!(described.window_class.is_some());
+            assert_eq!(described.window_class, window_class_name(hwnd));
+            assert_eq!(described.focus_hwnd, 0);
+            assert_eq!(described.focus_window_class, None);
+            assert!(!described.focus_is_password);
+            drop(window);
+            assert_eq!(describe_window(hwnd), None, "a window that is gone");
+            assert_eq!(describe_window(0), None);
         });
     }
 

@@ -7,11 +7,12 @@
 //! [`NIN_SELECT`], a selection with the keyboard as [`NIN_KEYSELECT`], and a request for the
 //! shortcut menu (right click, Shift+F10, or the menu key) as [`WM_CONTEXTMENU`]; the Windows
 //! SDK notification-icon sample recommends these over the raw mouse messages, which the shell
-//! sends as well. Of those, the press of the left button ([`WM_LBUTTONDOWN`]) and the second
-//! press of a double-click ([`WM_LBUTTONDBLCLK`]) are decoded too, for a window that tells a
-//! double-click from two clicks: the shell reports a double-click as a press, a release,
-//! [`NIN_SELECT`], [`WM_LBUTTONDBLCLK`], a release, and, depending on the version of Windows, a
-//! second [`NIN_SELECT`].
+//! sends as well. Of those, the press and the release of the left button ([`WM_LBUTTONDOWN`],
+//! [`WM_LBUTTONUP`]) and the second press of a double-click ([`WM_LBUTTONDBLCLK`]) are decoded
+//! too, for a window that tells a double-click from two clicks: the shell reports a
+//! double-click as a press, a release, [`NIN_SELECT`], [`WM_LBUTTONDBLCLK`], a release, and,
+//! depending on the version of Windows, a second [`NIN_SELECT`]; a second press that is no
+//! double-click (too late, or too far from the first) comes as [`WM_LBUTTONDOWN`].
 
 /// Capacity of `NOTIFYICONDATAW::szTip` in UTF-16 units, including the terminating NUL.
 pub const TOOLTIP_CAPACITY: usize = 128;
@@ -28,6 +29,8 @@ pub const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
 pub const WM_CONTEXTMENU: u32 = 0x007B;
 /// `WM_LBUTTONDOWN`: the left button was pressed on the icon.
 pub const WM_LBUTTONDOWN: u32 = 0x0201;
+/// `WM_LBUTTONUP`: the left button was released on the icon.
+pub const WM_LBUTTONUP: u32 = 0x0202;
 /// `WM_LBUTTONDBLCLK`: the left button was pressed on the icon a second time within the
 /// double-click time (it takes the place of that press's `WM_LBUTTONDOWN`).
 pub const WM_LBUTTONDBLCLK: u32 = 0x0203;
@@ -41,6 +44,8 @@ pub enum NotifyIconEvent {
     KeySelect,
     /// [`WM_LBUTTONDOWN`]: the left button was pressed on the icon (a click begins).
     ButtonDown,
+    /// [`WM_LBUTTONUP`]: the left button was released on the icon.
+    ButtonUp,
     /// [`WM_LBUTTONDBLCLK`]: the second press of a double-click.
     DoubleClick,
     /// [`WM_CONTEXTMENU`]: the shortcut menu was requested; it opens at the anchor point.
@@ -53,8 +58,7 @@ pub enum NotifyIconEvent {
         y: i32,
     },
     /// Any other notification, by its code: the other mouse messages (`WM_MOUSEMOVE`, the
-    /// releases, the right and middle buttons), `NIN_POPUPOPEN`, the balloon notifications,
-    /// and so on.
+    /// right and middle buttons), `NIN_POPUPOPEN`, the balloon notifications, and so on.
     Other(u16),
 }
 
@@ -88,6 +92,7 @@ pub const fn decode_notify_icon_message(wparam: usize, lparam: isize) -> NotifyI
         NIN_SELECT => NotifyIconEvent::Select,
         NIN_KEYSELECT => NotifyIconEvent::KeySelect,
         WM_LBUTTONDOWN => NotifyIconEvent::ButtonDown,
+        WM_LBUTTONUP => NotifyIconEvent::ButtonUp,
         WM_LBUTTONDBLCLK => NotifyIconEvent::DoubleClick,
         WM_CONTEXTMENU => NotifyIconEvent::ContextMenu {
             x: low_word(wparam) as i16 as i32,

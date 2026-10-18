@@ -58,13 +58,14 @@
 //! | Message | While running | Answer |
 //! |---|---|---|
 //! | [`START`] (posted once when the message loop starts) | adds the icon ([`Effect::ShowIcon`]), reads the application in front ([`Effect::ReadForeground`]), opens the panel when it opens at start ([`Effect::OpenPanel`]), then shows the start notices | 0 |
-//! | [`TRAY_CALLBACK`] `NIN_SELECT` (click) | switches the mode at once, or completes a double-click (see [the icon](#the-icon-d42-d46-d47)) | 0 |
+//! | [`TRAY_CALLBACK`] `NIN_SELECT` (click) | switches the mode at once, completes a double-click, or is swallowed as the second click of one (see [the icon](#the-icon-d42-d46-d47)) | 0 |
 //! | [`TRAY_CALLBACK`] `WM_LBUTTONDBLCLK` (double-click) | switches back the mode its first click switched, and opens the panel or brings it to the front ([`Effect::OpenPanel`]) | 0 |
-//! | [`TRAY_CALLBACK`] `WM_LBUTTONDOWN` (a press) | nothing: a click begins | 0 |
+//! | [`TRAY_CALLBACK`] `WM_LBUTTONDOWN` (a press) | nothing visible: a click begins | 0 |
+//! | [`TRAY_CALLBACK`] `WM_LBUTTONUP` (a release) | nothing visible: after a double-click, the select of its second click comes now | 0 |
 //! | [`TRAY_CALLBACK`] `NIN_KEYSELECT` (Space or Enter on the selected icon) | switches the mode | 0 |
 //! | [`TRAY_CALLBACK`] `WM_CONTEXTMENU` (right click, Shift+F10, menu key) | opens the menu at the anchor ([`Effect::OpenMenu`]) | 0 |
 //! | [`TRAY_CALLBACK`], other notifications or another icon id | nothing | 0 |
-//! | `WM_TIMER` of [`POLL_TIMER`] (every [`POLL_INTERVAL_MS`]) | makes sure the icon is shown ([`Effect::EnsureIcon`]: an add or a change that failed is tried again), reads the application in front again ([`Effect::ReadForeground`]), and asks the worker to poll unless a poll is on its way | 0 |
+//! | `WM_TIMER` of [`POLL_TIMER`] (every [`POLL_INTERVAL_MS`]) | forgets what the clicks left behind once its time has passed, makes sure the icon is shown ([`Effect::EnsureIcon`]: an add or a change that failed is tried again), reads the application in front again ([`Effect::ReadForeground`]), and asks the worker to poll unless a poll is on its way | 0 |
 //! | [`WAKE`] (the worker, the hook observer, a message box, the panel, or the macro list editor left something in the inbox) | nothing: the glue drains the inbox ([`Tray::on_event`]) | 0 |
 //! | [`FOREGROUND`] (the foreground watcher; `wParam`: the window that came to the front) | reads the application of that window ([`Effect::ReadForeground`]) | 0 |
 //! | `TaskbarCreated` (Explorer restarted) | adds the icon again with the current state (matrix #58) | 0 |
@@ -91,7 +92,7 @@
 //!
 //! The glue hands every message over with a clock in milliseconds ([`Tray::on_message_at`]:
 //! `GetTickCount`, which wraps around after 49.7 days, so times are compared by their
-//! difference); only the icon's messages use it.
+//! difference); only the icon's messages and the poll timer use it.
 //!
 //! # The icon (D42, D46, D47)
 //!
@@ -107,37 +108,52 @@
 //! panel as "Bảng cấu hình…" does and leaves the mode as it was before its first click: that
 //! mode comes back the way of every mode change (the icon, [`Effect::HookMode`], the worker;
 //! nothing when it is back already, after the hotkey), then [`Effect::OpenPanel`] follows. The
-//! shell reports a double-click as press, release, select, `WM_LBUTTONDBLCLK`, release, and,
-//! depending on the version of Windows, a second select:
+//! shell reports a double-click as press (`WM_LBUTTONDOWN`), release (`WM_LBUTTONUP`), select,
+//! `WM_LBUTTONDBLCLK` (in place of the second press), release, and, depending on the version
+//! of Windows, a second select; a second press that is no double-click (too late, or the
+//! mouse moved) comes as a press. A select comes at the release of its press, however long
+//! the press was held, so the tray goes by the presses, never by the time between two selects:
 //!
-//! - `WM_LBUTTONDBLCLK` is the double-click. The mode is restored when the remembered click
-//!   came within the double-click time before it ([`Tray::with_double_click_ms`]: the user's
-//!   `GetDoubleClickTime`, [`DEFAULT_DOUBLE_CLICK_MS`] until the glue sets it); the panel opens
-//!   in any case.
-//! - A select within the double-click time after a `WM_LBUTTONDBLCLK` is its second click and
-//!   is swallowed, once, unless a press (`WM_LBUTTONDOWN`) came between them: a click that
-//!   follows is never lost, whatever the shell sends.
-//! - For a shell that sends no `WM_LBUTTONDBLCLK`, a select within the double-click time of
-//!   the remembered click is the double-click.
+//! - `WM_LBUTTONDBLCLK` is the double-click. It restores the mode remembered by the last
+//!   select when no press came after that select (it is the double-click's first click) and
+//!   the select came at most the double-click time ([`Tray::with_double_click_ms`]: the
+//!   user's `GetDoubleClickTime`, [`DEFAULT_DOUBLE_CLICK_MS`] until the glue sets it) and
+//!   [`DOUBLE_CLICK_GRACE_MS`] before it; the panel opens in any case.
+//! - The first select after a `WM_LBUTTONDBLCLK`, before a new press, is its second click and
+//!   is swallowed when it comes within the double-click time after the release that followed
+//!   the double-click, or, while no release was seen, within the double-click time and
+//!   [`DOUBLE_CLICK_GRACE_MS`] after the double-click. A press ends it: a click that follows
+//!   is never lost, whatever the shell sends.
+//! - Once the shell has reported a press or a double-click, its double-click is the only one,
+//!   and two selects are two clicks. For a shell that has reported neither, a select within
+//!   the double-click time of the remembered click is the double-click.
 //!
-//! A double-click takes both its clicks: the click after it is a click again. A selection with
-//! the keyboard (`NIN_KEYSELECT`) switches the mode once; it and the menu end a double-click
-//! that a click may have begun.
+//! The times are those at which the tray handles the messages; the grace allows for a busy
+//! thread or a busy Explorer. A double-click takes both its clicks: the click after it is a
+//! click again, so a triple click is a double-click and a click. A selection with the keyboard
+//! (`NIN_KEYSELECT`) switches the mode once; it and the menu take the remembered click from a
+//! double-click that may follow. At every tick of the poll timer the glue gives the tray the
+//! double-click time again ([`Tray::set_double_click_ms`]), and the tray forgets a remembered
+//! click and a release whose time has passed, so that they do not come back when the clock
+//! comes round to their time again (a second press still held stays: its release counts).
 //!
 //! **Excluded applications (D47).** `raumakey.toml` lists applications in which Raumakey types
 //! English only (`[exclusions]`: Remote Desktop Connection and the like). The settings put one
 //! rule per application, with Vietnamese and macros off, at the head of the compatibility
 //! rules of the runtime snapshot, and the typing hook types English there. The tray shows it.
 //! The glue reads the application in front ([`ForegroundApp`]: the executable of the window's
-//! process and the window's class) for [`Effect::ReadForeground`]: at [`START`], whenever the
-//! foreground watcher reports another window ([`FOREGROUND`]), and at every tick of the poll
-//! timer, since a message posted while the menu's modal loop runs is lost
-//! (`raumakey_windows::window`); it passes the result to [`Tray::on_foreground`]. The
-//! application is excluded when the compatibility rules of the runtime snapshot in effect
-//! forbid Vietnamese in it (`raumakey_policy::CompatibilityPolicy`, for its executable and
-//! class, never as a password field); this is worked out again only when the application in
-//! front or the rules change. An application that cannot be read (no window, one that is gone,
-//! a process that cannot be queried) is not excluded.
+//! process, and the class of the window with the keyboard focus in the window's thread, else
+//! the window's own class, as the typing hook reads them) for [`Effect::ReadForeground`]: at
+//! [`START`], whenever the foreground watcher reports another window ([`FOREGROUND`]), and at
+//! every tick of the poll timer, since a message posted while the menu's modal loop runs is
+//! lost (`raumakey_windows::window`) and the watcher does not report a focus that moves inside
+//! the window in front (such a move reaches the icon at the next tick); it passes the result
+//! to [`Tray::on_foreground`]. The application is excluded when the compatibility rules of the
+//! runtime snapshot in effect forbid Vietnamese in it (`raumakey_policy::CompatibilityPolicy`,
+//! built again only when the rules change, for its executable and class, never as a password
+//! field); this is worked out again only when the application in front or the rules change.
+//! An application that cannot be read (no window, one that is gone, a process that cannot be
+//! queried) is not excluded.
 //!
 //! While an excluded application is in front, only the icon changes: the mode in effect, the
 //! menu's check, the panel, and the hook's mode stay. The hotkey, a click, the menu, and the
@@ -264,8 +280,13 @@ pub const LOOP_EXIT_CODE: i32 = 0;
 /// (D45; `raumakey_windows::window::register_user_message`).
 pub const SHOW_PANEL_COMPONENT: &str = "show-panel";
 /// The double-click time of a tray made by [`Tray::new`], in milliseconds: the default of
-/// Windows. The glue gives the tray the user's own ([`Tray::with_double_click_ms`]).
+/// Windows. The glue gives the tray the user's own ([`Tray::with_double_click_ms`],
+/// [`Tray::set_double_click_ms`]).
 pub const DEFAULT_DOUBLE_CLICK_MS: u32 = 500;
+/// How much longer than the double-click time, in milliseconds, the tray still takes a message
+/// for part of a double-click that its thread or Explorer may have delayed: the click that a
+/// `WM_LBUTTONDBLCLK` restores, and the select of the second click when no release was seen.
+pub const DOUBLE_CLICK_GRACE_MS: u32 = 2_000;
 
 /// Tooltip of the icon in English mode: "Raumakey: typing English".
 pub const TOOLTIP_ENGLISH: &str = "Raumakey: đang gõ tiếng Anh";
@@ -459,8 +480,27 @@ fn shortened(text: &str, units: usize) -> Cow<'_, str> {
 pub struct ForegroundApp {
     /// The lowercase executable basename of its process.
     pub exe: ExeName,
-    /// The class of the window, when it could be read.
+    /// The class that the compatibility rules are resolved with ([`ForegroundApp::new`]): of
+    /// the window with the keyboard focus in the window's thread, else of the window itself;
+    /// `None` when neither could be read.
     pub window_class: Option<String>,
+}
+
+impl ForegroundApp {
+    /// The application of a window of `exe` whose class is `window_class`, while the window of
+    /// class `focus_window_class` has the keyboard focus in its thread: it is known by the
+    /// class of the focus, else by the class of the window itself, as the typing hook knows
+    /// the window in front, so a rule narrowed to a class acts on the icon as on typing.
+    pub fn new(
+        exe: ExeName,
+        window_class: Option<String>,
+        focus_window_class: Option<String>,
+    ) -> Self {
+        Self {
+            exe,
+            window_class: focus_window_class.or(window_class),
+        }
+    }
 }
 
 /// The commands of the tray menu.
@@ -843,12 +883,17 @@ pub struct Tray {
     temporary_exe: bool,
     /// The longest time between the clicks of a double-click, in milliseconds.
     double_click_ms: u32,
-    /// The last click on the icon that switched the mode, which a second click may make the
-    /// first of a double-click.
+    /// The shell reported a press or a double-click on the icon: from then on its
+    /// double-click is the only one, and two selects are two clicks.
+    presses_reported: bool,
+    /// The last click on the icon that switched the mode, unless a press, the keyboard, or
+    /// the menu came after it: the first click of a double-click that may follow.
     click: Option<Click>,
-    /// The time of the last double-click notification, while the shell may still follow it
-    /// with the `NIN_SELECT` of its second click.
-    double_clicked: Option<u32>,
+    /// The double-click whose second click's select is still to come, to be swallowed.
+    second_select: Option<SecondSelect>,
+    /// The compatibility rules of `runtime`, as the hook resolves them; built again only when
+    /// they change.
+    policy: Arc<CompatibilityPolicy>,
     /// The application in the foreground, as the glue last read it (`None`: unknown).
     foreground: Option<ForegroundApp>,
     /// That application, when the compatibility rules in effect exclude it (D47): the icon
@@ -859,10 +904,38 @@ pub struct Tray {
 /// A click on the icon that switched the mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Click {
-    /// When it arrived (the glue's clock, milliseconds).
+    /// When its select arrived (the glue's clock, milliseconds).
     at: u32,
     /// The mode before it, which a double-click restores.
     before: InputMode,
+}
+
+/// Where a double-click is while the select of its second click, which the shell sends when
+/// that press is released (and some versions of Windows not at all), is still to come.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SecondSelect {
+    /// The double-click arrived at this time, and its press has not been released: a select
+    /// within the double-click time and [`DOUBLE_CLICK_GRACE_MS`] after it is swallowed (for
+    /// a shell that reports no release).
+    Pressed(u32),
+    /// The press is held longer than that: only once it is released is a select swallowed.
+    Held,
+    /// The press was released at this time: a select within the double-click time after it
+    /// is swallowed.
+    Released(u32),
+}
+
+/// Whether `now_ms` is at most `bound_ms` after `then_ms` (the clock wraps around; a clock
+/// that went back is far apart).
+fn within(then_ms: u32, now_ms: u32, bound_ms: u32) -> bool {
+    now_ms.wrapping_sub(then_ms) <= bound_ms
+}
+
+/// The rules of `runtime` as the hook resolves them.
+fn policy_of(runtime: &RuntimeSnapshot) -> Arc<CompatibilityPolicy> {
+    Arc::new(CompatibilityPolicy::new(Arc::new(
+        runtime.compatibility.clone(),
+    )))
 }
 
 impl fmt::Debug for Tray {
@@ -889,6 +962,7 @@ impl Tray {
     /// [`RegisteredMessages`] for a registration that failed).
     pub fn new(start: TrayStart, messages: RegisteredMessages) -> Self {
         Self {
+            policy: policy_of(&start.runtime),
             runtime: start.runtime,
             startup: start.startup,
             location: start.location,
@@ -907,8 +981,9 @@ impl Tray {
             save_error: None,
             temporary_exe: start.temporary_exe,
             double_click_ms: DEFAULT_DOUBLE_CLICK_MS,
+            presses_reported: false,
             click: None,
-            double_clicked: None,
+            second_select: None,
             foreground: None,
             excluded: None,
         }
@@ -918,8 +993,15 @@ impl Tray {
     /// `raumakey_windows::input::double_click_time`), in milliseconds.
     #[must_use]
     pub fn with_double_click_ms(mut self, double_click_ms: u32) -> Self {
-        self.double_click_ms = double_click_ms;
+        self.set_double_click_ms(double_click_ms);
         self
+    }
+
+    /// The user's double-click time is now `double_click_ms` milliseconds: the glue reads it
+    /// again at every tick of the poll timer, so a change in the mouse settings counts from
+    /// then on.
+    pub fn set_double_click_ms(&mut self, double_click_ms: u32) {
+        self.double_click_ms = double_click_ms;
     }
 
     /// The mode in effect: saved, checked in the menu and the panel, and handed to the hook.
@@ -964,8 +1046,7 @@ impl Tray {
         let app = self.foreground.as_ref()?;
         let mut host = HostContext::new(SessionId::default(), app.exe.clone());
         host.window_class.clone_from(&app.window_class);
-        let policy = CompatibilityPolicy::new(Arc::new(self.runtime.compatibility.clone()));
-        (!policy.resolve(&host).vietnamese_allowed).then(|| app.exe.clone())
+        (!self.policy.resolve(&host).vietnamese_allowed).then(|| app.exe.clone())
     }
 
     /// The runtime snapshot in effect, as the hook last got it from the tray.
@@ -1044,7 +1125,7 @@ impl Tray {
     /// The answer to window message `message` with its parameters, handled at `now_ms` (see
     /// the [module documentation](self)). `now_ms` is a clock in milliseconds that wraps
     /// around (`GetTickCount`, through `raumakey_windows::input::tick_count`); only the icon's
-    /// messages use it, to tell a double-click from two clicks.
+    /// messages and the poll timer use it, to tell a double-click from two clicks.
     pub fn on_message_at(
         &mut self,
         message: u32,
@@ -1092,7 +1173,7 @@ impl Tray {
             return Reply::handled(effects);
         }
         match message {
-            WM_TIMER if wparam == POLL_TIMER => Reply::handled(self.tick()),
+            WM_TIMER if wparam == POLL_TIMER => Reply::handled(self.tick(now_ms)),
             WM_CLOSE => Reply::handled(self.exit()),
             WM_ENDSESSION if wparam != 0 => Reply::handled(self.exit()),
             _ => Reply::default_processing(),
@@ -1292,8 +1373,18 @@ impl Tray {
             NotifyIconEvent::Select => self.select(now_ms),
             NotifyIconEvent::DoubleClick => self.double_click(now_ms),
             NotifyIconEvent::ButtonDown => {
-                // A new click: its select is never the second one of a double-click.
-                self.double_clicked = None;
+                // A new click: the click before is no first click of a double-click any more,
+                // and the select to come is this click's own.
+                self.presses_reported = true;
+                self.click = None;
+                self.second_select = None;
+                Vec::new()
+            }
+            NotifyIconEvent::ButtonUp => {
+                // The release of a double-click's second press: its select comes now.
+                if let Some(SecondSelect::Pressed(_) | SecondSelect::Held) = self.second_select {
+                    self.second_select = Some(SecondSelect::Released(now_ms));
+                }
                 Vec::new()
             }
             NotifyIconEvent::KeySelect => {
@@ -1308,24 +1399,26 @@ impl Tray {
         }
     }
 
-    /// Whether `now_ms` is within the double-click time after `then_ms` (the clock wraps
-    /// around; a clock that went back is far apart).
-    fn within_double_click(&self, then_ms: u32, now_ms: u32) -> bool {
-        now_ms.wrapping_sub(then_ms) <= self.double_click_ms
+    /// The longest time from the select of a double-click's first click to its
+    /// `WM_LBUTTONDBLCLK`, and from that to the select of its second click when no release
+    /// was seen: the double-click time and [`DOUBLE_CLICK_GRACE_MS`].
+    fn grace_ms(&self) -> u32 {
+        self.double_click_ms.saturating_add(DOUBLE_CLICK_GRACE_MS)
     }
 
     /// The select of a click at `now_ms`: swallowed when it is the second click of a
     /// double-click that was reported already, the double-click itself when it follows a
-    /// click within the double-click time (a shell that reports no double-click), and
-    /// otherwise a switch of the mode, at once.
+    /// click within the double-click time (a shell that reports no presses), and otherwise a
+    /// switch of the mode, at once.
     fn select(&mut self, now_ms: u32) -> Vec<Effect> {
-        if let Some(at) = self.double_clicked.take()
-            && self.within_double_click(at, now_ms)
+        if let Some(second) = self.second_select.take()
+            && self.swallows(second, now_ms)
         {
             return Vec::new();
         }
-        if let Some(click) = self.click.take()
-            && self.within_double_click(click.at, now_ms)
+        if !self.presses_reported
+            && let Some(click) = self.click.take()
+            && within(click.at, now_ms, self.double_click_ms)
         {
             return self.panel_after(Some(click));
         }
@@ -1334,16 +1427,48 @@ impl Tray {
         self.set_mode(before.toggled())
     }
 
+    /// Whether a select at `now_ms` is the second click's select of the double-click that is
+    /// at `second`.
+    fn swallows(&self, second: SecondSelect, now_ms: u32) -> bool {
+        match second {
+            SecondSelect::Pressed(at) => within(at, now_ms, self.grace_ms()),
+            SecondSelect::Held => false,
+            SecondSelect::Released(at) => within(at, now_ms, self.double_click_ms),
+        }
+    }
+
     /// The double-click notification at `now_ms`: the panel, after the mode from before its
-    /// first click. A select that follows it within the double-click time, before a new
-    /// press, belongs to it.
+    /// first click, which is the remembered click when no press came after it (within the
+    /// grace). The first select after it, before a new press, belongs to it.
     fn double_click(&mut self, now_ms: u32) -> Vec<Effect> {
-        self.double_clicked = Some(now_ms);
+        self.presses_reported = true;
+        self.second_select = Some(SecondSelect::Pressed(now_ms));
+        let grace = self.grace_ms();
         let click = self
             .click
             .take()
-            .filter(|click| self.within_double_click(click.at, now_ms));
+            .filter(|click| within(click.at, now_ms, grace));
         self.panel_after(click)
+    }
+
+    /// At `now_ms` (a tick of the poll timer): forgets the click and the release of a
+    /// double-click whose time has passed, so that they do not come back when the clock comes
+    /// round to their time again. A second press still held stays: its release starts its time.
+    fn forget_stale_clicks(&mut self, now_ms: u32) {
+        let grace = self.grace_ms();
+        if self
+            .click
+            .is_some_and(|click| !within(click.at, now_ms, grace))
+        {
+            self.click = None;
+        }
+        self.second_select = match self.second_select {
+            Some(SecondSelect::Pressed(at)) if !within(at, now_ms, grace) => {
+                Some(SecondSelect::Held)
+            }
+            Some(SecondSelect::Released(at)) if !within(at, now_ms, self.double_click_ms) => None,
+            other => other,
+        };
     }
 
     /// Opens the panel for a double-click whose first click was `click`: the mode it changed
@@ -1357,13 +1482,15 @@ impl Tray {
         effects
     }
 
-    /// A tick of the poll timer: the icon must be shown, the application in front is read
-    /// again (a [`FOREGROUND`] may have been lost), and the worker polls unless a poll is on
-    /// its way.
-    fn tick(&mut self) -> Vec<Effect> {
+    /// A tick of the poll timer at `now_ms`: what the clicks left behind and whose time has
+    /// passed is forgotten, the icon must be shown, the application in front is read again (a
+    /// [`FOREGROUND`] may have been lost, or the focus moved inside the window in front), and
+    /// the worker polls unless a poll is on its way.
+    fn tick(&mut self, now_ms: u32) -> Vec<Effect> {
         if !self.is_running() {
             return Vec::new();
         }
+        self.forget_stale_clicks(now_ms);
         let mut effects = vec![
             Effect::EnsureIcon(self.icon()),
             Effect::ReadForeground(None),
@@ -1565,6 +1692,7 @@ impl Tray {
         self.startup = state.startup;
         self.show_panel_on_start = state.show_panel_on_start;
         if rules_changed {
+            self.policy = policy_of(&self.runtime);
             self.excluded = self.exclusion();
         }
         let mut effects = Vec::new();
