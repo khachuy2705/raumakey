@@ -282,31 +282,95 @@ fn defaulted_values_and_skipped_macros_are_listed_by_path_and_count() {
     assert!(text.contains("raumakey-app-rules.toml"), "{text}");
 }
 
-/// An excluded application whose name cannot be used is left out, not replaced (D47), and a
-/// list beyond the snapshot limit is cut: the line about `raumakey.toml` says that values are
-/// replaced by their defaults or left out, and names the schema paths.
+fn out_of_range(path: &str) -> FieldIssue {
+    FieldIssue {
+        path: path.to_owned(),
+        reason: IssueReason::OutOfRange,
+    }
+}
+
+/// What the notices say when the application rules, the excluded applications of
+/// `raumakey.toml` first, go beyond the limit of the channel to the session core.
+const RULES_CUT: &str = "Raumakey chỉ dùng được 4096 quy tắc ứng dụng, tính cả các ứng dụng \
+loại trừ trong raumakey.toml (xếp trước các quy tắc của raumakey-app-rules.toml); các quy tắc \
+vượt quá bị bỏ qua.";
+
+/// An excluded application whose name cannot be used is left out, not replaced (D47): the line
+/// about `raumakey.toml` says that values are replaced by their defaults or left out, and names
+/// the schema paths. Rules beyond the limit are not a problem of a value of
+/// `raumakey-app-rules.toml`: their line says that the limit counts the exclusions.
 #[test]
 fn excluded_applications_left_out_are_named_by_path() {
     let status = Status {
         config: DocumentStatus::Loaded {
-            issues: vec![issue("exclusions.apps[2]"), issue("exclusions.apps")],
+            issues: vec![issue("exclusions.apps[2]")],
         },
         app_rules: DocumentStatus::Loaded {
-            issues: vec![FieldIssue {
-                path: "rule".to_owned(),
-                reason: IssueReason::OutOfRange,
-            }],
+            issues: vec![out_of_range("rule")],
         },
         ..clean()
     };
     let notice = status_notice(Some(&path()), &clean(), &status).unwrap();
     assert_eq!(
         shown(&notice),
-        "Raumakey gặp vấn đề khi nạp lại tệp cấu hình:\n\n- Một số giá trị trong raumakey.toml \
-         không dùng được và được thay bằng giá trị mặc định hoặc bị bỏ qua: exclusions.apps[2], \
-         exclusions.apps.\n\n- Một số giá trị trong raumakey-app-rules.toml không dùng được và \
-         bị bỏ qua: rule."
+        format!(
+            "Raumakey gặp vấn đề khi nạp lại tệp cấu hình:\n\n- Một số giá trị trong \
+             raumakey.toml không dùng được và được thay bằng giá trị mặc định hoặc bị bỏ qua: \
+             exclusions.apps[2].\n\n- {RULES_CUT}"
+        )
     );
+}
+
+/// The cut is reported on `rule` of `raumakey-app-rules.toml`, or on `exclusions.apps` of
+/// `raumakey.toml` while the app-rules file cannot be read, or on both when the exclusions
+/// alone are too many: one line says it, whichever file carries it, and only when it is new.
+#[test]
+fn rules_beyond_the_limit_are_reported_once_whichever_file_carries_them() {
+    let on_exclusions = Status {
+        config: DocumentStatus::Loaded {
+            issues: vec![out_of_range("exclusions.apps")],
+        },
+        app_rules: DocumentStatus::Unreadable(ConfigError::Corrupt),
+        ..clean()
+    };
+    let notice = status_notice(Some(&path()), &clean(), &on_exclusions).unwrap();
+    assert_eq!(
+        shown(&notice),
+        format!(
+            "Raumakey gặp vấn đề khi nạp lại tệp cấu hình:\n\n- Không đọc được \
+             raumakey-app-rules.toml: tệp bị hỏng hoặc sai cú pháp TOML. Raumakey giữ quy tắc \
+             ứng dụng đang dùng.\n\n- {RULES_CUT}"
+        )
+    );
+    let on_both = Status {
+        config: DocumentStatus::Loaded {
+            issues: vec![out_of_range("exclusions.apps"), issue("input.method")],
+        },
+        app_rules: DocumentStatus::Loaded {
+            issues: vec![out_of_range("rule")],
+        },
+        ..clean()
+    };
+    let notice = start_notice(&report(Location::ExeDir, false, on_both.clone()), true).unwrap();
+    let text = shown(&notice);
+    assert_eq!(text.matches(RULES_CUT).count(), 1, "{text}");
+    assert!(text.contains("bị bỏ qua: input.method."), "{text}");
+    assert!(!text.contains("exclusions.apps"), "{text}");
+    assert!(!text.contains(": rule"), "{text}");
+    // Moved from one file to the other, the cut is said again; unchanged, it is not.
+    let on_rules = Status {
+        app_rules: DocumentStatus::Loaded {
+            issues: vec![out_of_range("rule")],
+        },
+        ..clean()
+    };
+    let notice = status_notice(Some(&path()), &on_exclusions, &on_rules).unwrap();
+    assert_eq!(
+        shown(&notice),
+        format!("Raumakey gặp vấn đề khi nạp lại tệp cấu hình:\n\n- {RULES_CUT}")
+    );
+    assert_eq!(status_notice(Some(&path()), &on_rules, &on_rules), None);
+    assert_eq!(status_notice(Some(&path()), &on_both, &on_both), None);
 }
 
 #[test]

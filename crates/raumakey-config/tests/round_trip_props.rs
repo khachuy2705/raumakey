@@ -295,17 +295,22 @@ fn conversion_section() -> impl Strategy<Value = ConversionSection> {
         )
 }
 
-/// Executable names as decoding leaves them (trimmed, lowercase, with a `.`: a bare name gets
-/// `.exe`), each once, in any order; sometimes none, which the file says as `apps = []`.
+/// Executable names as decoding leaves them (trimmed, lowercase, without trailing dots and
+/// spaces, with a `.`: a bare name gets `.exe`), each once, in any order; sometimes none,
+/// which the file says as `apps = []`.
 fn exclusions_section() -> impl Strategy<Value = ExclusionsSection> {
     let name = prop_oneof![exe_text(), "[A-Za-zĐđÀ-ỹ0-9 ._-]{1,12}"];
     (vec(name, 0..5), toml_extensions(0)).prop_map(|(names, extensions)| {
         let mut apps: Vec<ExeName> = Vec::new();
         for app in names.iter().filter_map(|name| ExeName::new(name).ok()) {
-            let app = if app.as_str().contains('.') {
-                app
+            let stem = app.as_str().trim_end_matches(['.', ' ']);
+            if stem.is_empty() {
+                continue;
+            }
+            let app = if stem.contains('.') {
+                ExeName::new(stem).expect("a shorter valid name")
             } else {
-                ExeName::new(&format!("{app}.exe")).expect("a longer valid name")
+                ExeName::new(&format!("{stem}.exe")).expect("a short valid name")
             };
             if !apps.contains(&app) {
                 apps.push(app);
@@ -1213,6 +1218,11 @@ fn config_file() -> BoxedStrategy<toml::Table> {
         ("toggle_mode", optional(array_of(word(hotkeys.clone()), 3))),
         ("hard_reset", optional(array_of(word(hotkeys), 3))),
     ]);
+    // `İ` (U+0130) lowercases to two characters: the first two names are too long once
+    // lowercased (the second only with `.exe`), the third is as long as a name may be.
+    let dotted = |count: usize, rest: &str| -> &'static str {
+        format!("{}{rest}", "\u{130}".repeat(count)).leak()
+    };
     let apps = vec![
         "mstsc.exe",
         "MSTSC.EXE",
@@ -1227,6 +1237,14 @@ fn config_file() -> BoxedStrategy<toml::Table> {
         "D:\\Tools\\",
         "C:",
         "",
+        "mstsc.exe.",
+        "a.",
+        "RDCMan.exe . ",
+        "...",
+        "mstsc.exe /f",
+        dotted(130, ".exe"),
+        dotted(126, "ab"),
+        dotted(125, "X.EXE"),
     ];
     let exclusions = table_value(vec![("apps", optional(array_of(word(apps), 5)))]);
     let mut fields = header_fields();
@@ -1454,11 +1472,13 @@ proptest! {
                 prop_assert!(ids.insert(map.id.clone()), "duplicate key map id");
             }
             prop_assert!(!doc.hotkeys.toggle_mode.is_empty() || text.contains("toggle_mode"));
-            // Every excluded name is a file name with a `.` that reads back as itself, once.
+            // Every excluded name is a file name with a `.` that reads back as itself, once,
+            // and ends as a Windows file name can (not with a dot or a space).
             let mut apps = BTreeSet::new();
             for app in &doc.exclusions.apps {
                 prop_assert_eq!(&ExeName::new(app.as_str()), &Ok(app.clone()));
                 prop_assert!(app.as_str().contains('.'), "{}", app);
+                prop_assert!(!app.as_str().ends_with(['.', ' ']), "{}", app);
                 prop_assert!(!app.as_str().contains(['\\', '/', '"']), "{}", app);
                 prop_assert!(apps.insert(app.clone()), "repeated exclusion");
             }

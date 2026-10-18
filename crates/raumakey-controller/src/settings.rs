@@ -99,9 +99,14 @@
 //! [`MAX_KEYMAPS`] key maps, only the key map that the input method uses (if any) is carried,
 //! as it is the only one the engine reads. The excluded applications take the first of the
 //! [`MAX_APP_RULES`] rules, so the last rules of `raumakey-app-rules.toml` are cut when they
-//! no longer fit after them, and `rule` is reported on that file. Compatibility rules that
-//! the session core would refuse make `raumakey-app-rules.toml` [`DocumentStatus::Unusable`],
-//! with the D13 defaults in effect (after the exclusions, as always). After a commit, the status
+//! no longer fit after them: `rule` is reported on that file, or, while it cannot be read (its
+//! last good rules stay in effect), `exclusions.apps` on `raumakey.toml`, whose exclusions push
+//! them out; the notices say that the limit counts the exclusions. An excluded application
+//! whose rule the session core would refuse (not expected: every name of a decoded document
+//! reads back as itself) is left out and reported on its own (`exclusions.apps[1]`), and the
+//! others stay in effect. Compatibility rules that the session core would refuse make
+//! `raumakey-app-rules.toml` [`DocumentStatus::Unusable`], with the D13 defaults in effect
+//! (after the exclusions, as always). After a commit, the status
 //! of `raumakey.toml` is what a load of the written file reports: fields that took their
 //! defaults were written with them and are not reported any more. A commit writes the
 //! canonical encoding, so comments and the layout of a hand-edited file are not kept.
@@ -974,21 +979,35 @@ impl Settings {
     fn rebuild(&mut self) {
         let built = build_runtime(&self.config, &self.compatibility);
         self.runtime = built.snapshot;
+        let mut config_issues = built.config_issues;
+        let mut app_rules_issues = Vec::new();
+        if built.rules_cut {
+            // The rules cut are those of the app-rules file when it is loaded; otherwise (it
+            // cannot be read, and its last good rules stay) its status holds no issues, so the
+            // exclusions that push them out report it.
+            let app_rules_loaded = matches!(self.app_rules_read, DocumentStatus::Loaded { .. })
+                && built.app_rules_error.is_none();
+            let (issues, path) = if app_rules_loaded {
+                (&mut app_rules_issues, CUT_RULES_PATH)
+            } else {
+                (&mut config_issues, CUT_EXCLUSIONS_PATH)
+            };
+            let cut = out_of_range(path);
+            if !issues.contains(&cut) {
+                issues.push(cut);
+            }
+        }
         self.status.config = match (&self.config_read, built.config_error) {
             (DocumentStatus::Loaded { .. }, Some(error)) => DocumentStatus::Unusable(error),
             (DocumentStatus::Loaded { issues }, None) => DocumentStatus::Loaded {
-                issues: issues.iter().cloned().chain(built.config_issues).collect(),
+                issues: issues.iter().cloned().chain(config_issues).collect(),
             },
             (other, _) => other.clone(),
         };
         self.status.app_rules = match (&self.app_rules_read, built.app_rules_error) {
             (DocumentStatus::Loaded { .. }, Some(error)) => DocumentStatus::Unusable(error),
             (DocumentStatus::Loaded { issues }, None) => DocumentStatus::Loaded {
-                issues: issues
-                    .iter()
-                    .cloned()
-                    .chain(built.app_rules_issues)
-                    .collect(),
+                issues: issues.iter().cloned().chain(app_rules_issues).collect(),
             },
             (other, _) => other.clone(),
         };
@@ -1030,10 +1049,18 @@ struct Built {
     config_error: Option<IpcError>,
     /// The compatibility rules could not make a valid snapshot.
     app_rules_error: Option<IpcError>,
-    /// Lists of `raumakey-app-rules.toml` cut to a snapshot limit (`rule`, after the
-    /// exclusions).
-    app_rules_issues: Vec<FieldIssue>,
+    /// The last compatibility rules no longer fit after the exclusions.
+    rules_cut: bool,
 }
+
+/// The path that reports, on `raumakey-app-rules.toml`, that its last rules no longer fit
+/// after the excluded applications ([`IssueReason::OutOfRange`]).
+pub(crate) const CUT_RULES_PATH: &str = "rule";
+
+/// The path that reports, on `raumakey.toml`, that excluded applications are beyond
+/// [`MAX_APP_RULES`] or push the last rules in effect past it while
+/// `raumakey-app-rules.toml` is not loaded ([`IssueReason::OutOfRange`]).
+pub(crate) const CUT_EXCLUSIONS_PATH: &str = "exclusions.apps";
 
 /// The rule of an application of `[exclusions]` (D47): neither Vietnamese nor macros.
 fn exclusion_rule(exe: &ExeName) -> AppRule {
@@ -1048,28 +1075,62 @@ fn exclusion_rule(exe: &ExeName) -> AppRule {
     }
 }
 
+/// What [`put_exclusions_first`] cut to fit [`MAX_APP_RULES`].
+#[derive(Clone, Copy)]
+struct Cut {
+    /// The last applications of `[exclusions] apps`.
+    exclusions: bool,
+    /// The last rules that followed the exclusions.
+    rules: bool,
+}
+
 /// Puts the rule of each application of `apps` before the rules of `compatibility`, keeping at
-/// most [`MAX_APP_RULES`]: the exclusions first (beyond the limit, `exclusions.apps` is cut and
-/// reported in `config_issues`), then as many rules of the app-rules file as still fit (when
-/// some do not, `rule` is reported in `app_rules_issues`).
-fn put_exclusions_first(
-    compatibility: &mut CompatibilityConfig,
-    apps: &[ExeName],
-    config_issues: &mut Vec<FieldIssue>,
-    app_rules_issues: &mut Vec<FieldIssue>,
-) {
+/// most [`MAX_APP_RULES`]: the exclusions first, then as many of the other rules as still fit.
+fn put_exclusions_first(compatibility: &mut CompatibilityConfig, apps: &[ExeName]) -> Cut {
     let excluded = apps.get(..MAX_APP_RULES).unwrap_or(apps);
-    if excluded.len() < apps.len() {
-        config_issues.push(out_of_range("exclusions.apps"));
-    }
     let room = MAX_APP_RULES - excluded.len();
-    if compatibility.rules.len() > room {
-        compatibility.rules.truncate(room);
-        app_rules_issues.push(out_of_range("rule"));
-    }
+    let cut = Cut {
+        exclusions: excluded.len() < apps.len(),
+        rules: compatibility.rules.len() > room,
+    };
+    compatibility.rules.truncate(room);
     let mut rules: Vec<AppRule> = excluded.iter().map(exclusion_rule).collect();
     rules.append(&mut compatibility.rules);
     compatibility.rules = rules;
+    cut
+}
+
+/// The applications of `apps` whose rule the session core takes, each tried alone in
+/// `snapshot` (whose compatibility configuration this replaces); every other one is reported
+/// in `issues` by its index in `apps` (the list in effect, which is the file's once a commit
+/// has written it).
+fn exclusions_the_core_takes(
+    snapshot: &mut RuntimeSnapshot,
+    apps: &[ExeName],
+    issues: &mut Vec<FieldIssue>,
+) -> Vec<ExeName> {
+    let alone = CompatibilityConfig {
+        rules: Vec::new(),
+        named_sets: Vec::new(),
+        probes: Vec::new(),
+        ..CompatibilityConfig::defaults_v1()
+    };
+    let mut taken = Vec::with_capacity(apps.len());
+    for (index, app) in apps.iter().enumerate() {
+        snapshot.compatibility = CompatibilityConfig {
+            rules: vec![exclusion_rule(app)],
+            ..alone.clone()
+        };
+        if snapshot.validate().is_ok() {
+            taken.push(app.clone());
+        } else {
+            issues.push(FieldIssue {
+                path: format!("exclusions.apps[{index}]"),
+                reason: IssueReason::InvalidValue,
+            });
+        }
+    }
+    taken
 }
 
 /// Builds the runtime snapshot of `config` with `compatibility`, so that it passes
@@ -1118,29 +1179,25 @@ fn build_runtime(config: &ConfigDocument, compatibility: &CompatibilityConfig) -
         app_rules_error = Some(error);
         snapshot.compatibility = defaults;
     }
-    let mut app_rules_issues = Vec::new();
     let without_exclusions = snapshot.compatibility.clone();
-    put_exclusions_first(
-        &mut snapshot.compatibility,
-        &config.exclusions.apps,
-        &mut config_issues,
-        &mut app_rules_issues,
-    );
+    let apps = &config.exclusions.apps;
+    let mut cut = put_exclusions_first(&mut snapshot.compatibility, apps);
     if snapshot.validate().is_err() {
-        // Not expected: every name of a decoded document reads back as itself.
+        // Not expected: every name of a decoded document reads back as itself. Only the
+        // applications that the session core refuses are left out.
+        let taken = exclusions_the_core_takes(&mut snapshot, apps, &mut config_issues);
         snapshot.compatibility = without_exclusions;
-        app_rules_issues.clear();
-        config_issues.push(FieldIssue {
-            path: "exclusions.apps".to_owned(),
-            reason: IssueReason::InvalidValue,
-        });
+        cut = put_exclusions_first(&mut snapshot.compatibility, &taken);
+    }
+    if cut.exclusions {
+        config_issues.push(out_of_range(CUT_EXCLUSIONS_PATH));
     }
     Built {
         snapshot,
         config_issues,
         config_error,
         app_rules_error,
-        app_rules_issues,
+        rules_cut: cut.rules,
     }
 }
 

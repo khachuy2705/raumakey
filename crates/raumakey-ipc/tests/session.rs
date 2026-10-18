@@ -248,66 +248,70 @@ fn published_state_rejects_invalid_snapshots_and_keeps_the_previous_ones() {
     assert_eq!(state.macros().as_ref(), &macros(1));
 }
 
-/// `ExeName::new` accepts 200 × `İ`, which lowercases to a 400-character name that no peer
-/// can read back.
-fn overlong_exe() -> ExeName {
-    ExeName::new(&"\u{130}".repeat(200)).unwrap()
+/// The longest executable name: `İ` (U+0130) lowercases to two characters, so 127 of them and
+/// one letter make `ExeName::MAX_LEN` characters once stored. `ExeName::new` refuses a name
+/// that lowercasing makes longer, so every name reads back on the peer.
+fn longest_exe() -> ExeName {
+    assert!(ExeName::new(&"\u{130}".repeat(128)).is_err());
+    let name = ExeName::new(&format!("{}x", "\u{130}".repeat(127))).unwrap();
+    assert_eq!(name.as_str().chars().count(), ExeName::MAX_LEN);
+    name
 }
 
 #[test]
 fn a_runtime_snapshot_no_client_could_decode_is_refused_before_it_is_published() {
-    let mut bad_hotkey = runtime(2);
+    let mut bad = runtime(2);
     // Written as "Ctrl", which the client's parser rejects.
-    bad_hotkey.hotkeys.toggle_mode = vec![Hotkey {
+    bad.hotkeys.toggle_mode = vec![Hotkey {
         ctrl: true,
         shift: false,
         alt: false,
         win: false,
         key: HotkeyKey::ModifiersOnly,
     }];
-    let mut bad_exe = runtime(3);
-    bad_exe.compatibility.probes.push(ProbeRecord {
-        exe: overlong_exe(),
-        probe_version: 1,
-        tsf_range_edit: true,
-    });
-    for (bad, reason) in [
-        (bad_hotkey, MalformedReason::InvalidHotkey),
-        (bad_exe, MalformedReason::InvalidExeName),
-    ] {
-        let refused = IpcError::Malformed(reason);
-        assert_eq!(bad.check_publishable(), Err(refused));
-        assert_eq!(
-            PublishedState::new(1, Arc::new(bad.clone())).err(),
-            Some(refused)
-        );
-        let mut state = published(1, 1, 1);
-        assert_eq!(state.set_runtime(Arc::new(bad)), Err(refused));
-        assert_eq!(state.runtime().as_ref(), &runtime(1));
-        // Clients keep connecting and receive the snapshot published before.
-        let (client, server) = connect_pair(&state, None, None);
-        assert!(server.is_ready());
-        assert_eq!(client.runtime().unwrap().as_ref(), &runtime(1));
-    }
+    let refused = IpcError::Malformed(MalformedReason::InvalidHotkey);
+    assert_eq!(bad.check_publishable(), Err(refused));
+    assert_eq!(
+        PublishedState::new(1, Arc::new(bad.clone())).err(),
+        Some(refused)
+    );
+    let mut state = published(1, 1, 1);
+    assert_eq!(state.set_runtime(Arc::new(bad)), Err(refused));
+    assert_eq!(state.runtime().as_ref(), &runtime(1));
+    // Clients keep connecting and receive the snapshot published before.
+    let (client, server) = connect_pair(&state, None, None);
+    assert!(server.is_ready());
+    assert_eq!(client.runtime().unwrap().as_ref(), &runtime(1));
 }
 
 #[test]
-fn a_probe_report_the_server_could_not_decode_is_refused_and_the_connection_stays_up() {
+fn a_probe_report_naming_the_longest_executable_name_reaches_the_server() {
     let state = published(1, 1, 1);
     let (mut client, mut server) = connect_pair(&state, Some(ms(50)), Some(ms(50)));
     let mut handler = |_: NonZeroU64, _: &Command| ErrorCode::OK;
     let report = Command::ReportProbe(ProbeRecord {
-        exe: overlong_exe(),
+        exe: longest_exe(),
         probe_version: 1,
         tsf_range_edit: false,
     });
+    let request_id = client.send_command(report.clone()).unwrap();
     assert_eq!(
-        client.send_command(report),
-        Err(IpcError::Malformed(MalformedReason::InvalidExeName))
+        server.serve_one(&mut handler),
+        Ok(Some(ServerEvent::Command {
+            request_id,
+            command: report,
+            code: ErrorCode::OK
+        }))
     );
-    assert!(client.is_connected());
-    // Nothing reached the server, and both sides go on.
-    assert_eq!(server.serve_one(&mut handler), Ok(None));
+    assert_eq!(
+        client.recv(),
+        Ok(Some(ClientEvent::CommandResult {
+            request_id,
+            ok: true,
+            code: ErrorCode::OK
+        }))
+    );
+    // Both sides go on.
     let ping = client.ping().unwrap();
     assert_eq!(
         server.serve_one(&mut handler),

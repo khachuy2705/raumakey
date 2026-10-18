@@ -480,9 +480,10 @@ fn check_hotkey(hotkey: &Hotkey) -> Result<(), IpcError> {
     }
 }
 
-/// Executable names travel as their string and are validated again when read.
-/// `ExeName::new` checks the length before it lowercases, and lowercasing can lengthen a name
-/// (`İ` becomes two characters), so a stored name may fail its own validation.
+/// Executable names travel as their string and are validated again when read. `ExeName::new`
+/// checks the length of the lowercase name (lowercasing can lengthen a name: `İ` becomes two
+/// characters), so every name reads back as itself; this check keeps that a condition of the
+/// wire format rather than an assumption.
 fn check_exe(exe: &ExeName) -> Result<(), IpcError> {
     match ExeName::new(exe.as_str()) {
         Ok(read_back) if read_back == *exe => Ok(()),

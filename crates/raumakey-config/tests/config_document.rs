@@ -1241,6 +1241,71 @@ fn names_that_match_once_normalized_are_kept_once() {
     assert_eq!(line, "apps = [\"mstsc.exe\", \"rdcman.exe\"]");
 }
 
+/// Windows drops the trailing dots and spaces of a file name, so a name written with them stands
+/// for the name without them (`mstsc.exe.` is `mstsc.exe`, `a.` is `a.exe`), silently; a name
+/// of dots and spaces only leaves no name and is reported. A pasted command line is not
+/// parsed: in `mstsc.exe /f` the `/` separates a path, so it is `f.exe`.
+#[test]
+fn trailing_dots_and_spaces_are_dropped_as_windows_does() {
+    let (apps, line) = normalized(
+        r#"["mstsc.exe.", "a.", "RDCMan.exe . ", 'C:\Tools\PuTTY. .', "x.bin..", "mstsc.exe /f"]"#,
+    );
+    assert_eq!(
+        apps,
+        exe_names(&[
+            "mstsc.exe",
+            "a.exe",
+            "rdcman.exe",
+            "putty.exe",
+            "x.bin",
+            "f.exe"
+        ])
+    );
+    assert_eq!(
+        line,
+        "apps = [\"mstsc.exe\", \"a.exe\", \"rdcman.exe\", \"putty.exe\", \"x.bin\", \"f.exe\"]"
+    );
+
+    let loaded =
+        ConfigDocument::decode("version = 1\n[exclusions]\napps = [\"...\", \" . \", \"mstsc\"]\n")
+            .unwrap();
+    assert_eq!(
+        codes(&loaded.issues),
+        pairs(&[
+            ("exclusions.apps[0]", "invalid-value"),
+            ("exclusions.apps[1]", "invalid-value"),
+        ])
+    );
+    assert_eq!(loaded.document.exclusions.apps, exe_names(&["mstsc.exe"]));
+}
+
+/// `İ` (U+0130) lowercases to two characters. A name that lowercasing makes longer than an
+/// executable name may be would not read back as itself, so it is dropped and reported by its
+/// index like any other unusable name; the longest name that reads back is kept.
+#[test]
+fn a_name_too_long_once_lowercased_is_dropped_and_reported() {
+    let too_long = format!("{}.exe", "\u{130}".repeat(130));
+    let longest = format!("{}x.exe", "\u{130}".repeat(125));
+    let text =
+        format!("version = 1\n[exclusions]\napps = [\"mstsc\", \"{too_long}\", \"{longest}\"]\n");
+    let loaded = ConfigDocument::decode(&text).unwrap();
+    assert_eq!(
+        codes(&loaded.issues),
+        pairs(&[("exclusions.apps[1]", "invalid-value")])
+    );
+    let apps = &loaded.document.exclusions.apps;
+    assert_eq!(apps.len(), 2, "{apps:?}");
+    assert_eq!(apps[0].as_str(), "mstsc.exe");
+    assert_eq!(apps[1].as_str().chars().count(), ExeName::MAX_LEN);
+    for app in apps {
+        assert_eq!(ExeName::new(app.as_str()).as_ref(), Ok(app));
+    }
+    let encoded = loaded.document.encode().unwrap();
+    let again = ConfigDocument::decode(&encoded).unwrap();
+    assert!(again.is_clean(), "{:?}", again.issues);
+    assert_eq!(again.document, loaded.document);
+}
+
 /// Explorer's "Copy as path" wraps the path in `"`, which no Windows file name contains: every
 /// `"` of an element is dropped before the rest of the normalization, so the quoted path is the
 /// plain name (and a repeat of it). An element of quotes only leaves no name and is reported.

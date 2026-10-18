@@ -11,12 +11,15 @@
 
 use std::path::Path;
 
-use raumakey_config::{ConfigError, FieldIssue};
+use raumakey_config::{ConfigError, FieldIssue, IssueReason};
+use raumakey_ipc::message::MAX_APP_RULES;
 use raumakey_model::identity::PRODUCT_NAME;
 use raumakey_windows::error::WinError;
 
 use crate::install::PRODUCT_VERSION;
-use crate::settings::{DocumentStatus, Location, OpenReport, Recovery, Status};
+use crate::settings::{
+    CUT_EXCLUSIONS_PATH, CUT_RULES_PATH, DocumentStatus, Location, OpenReport, Recovery, Status,
+};
 use crate::worker::{OpenError, StartupError};
 
 /// The licence named by "Giới thiệu".
@@ -140,8 +143,34 @@ fn icon_help(toggle_hotkey: Option<&str>) -> String {
     )
 }
 
+/// Whether `issue` says that application rules beyond [`MAX_APP_RULES`] were left out, the
+/// excluded applications of `raumakey.toml` counted first ([`CUT_RULES_PATH`] on
+/// `raumakey-app-rules.toml`, [`CUT_EXCLUSIONS_PATH`] on `raumakey.toml`): [`rules_cut_line`]
+/// says so, not the list of values that could not be used.
+fn is_rules_cut(issue: &FieldIssue) -> bool {
+    issue.reason == IssueReason::OutOfRange
+        && [CUT_RULES_PATH, CUT_EXCLUSIONS_PATH].contains(&issue.path.as_str())
+}
+
+/// The line about application rules beyond [`MAX_APP_RULES`] (see [`is_rules_cut`]).
+fn rules_cut_line() -> String {
+    format!(
+        "Raumakey chỉ dùng được {MAX_APP_RULES} quy tắc ứng dụng, tính cả các ứng dụng loại trừ \
+         trong raumakey.toml (xếp trước các quy tắc của raumakey-app-rules.toml); các quy tắc \
+         vượt quá bị bỏ qua."
+    )
+}
+
+/// The issues of `issues` that a line lists by path: all but the cut of the application rules,
+/// which has a line of its own; whether that cut is among them.
+fn listed(issues: &[FieldIssue]) -> (Vec<&FieldIssue>, bool) {
+    let (cut, listed): (Vec<&FieldIssue>, Vec<&FieldIssue>) =
+        issues.iter().partition(|issue| is_rules_cut(issue));
+    (listed, !cut.is_empty())
+}
+
 /// `a, b, c`, or the first [`LISTED_PATHS`] and how many more.
-fn paths(issues: &[FieldIssue]) -> String {
+fn paths<'a>(issues: impl IntoIterator<Item = &'a FieldIssue>) -> String {
     let mut distinct: Vec<&str> = Vec::new();
     for issue in issues {
         if !distinct.contains(&issue.path.as_str()) {
@@ -181,6 +210,7 @@ fn problems(
     let config = config_name(config_path);
     let mut lines = Vec::new();
     let mut damaged = false;
+    let mut rules_cut = false;
     let keeps = match when {
         When::Start => "dùng cấu hình mặc định",
         When::Reload => "giữ cấu hình đang dùng",
@@ -208,11 +238,17 @@ fn problems(
             )),
             // A field takes its default; a list element (`exclusions.apps[2]`) is left out,
             // and so are the elements beyond the limit of a list that is cut.
-            DocumentStatus::Loaded { issues } => lines.push(format!(
-                "Một số giá trị trong raumakey.toml không dùng được và được thay bằng giá trị \
-                 mặc định hoặc bị bỏ qua: {}.",
-                paths(issues)
-            )),
+            DocumentStatus::Loaded { issues } => {
+                let (listed, cut) = listed(issues);
+                rules_cut |= cut;
+                if !listed.is_empty() {
+                    lines.push(format!(
+                        "Một số giá trị trong raumakey.toml không dùng được và được thay bằng \
+                         giá trị mặc định hoặc bị bỏ qua: {}.",
+                        paths(listed)
+                    ));
+                }
+            }
             DocumentStatus::Missing => {}
         }
     }
@@ -260,12 +296,23 @@ fn problems(
                  tắc ứng dụng mặc định."
                     .to_owned(),
             ),
-            DocumentStatus::Loaded { issues } => lines.push(format!(
-                "Một số giá trị trong raumakey-app-rules.toml không dùng được và bị bỏ qua: {}.",
-                paths(issues)
-            )),
+            DocumentStatus::Loaded { issues } => {
+                let (listed, cut) = listed(issues);
+                rules_cut |= cut;
+                if !listed.is_empty() {
+                    lines.push(format!(
+                        "Một số giá trị trong raumakey-app-rules.toml không dùng được và bị bỏ \
+                         qua: {}.",
+                        paths(listed)
+                    ));
+                }
+            }
             DocumentStatus::Missing => {}
         }
+    }
+    // Either file may carry the cut (both do when the exclusions alone are too many).
+    if rules_cut {
+        lines.push(rules_cut_line());
     }
     (lines, damaged)
 }

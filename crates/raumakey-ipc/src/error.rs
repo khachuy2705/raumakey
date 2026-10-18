@@ -108,8 +108,8 @@ pub enum MalformedReason {
     /// a modifier-only hotkey with one modifier, a key without a modifier, or a modifier as
     /// the key) or read another hotkey.
     InvalidHotkey,
-    /// An executable name fails validation when it is read back (for example one that
-    /// lowercasing made longer than `ExeName::MAX_LEN`).
+    /// An executable name fails validation when it is read back, or reads back as another
+    /// name (`ExeName::new` makes names that read back as themselves).
     InvalidExeName,
     /// `CommandResult.ok` disagrees with its code.
     InconsistentResult,

@@ -1,3 +1,4 @@
+use proptest::prelude::*;
 use raumakey_model::error::EngineError;
 use raumakey_model::host::{DocumentId, ExeName, ExeNameError, HostContext, SessionId};
 use raumakey_model::identity::RAUMAKEY_INJECTED_TAG;
@@ -31,6 +32,54 @@ fn exe_name_is_lowercase_basename() {
     assert_eq!(ExeName::new("a\u{0}.exe"), Err(ExeNameError::InvalidChar));
     assert_eq!(ExeName::new(&"x".repeat(256)), Err(ExeNameError::TooLong));
     assert!(ExeName::new(&"x".repeat(255)).is_ok());
+}
+
+/// `count` × `İ` (U+0130), which lowercases to two characters (`i` and a combining dot), then
+/// `rest`.
+fn dotted(count: usize, rest: &str) -> String {
+    format!("{}{rest}", "\u{130}".repeat(count))
+}
+
+/// The length limit applies to the name as stored, after lowercasing, so a name that
+/// lowercasing lengthens past it is refused, by `from_path` too.
+#[test]
+fn exe_name_limit_applies_to_the_lowercase_name() {
+    assert_eq!(
+        ExeName::new(&dotted(130, ".exe")),
+        Err(ExeNameError::TooLong)
+    );
+    assert_eq!(
+        ExeName::from_path(&format!(r"C:\Tools\{}", dotted(130, ".exe"))),
+        Err(ExeNameError::TooLong)
+    );
+    assert_eq!(ExeName::new(&dotted(128, "")), Err(ExeNameError::TooLong));
+    let longest = ExeName::new(&dotted(127, "X")).unwrap();
+    assert_eq!(longest.as_str().chars().count(), ExeName::MAX_LEN);
+    assert_eq!(ExeName::new(longest.as_str()), Ok(longest.clone()));
+    assert_eq!(
+        ExeName::from_path(&format!("D:/{}", dotted(127, "x"))),
+        Ok(longest)
+    );
+}
+
+proptest! {
+    /// Every executable name reads back as itself, as the IPC channel and the configuration
+    /// files read it.
+    #[test]
+    fn every_exe_name_reads_back_as_itself(
+        raw in prop_oneof![
+            "[ a-zA-Z0-9._İΣσςẞÅΩ-]{0,8}".prop_map(String::from),
+            (0_usize..=140, "[a-zA-Z.Σ ]{0,6}")
+                .prop_map(|(count, rest)| dotted(count, &rest)),
+        ],
+    ) {
+        if let Ok(name) = ExeName::new(&raw) {
+            prop_assert!(name.as_str().chars().count() <= ExeName::MAX_LEN);
+            prop_assert_eq!(ExeName::new(name.as_str()), Ok(name.clone()));
+            let json = serde_json::to_string(&name).unwrap();
+            prop_assert_eq!(serde_json::from_str::<ExeName>(&json).ok(), Some(name));
+        }
+    }
 }
 
 #[test]

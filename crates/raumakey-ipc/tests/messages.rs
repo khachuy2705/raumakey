@@ -572,72 +572,39 @@ fn hotkeys_that_do_not_parse_back_from_their_text_form_are_refused() {
     assert!(decodes_back(&Message::RuntimeSnapshot(s)));
 }
 
-/// `İ` (U+0130) lowercases to two characters, so `ExeName::new` accepts 200 of them and
-/// stores a 400-character name that its own deserializer rejects as too long.
-fn overlong_exe() -> ExeName {
-    ExeName::new(&"\u{130}".repeat(200)).unwrap()
-}
-
+/// `İ` (U+0130) lowercases to two characters. `ExeName::new` refuses a name that lowercasing
+/// makes longer than `ExeName::MAX_LEN`, so every name a message can carry reads back on the
+/// peer, and the longest one (127 × `İ` and one letter: 255 characters) is accepted
+/// everywhere.
 #[test]
-fn exe_names_that_do_not_read_back_are_refused() {
-    let bad = overlong_exe();
-    assert_eq!(bad.as_str().chars().count(), 400);
-    assert!(serde_json::from_value::<ExeName>(serde_json::to_value(&bad).unwrap()).is_err());
-    let bad_probe = ProbeRecord {
-        exe: bad.clone(),
-        probe_version: 1,
-        tsf_range_edit: true,
-    };
-
-    let mut in_rule = RuntimeSnapshot::defaults_v1();
-    in_rule.compatibility.rules.push(AppRule {
-        exe: bad.clone(),
-        window_class: None,
-        action: RuleAction::default(),
-    });
-    let mut in_named_set = RuntimeSnapshot::defaults_v1();
-    in_named_set.compatibility.named_sets[2]
-        .members
-        .push(bad.clone());
-    let mut in_probe = RuntimeSnapshot::defaults_v1();
-    in_probe.compatibility.probes.push(bad_probe.clone());
-    let refused = Err(IpcError::Malformed(MalformedReason::InvalidExeName));
-    for s in [in_rule, in_named_set, in_probe] {
-        let message = Message::RuntimeSnapshot(s.clone());
-        assert!(!decodes_back(&message));
-        assert_eq!(s.check_publishable(), refused);
-        assert_eq!(message.validate(), refused);
-    }
-
-    // Control messages that name an executable.
-    let messages = [
-        Message::Command {
-            command: Command::ReportProbe(bad_probe),
-        },
-        Message::Diagnostic(DiagEvent {
-            host_exe: Some(bad),
-            ..diag()
-        }),
-    ];
-    for message in messages {
-        assert!(!decodes_back(&message), "{:?}", message.kind());
-        assert_eq!(message.validate(), refused, "{:?}", message.kind());
-    }
-
-    // The longest name that survives lowercasing (127 × `İ` and one letter: 255 characters)
-    // is accepted everywhere.
+fn every_exe_name_reads_back_and_the_longest_is_accepted_everywhere() {
+    assert!(ExeName::new(&"\u{130}".repeat(200)).is_err());
+    assert!(ExeName::new(&"\u{130}".repeat(128)).is_err());
     let longest = ExeName::new(&format!("{}x", "\u{130}".repeat(127))).unwrap();
     assert_eq!(longest.as_str().chars().count(), ExeName::MAX_LEN);
     let mut s = RuntimeSnapshot::defaults_v1();
+    s.compatibility.rules.push(AppRule {
+        exe: longest.clone(),
+        window_class: None,
+        action: RuleAction::default(),
+    });
     s.compatibility.probes.push(probe(longest.as_str()));
     s.compatibility.named_sets[2].members.push(longest.clone());
     assert_eq!(s.check_publishable(), Ok(()));
     assert!(decodes_back(&Message::RuntimeSnapshot(s)));
-    let report = Message::Command {
-        command: Command::ReportProbe(probe(longest.as_str())),
-    };
-    assert_eq!(report.validate(), Ok(()));
-    assert!(decodes_back(&report));
+    let messages = [
+        Message::Command {
+            command: Command::ReportProbe(probe(longest.as_str())),
+        },
+        Message::Diagnostic(DiagEvent {
+            host_exe: Some(longest),
+            ..diag()
+        }),
+    ];
+    for message in messages {
+        assert_eq!(message.validate(), Ok(()), "{:?}", message.kind());
+        assert!(decodes_back(&message), "{:?}", message.kind());
+    }
 }
 
 /// A runtime snapshot body whose `compatibility` value is the JSON text `compatibility`

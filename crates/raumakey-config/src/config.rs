@@ -261,15 +261,19 @@ pub struct ExclusionsSection {
     /// silently: every `"` is dropped (no Windows file name holds one, and Explorer's "Copy as
     /// path" puts the path in them: `'"C:\Windows\System32\mstsc.exe"'` is `mstsc.exe`), a full
     /// or relative path (either separator) counts as its last component
-    /// ([`ExeName::from_path`]: `C:\Windows\System32\mstsc.exe` is `mstsc.exe`), and a name
-    /// without any `.` gets `.exe` (`mstsc` is `mstsc.exe`; `VirtualBoxVM.exe` and `foo.bin`
-    /// stay as written). [`ExeName`] then trims, lowercases, and validates it.
+    /// ([`ExeName::from_path`]: `C:\Windows\System32\mstsc.exe` is `mstsc.exe`), trailing dots
+    /// and spaces are dropped as Windows drops them from a file name (`mstsc.exe.` is
+    /// `mstsc.exe`), and a name without any `.` gets `.exe` (`mstsc` and `mstsc.` are
+    /// `mstsc.exe`; `VirtualBoxVM.exe` and `foo.bin` stay as written). [`ExeName`] trims,
+    /// lowercases, and validates it. A pasted command line is not parsed: in `mstsc.exe /f` the
+    /// `/` separates a path, so the element stands for `f.exe`.
     ///
     /// Decoded element by element (matrix #45): a missing `[exclusions]` or `apps` takes
     /// [`ExclusionsSection::DEFAULT_APPS`] silently, while an explicit `apps = []` excludes
     /// nothing. An `apps` that is not an array takes the defaults and is reported; an element
-    /// that is not a string, or that leaves no valid name (an empty name, a path that ends in a
-    /// separator, a name with a drive separator), is dropped and reported on its own
+    /// that is not a string, or that leaves no valid name (an empty name, dots and spaces only,
+    /// a path that ends in a separator, a name with a drive separator, a name longer than
+    /// [`ExeName::MAX_LEN`] once lowercased), is dropped and reported on its own
     /// (`exclusions.apps[2]`), and when no element is usable the defaults apply. An element
     /// that matches an earlier one once normalized (`mstsc`, `MSTSC.EXE`, and
     /// `C:\Windows\System32\mstsc.exe` are one) is kept once, the first time, silently. A
@@ -541,16 +545,26 @@ fn decode_conversion(root: &mut TomlFields<'_>) -> ConversionSection {
 }
 
 /// An element of `[exclusions] apps` as a user may paste it: without any `"` (no Windows file
-/// name holds one; Explorer's "Copy as path" adds them), the last component of a path, with
-/// `.exe` added when it has no `.` at all, trimmed, lowercased, and validated by [`ExeName`].
-/// `None` when no valid name is left.
+/// name holds one; Explorer's "Copy as path" adds them), the last component of a path, trimmed
+/// and lowercased by [`ExeName`], without trailing dots and spaces (Windows drops them from a
+/// file name), with `.exe` added when it has no `.` at all, and validated by [`ExeName`].
+/// `None` when no valid name is left, or when the name would not read back as itself (the
+/// session core reads every name again and refuses such a name).
 fn excluded_app(raw: &str) -> Option<ExeName> {
-    let name = ExeName::from_path(&raw.replace('"', "")).ok()?;
-    if name.as_str().contains('.') {
-        Some(name)
-    } else {
-        ExeName::new(&format!("{name}.exe")).ok()
+    let base = ExeName::from_path(&raw.replace('"', "")).ok()?;
+    let stem = base
+        .as_str()
+        .trim_end_matches(|c: char| c == '.' || c.is_whitespace());
+    if stem.is_empty() {
+        return None;
     }
+    let named = if stem.contains('.') {
+        ExeName::new(stem)
+    } else {
+        ExeName::new(&format!("{stem}.exe"))
+    };
+    let name = named.ok()?;
+    (ExeName::new(name.as_str()).as_ref() == Ok(&name)).then_some(name)
 }
 
 /// Decodes `[exclusions]`: each element is normalized by [`excluded_app`], and names that are

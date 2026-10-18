@@ -45,7 +45,7 @@ impl DocumentId {
 pub enum ExeNameError {
     /// Empty after trimming.
     Empty,
-    /// Longer than [`ExeName::MAX_LEN`] characters.
+    /// Longer than [`ExeName::MAX_LEN`] characters once lowercased.
     TooLong,
     /// Contains a path separator, drive separator, NUL, or control character.
     InvalidChar,
@@ -64,20 +64,25 @@ impl fmt::Display for ExeNameError {
 impl std::error::Error for ExeNameError {}
 
 /// Lowercase executable basename such as `notepad.exe`.
+///
+/// Every name reads back as itself: [`ExeName::new`] of [`ExeName::as_str`] (which is how the
+/// IPC channel and the configuration files read a name) gives the same name.
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ExeName(String);
 
 impl ExeName {
-    /// Maximum length in characters.
+    /// Maximum length in characters, of the lowercase name.
     pub const MAX_LEN: usize = 255;
 
-    /// Validates and lowercases a basename.
+    /// Validates and lowercases a basename. The length limit applies to the lowercase name,
+    /// since lowercasing can lengthen it (`İ`, U+0130, becomes two characters).
     pub fn new(raw: &str) -> Result<Self, ExeNameError> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             return Err(ExeNameError::Empty);
         }
+        // A cheap bound first: lowercasing never shortens a name.
         if trimmed.chars().count() > Self::MAX_LEN {
             return Err(ExeNameError::TooLong);
         }
@@ -87,10 +92,15 @@ impl ExeName {
         {
             return Err(ExeNameError::InvalidChar);
         }
-        Ok(Self(trimmed.to_lowercase()))
+        let lower = trimmed.to_lowercase();
+        if lower.chars().count() > Self::MAX_LEN {
+            return Err(ExeNameError::TooLong);
+        }
+        Ok(Self(lower))
     }
 
-    /// Takes the basename of a path (either separator) and validates it.
+    /// Takes the basename of a path (either separator) and validates it as [`ExeName::new`]
+    /// does.
     pub fn from_path(path: &str) -> Result<Self, ExeNameError> {
         let base = path.rsplit(['\\', '/']).next().unwrap_or(path);
         Self::new(base)

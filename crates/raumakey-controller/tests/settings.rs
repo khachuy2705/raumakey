@@ -1406,6 +1406,73 @@ fn rules_beyond_the_snapshot_limit_are_cut_after_the_exclusions() {
     assert_consumable(&settings);
 }
 
+/// While `raumakey-app-rules.toml` cannot be read, its last good rules stay in effect; when
+/// more exclusions then push some of them past the limit, the cut is reported on
+/// `exclusions.apps` of `raumakey.toml`, whose exclusions push them out, since the status of
+/// the unreadable file holds no issues. Once that file reads again, the cut is reported on it.
+#[test]
+fn rules_cut_while_the_app_rules_file_is_unreadable_are_reported_on_the_exclusions() {
+    let folders = Folders::new();
+    let config = |apps: usize| {
+        let mut text = String::from("version = 1\nrevision = 1\n[exclusions]\napps = [");
+        for index in 0..apps {
+            write!(text, "\"x{index}.exe\", ").unwrap();
+        }
+        text.push_str("]\n");
+        text
+    };
+    fs::write(folders.config(), config(2)).unwrap();
+    let mut rules = String::from("version = 1\nrevision = 1\n");
+    for index in 0..MAX_APP_RULES - 4 {
+        write!(
+            rules,
+            "[[rule]]\nexe = \"app{index}.exe\"\nreset_on_mouse = false\n"
+        )
+        .unwrap();
+    }
+    fs::write(folders.app_rules(), &rules).unwrap();
+    let (mut settings, report) = folders.open();
+    assert_eq!(report.status.config, loaded_clean());
+    assert_eq!(report.status.app_rules, loaded_clean());
+
+    fs::write(folders.app_rules(), "[[[ damaged").unwrap();
+    assert!(settings.poll().unwrap().runtime.is_none());
+    assert_eq!(
+        settings.status().app_rules,
+        DocumentStatus::Unreadable(ConfigError::Corrupt)
+    );
+
+    // Five exclusions and the last good rules are one rule too many.
+    fs::write(folders.config(), config(5)).unwrap();
+    let runtime = settings.poll().unwrap().runtime.unwrap();
+    assert_eq!(
+        settings.status().config,
+        DocumentStatus::Loaded {
+            issues: vec![issue("exclusions.apps", IssueReason::OutOfRange)]
+        }
+    );
+    assert_eq!(
+        settings.status().app_rules,
+        DocumentStatus::Unreadable(ConfigError::Corrupt)
+    );
+    let cut = &runtime.compatibility.rules;
+    assert_eq!(cut.len(), MAX_APP_RULES);
+    assert_eq!(cut[4], exclusion("x4.exe"));
+    let last = format!("app{}.exe", MAX_APP_RULES - 6);
+    assert_eq!(cut[MAX_APP_RULES - 1].exe.as_str(), last);
+    assert_consumable(&settings);
+
+    fs::write(folders.app_rules(), &rules).unwrap();
+    settings.poll().unwrap();
+    assert_eq!(settings.status().config, loaded_clean());
+    assert_eq!(
+        settings.status().app_rules,
+        DocumentStatus::Loaded {
+            issues: vec![issue("rule", IssueReason::OutOfRange)]
+        }
+    );
+}
+
 /// A hand edit of `[exclusions]` is picked up by the poll like any other: the new runtime
 /// snapshot carries the new list, and an empty list leaves the rules of the app-rules file
 /// (here the D13 defaults) alone.
@@ -1513,6 +1580,71 @@ fn unusable_excluded_names_are_reported_by_path_until_a_commit_drops_them() {
             ExeName::new("putty.exe").unwrap()
         ]
     );
+}
+
+/// `İ` (U+0130) lowercases to two characters, so this executable name of 134 characters is
+/// 264 once lowercased: longer than an executable name may be.
+fn too_long_once_lowercased() -> String {
+    format!("{}.exe", "\u{130}".repeat(130))
+}
+
+/// An excluded name that the session core could not take is left out on its own and reported
+/// by its index; the other exclusions stay in effect.
+#[test]
+fn an_excluded_name_too_long_once_lowercased_leaves_the_others_in_effect() {
+    let folders = Folders::new();
+    fs::write(
+        folders.config(),
+        format!(
+            "version = 1\nrevision = 1\n[exclusions]\napps = [\"mstsc.exe\", \"{}\", \"putty\"]\n",
+            too_long_once_lowercased()
+        ),
+    )
+    .unwrap();
+    let (settings, report) = folders.open();
+    assert_eq!(
+        report.status.config,
+        DocumentStatus::Loaded {
+            issues: vec![issue("exclusions.apps[1]", IssueReason::InvalidValue)]
+        }
+    );
+    let runtime = settings.runtime_snapshot();
+    assert_eq!(
+        runtime.compatibility,
+        with_exclusions(
+            &["mstsc.exe", "putty.exe"],
+            CompatibilityConfig::defaults_v1()
+        )
+    );
+    assert!(!policy_of(runtime, "mstsc.exe", None).vietnamese_allowed);
+    assert_consumable(&settings);
+}
+
+/// The same name in a rule of `raumakey-app-rules.toml` is a problem of that rule alone: the
+/// file stays usable and its other rules stay in effect.
+#[test]
+fn a_rule_for_a_name_too_long_once_lowercased_leaves_the_other_rules_in_effect() {
+    let folders = Folders::new();
+    fs::write(
+        folders.app_rules(),
+        format!(
+            "version = 1\nrevision = 1\n[[rule]]\nexe = \"{}\"\nvietnamese = false\n\
+             [[rule]]\nexe = \"notepad.exe\"\nmacros = false\n",
+            too_long_once_lowercased()
+        ),
+    )
+    .unwrap();
+    let (settings, report) = folders.open();
+    let DocumentStatus::Loaded { issues } = &report.status.app_rules else {
+        panic!("{:?}", report.status.app_rules);
+    };
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert!(issues[0].path.starts_with("rule[0]"), "{issues:?}");
+    let runtime = settings.runtime_snapshot();
+    let notepad = policy_of(runtime, "notepad.exe", None);
+    assert!(notepad.vietnamese_allowed);
+    assert!(!notepad.macro_allowed, "the file's other rule is in effect");
+    assert_consumable(&settings);
 }
 
 /// A change that could not be saved is kept for a retry; once the user fixes the damaged file

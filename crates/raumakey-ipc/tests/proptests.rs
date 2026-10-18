@@ -115,7 +115,8 @@ fn any_hotkey() -> impl Strategy<Value = Hotkey> {
 }
 
 /// Executable names that start with a run of `İ` (U+0130), which lowercases to two
-/// characters, so that some of them outgrow `ExeName::MAX_LEN` once stored.
+/// characters, so that some of them come close to `ExeName::MAX_LEN` once stored
+/// (`ExeName::new` refuses those that would outgrow it).
 fn any_exe_name() -> impl Strategy<Value = ExeName> {
     let dotted = prop_oneof![0_usize..=4, 120_usize..=136, 0_usize..=255];
     (dotted, "[a-z0-9._-]{0,8}").prop_filter_map("not a valid name", |(dotted, rest)| {
