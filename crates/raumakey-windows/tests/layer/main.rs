@@ -49,6 +49,8 @@ mod window;
 #[cfg(windows)]
 mod com;
 #[cfg(windows)]
+mod dialog_box_editor;
+#[cfg(windows)]
 mod file_replace;
 #[cfg(windows)]
 mod known_folder;

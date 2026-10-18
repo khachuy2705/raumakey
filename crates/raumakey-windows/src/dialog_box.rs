@@ -82,7 +82,11 @@
 //!   processes nor refuses to post, so a forged one may point anywhere: the dialog procedure
 //!   copies the header with `ReadProcessMemory`, which fails instead of faulting on memory that
 //!   cannot be read, and hands it to the handler only when it names a control of the dialog by
-//!   its handle and id.
+//!   its handle and id. The one request the procedure answers itself, `LVN_GETDISPINFOW` of a
+//!   virtual list view ([`Dialog::list_set_virtual_rows`]), passes the same check and is
+//!   answered by setting the request's own `pszText` field with `WriteProcessMemory` (which
+//!   fails instead of faulting) to a text the dialog keeps: nothing is written through a
+//!   pointer the request carries.
 //!
 //! **Panics.** The dialog procedure runs inside [`guard_value`](crate::panic::guard_value): a
 //! panicking callback leaves its message unhandled (`FALSE`), the handler is not left borrowed,
@@ -163,10 +167,18 @@ mod win {
         WM_GETTEXT, WM_GETTEXTLENGTH, WM_INITDIALOG, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETICON,
     };
     use windows::core::{BOOL, PWSTR};
+    // The helpers of the macro list editor: virtual list views, text limits, posting.
+    use windows::Win32::Graphics::Gdi::InvalidateRect;
+    use windows::Win32::System::Diagnostics::Debug::WriteProcessMemory;
+    use windows::Win32::UI::Controls::{
+        EM_SETLIMITTEXT, LVM_SETITEMCOUNT, LVN_GETDISPINFOW, LVSICF_NOSCROLL, NMLVDISPINFOW,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GWL_STYLE, GetWindowLongW};
 
     use super::notifications::BN_CLICKED;
     use super::{BRING_TO_FRONT, DISMISS, is_reserved};
     use crate::dialog::{MessageKind, MessageResponse, message_box};
+    use crate::dialog_template::styles::LVS_OWNERDATA;
     use crate::dialog_template::{IDCANCEL, TemplateBytes};
     use crate::error::{E_ABORT, E_FAIL, E_INVALIDARG, ResultExt, WinError, WinResult};
     use crate::icon::{Icon, IconKind, icon_size, icon_size_for_dpi, icon_size_for_window};
@@ -722,6 +734,92 @@ mod win {
             }
             answer
         }
+
+        /// Posts the private `message` to the dialog itself, for the handler's
+        /// [`app_message`](DialogHandler::app_message) after the current callback. Posted from
+        /// [`DialogHandler::init`], it arrives before the dialog is shown: a dialog box shows
+        /// itself once its message queue first runs empty. False, and nothing is posted, for a
+        /// reserved message ([`super::is_reserved`]) and when posting fails. Like any private
+        /// message, one that arrives while the handler runs a modal loop does not reach it.
+        pub fn post(&self, message: AppMessage, wparam: usize, lparam: isize) -> bool {
+            if is_reserved(message.id()) {
+                return false;
+            }
+            // SAFETY: posts plain values to this thread's dialog.
+            unsafe {
+                PostMessageW(
+                    Some(self.hwnd),
+                    message.id(),
+                    WPARAM(wparam),
+                    LPARAM(lparam),
+                )
+            }
+            .is_ok()
+        }
+
+        /// Limits what the user can type or paste into edit `id` to `units` UTF-16 code units
+        /// (`EM_SETLIMITTEXT`; 0 lifts the limit to the edit's maximum). The text already in
+        /// the edit, and a text set with [`set_text`](Self::set_text), are not shortened. Does
+        /// nothing when there is no such control.
+        pub fn set_text_limit(&self, id: u16, units: usize) {
+            self.send_item(id, EM_SETLIMITTEXT, units, 0);
+        }
+
+        /// Replaces the rows of the virtual list view `id`
+        /// ([`Control::virtual_list_view`](crate::dialog_template::Control::virtual_list_view))
+        /// with `rows`: each row's cells go to the columns in order, and a missing cell is
+        /// empty. The dialog keeps the cells and hands each one to the list view itself when
+        /// the list view shows or reports it (`LVN_GETDISPINFOW`, which never reaches the
+        /// handler), also while the handler is busy. So a list of any length is replaced at once
+        /// (`LVM_SETITEMCOUNT`, then the list view redraws what it shows); the scroll position
+        /// is kept where it can be, and nothing is selected afterwards (`LVN_ITEMCHANGED`
+        /// does not reach the busy handler).
+        ///
+        /// Fails with `E_INVALIDARG`, before anything changes, for a cell with a NUL, for more
+        /// than `i32::MAX` rows, and for a list view without `LVS_OWNERDATA`; fails when there
+        /// is no such control. The cells may be user content: never log them.
+        pub fn list_set_virtual_rows(&self, id: u16, rows: &[Vec<String>]) -> WinResult<()> {
+            let rows = rows
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| WideString::new(cell))
+                        .collect::<WinResult<Vec<_>>>()
+                })
+                .collect::<WinResult<Vec<_>>>()?;
+            let count = i32::try_from(rows.len())
+                .map_err(|_| WinError::new(E_INVALIDARG, "list view row count"))?;
+            let list = self.item(id)?;
+            // SAFETY: only reads the style of a control of this thread.
+            let style = unsafe { GetWindowLongW(list, GWL_STYLE) } as u32;
+            if style & LVS_OWNERDATA == 0 {
+                return Err(WinError::new(E_INVALIDARG, "virtual list view"));
+            }
+            self.list_select(id, None)?;
+            // Never borrowed while a helper runs; fail rather than panic should it be.
+            self.state
+                .virtual_rows
+                .try_borrow_mut()
+                .map_err(|_| WinError::new(E_FAIL, "virtual list view rows"))?
+                .set(id, rows);
+            // SAFETY: a control of this thread; no pointers. The list view may ask for cells
+            // during the call; the dialog procedure answers from the rows stored above.
+            let set = unsafe {
+                SendMessageW(
+                    list,
+                    LVM_SETITEMCOUNT,
+                    Some(WPARAM(count as usize)),
+                    Some(LPARAM(LVSICF_NOSCROLL as isize)),
+                )
+            }
+            .0;
+            if set == 0 {
+                return Err(WinError::new(E_FAIL, "LVM_SETITEMCOUNT"));
+            }
+            // SAFETY: a control of this thread; the whole client area is redrawn.
+            let _ = unsafe { InvalidateRect(Some(list), None, false) };
+            Ok(())
+        }
     }
 
     /// The number of columns of a list view (`HDM_GETITEMCOUNT` of its header).
@@ -769,6 +867,8 @@ mod win {
         /// The icons set with [`Dialog::set_icons`]; the window uses them until it is
         /// destroyed, before this state is dropped.
         icons: RefCell<Option<Icons>>,
+        /// The rows of the virtual list views ([`Dialog::list_set_virtual_rows`]).
+        virtual_rows: RefCell<VirtualRows>,
     }
 
     impl DialogState {
@@ -786,6 +886,7 @@ mod win {
                 focus_moved: Cell::new(false),
                 open_box: Cell::new(None),
                 icons: RefCell::new(None),
+                virtual_rows: RefCell::new(VirtualRows::default()),
             }
         }
 
@@ -1259,6 +1360,7 @@ mod win {
                 state.reload_icons(hwnd, u32::from(low_word(wparam.0)));
                 return FALSE;
             }
+            WM_NOTIFY if lend_cell(state, hwnd, lparam) => return FALSE,
             _ => {}
         }
         if state.destroyed.get() {
@@ -1336,6 +1438,111 @@ mod win {
         };
         // Controls report their id as `GetDlgCtrlID` gives it, widened with its sign.
         (child && id as isize as usize == header.idFrom).then_some(header)
+    }
+
+    /// How many lent texts [`VirtualRows`] keeps: a list view may use the text of an answer
+    /// to `LVN_GETDISPINFOW` until it has sent two more requests.
+    const LENT_TEXTS: usize = 3;
+
+    /// The rows of a dialog's virtual list views, and the copies of cells lent to them.
+    #[derive(Default)]
+    struct VirtualRows {
+        /// Each virtual list view's control id and rows, in the order first set.
+        lists: Vec<(u16, Vec<Vec<WideString>>)>,
+        /// The texts of the last answers, which the list views may still read: an answer points
+        /// the request at one of these instead of writing through the request's buffer, so
+        /// rows may be replaced at any time.
+        lent: [Option<WideString>; LENT_TEXTS],
+        /// The slot of `lent` that the next answer takes.
+        next: usize,
+    }
+
+    impl VirtualRows {
+        fn set(&mut self, id: u16, rows: Vec<Vec<WideString>>) {
+            match self.lists.iter_mut().find(|(list, _)| *list == id) {
+                Some((_, kept)) => *kept = rows,
+                None => self.lists.push((id, rows)),
+            }
+        }
+
+        /// A copy of the cell of list `id` at `row` and `column` (empty when the row is
+        /// shorter or there is no such row), kept until [`LENT_TEXTS`] more answers, and the
+        /// pointer to lend; `None` when `id` is no virtual list view of the dialog.
+        fn lend(&mut self, id: u16, row: i32, column: i32) -> Option<PWSTR> {
+            let (_, rows) = self.lists.iter().find(|(list, _)| *list == id)?;
+            let cell = usize::try_from(row)
+                .ok()
+                .zip(usize::try_from(column).ok())
+                .and_then(|(row, column)| rows.get(row)?.get(column))
+                .cloned()
+                .or_else(|| WideString::new("").ok())?;
+            let slot = self.lent.get_mut(self.next % LENT_TEXTS)?;
+            self.next = (self.next + 1) % LENT_TEXTS;
+            let text = slot.insert(cell);
+            Some(PWSTR(text.as_pcwstr().0.cast_mut()))
+        }
+    }
+
+    /// Answers the `LVN_GETDISPINFOW` request that the `WM_NOTIFY` argument `lparam` points to
+    /// when it names a virtual list view of `dialog` by its handle and id ([`notify_header`]):
+    /// lends the cell asked for ([`VirtualRows::lend`]) by setting the request's `pszText`.
+    /// True when the request named such a list view (it is then not handed to the handler).
+    ///
+    /// Only that one field of the request is written, with `WriteProcessMemory`, which fails
+    /// instead of faulting: nothing is written through a pointer the request carries, so a
+    /// forged request (see "Forged messages" in the module documentation) can at most change a
+    /// pointer-sized field of memory of this process that holds a notification of this list.
+    fn lend_cell(state: &DialogState, dialog: HWND, lparam: LPARAM) -> bool {
+        let Some(header) = notify_header(dialog, lparam) else {
+            return false;
+        };
+        if header.code != LVN_GETDISPINFOW {
+            return false;
+        }
+        let Ok(mut rows) = state.virtual_rows.try_borrow_mut() else {
+            return false;
+        };
+        let id = low_word(header.idFrom);
+        if !rows.lists.iter().any(|(list, _)| *list == id) {
+            return false;
+        }
+        let mut request = NMLVDISPINFOW::default();
+        let mut copied = 0_usize;
+        // SAFETY: as in `notify_header`: copies from this process's own memory into
+        // `request`, failing instead of faulting where the source cannot be read.
+        let read = unsafe {
+            ReadProcessMemory(
+                GetCurrentProcess(),
+                lparam.0 as *const c_void,
+                (&raw mut request).cast(),
+                size_of::<NMLVDISPINFOW>(),
+                Some(&mut copied),
+            )
+        };
+        if read.is_err()
+            || copied != size_of::<NMLVDISPINFOW>()
+            || !request.item.mask.contains(LVIF_TEXT)
+        {
+            return true;
+        }
+        let Some(lent) = rows.lend(id, request.item.iItem, request.item.iSubItem) else {
+            return true;
+        };
+        let offset =
+            core::mem::offset_of!(NMLVDISPINFOW, item) + core::mem::offset_of!(LVITEMW, pszText);
+        let field = (lparam.0 as usize).wrapping_add(offset);
+        // SAFETY: writes the pointer-sized `pszText` field of the request, whose header was
+        // read above; the call fails instead of faulting where it cannot write.
+        let _ = unsafe {
+            WriteProcessMemory(
+                GetCurrentProcess(),
+                field as *const c_void,
+                (&raw const lent).cast(),
+                size_of::<PWSTR>(),
+                None,
+            )
+        };
+        true
     }
 
     /// Asks the handler whether the dialog may close, and ends it with `IDCANCEL` if so.

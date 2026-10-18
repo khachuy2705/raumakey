@@ -860,7 +860,7 @@ pub const DISCARD_QUESTION: &str = "Danh sách gõ tắt có thay đổi chưa �
 bỏ các thay đổi này không?";
 
 /// `20.000`: `number` with its digits grouped by dots, as Vietnamese writes numbers.
-fn grouped(number: usize) -> String {
+pub(crate) fn grouped(number: usize) -> String {
     let digits = number.to_string();
     let mut text = String::with_capacity(digits.len().saturating_mul(4) / 3);
     for (index, digit) in digits.chars().enumerate() {

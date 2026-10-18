@@ -124,6 +124,16 @@ pub mod styles {
     pub const LVS_SINGLESEL: u32 = 0x0004;
     /// `LVS_SHOWSELALWAYS`: the selection stays visible while the list has no focus.
     pub const LVS_SHOWSELALWAYS: u32 = 0x0008;
+    /// `ES_MULTILINE`: an edit with several lines.
+    pub const ES_MULTILINE: u32 = 0x0004;
+    /// `ES_AUTOVSCROLL`: a multi-line edit scrolls up when the user types past its last line.
+    pub const ES_AUTOVSCROLL: u32 = 0x0040;
+    /// `ES_WANTRETURN`: Enter in a multi-line edit inserts a line break instead of pressing
+    /// the dialog's default button.
+    pub const ES_WANTRETURN: u32 = 0x1000;
+    /// `LVS_OWNERDATA`: a virtual list view, which asks for the text of each cell it shows
+    /// instead of storing its rows.
+    pub const LVS_OWNERDATA: u32 = 0x1000;
 }
 
 use styles::{
@@ -455,6 +465,32 @@ impl Control {
             rect,
             WS_TABSTOP | WS_BORDER | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
         )
+    }
+
+    /// A multi-line edit (`ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN`, `WS_VSCROLL`,
+    /// `WS_BORDER`), empty until the dialog's handler fills it. Long lines wrap; Enter inserts
+    /// a line break (`\r\n` in its text) instead of pressing the default button.
+    pub fn multiline_edit(id: u16, rect: DialogRect) -> Self {
+        Self::new(
+            Kind::Edit,
+            id,
+            "",
+            rect,
+            WS_TABSTOP
+                | WS_BORDER
+                | WS_VSCROLL
+                | styles::ES_MULTILINE
+                | styles::ES_AUTOVSCROLL
+                | styles::ES_WANTRETURN,
+        )
+    }
+
+    /// A [`list_view`](Self::list_view) that is virtual (`LVS_OWNERDATA`): it stores no rows
+    /// but asks for each cell it shows, so a list of any length is filled at once. The dialog
+    /// answers it from the rows given to `Dialog::list_set_virtual_rows`
+    /// ([`dialog_box`](crate::dialog_box)).
+    pub fn virtual_list_view(id: u16, rect: DialogRect) -> Self {
+        Self::list_view(id, rect).with_style(styles::LVS_OWNERDATA)
     }
 
     /// The same control as the first of a group (`WS_GROUP`).

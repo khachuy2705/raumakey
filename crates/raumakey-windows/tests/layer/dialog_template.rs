@@ -661,3 +661,52 @@ fn debug_output_shows_no_text() {
     assert_eq!(control.id(), 40);
     assert_eq!(template.title(), secret);
 }
+
+/// The macro list editor's controls: a multi-line edit that wraps its lines and takes Enter
+/// as a line break, and a list view whose rows the dialog supplies on demand (owner data).
+#[test]
+fn multi_line_edits_and_virtual_list_views_get_their_styles() {
+    assert_eq!(styles::ES_MULTILINE, 0x0004);
+    assert_eq!(styles::ES_AUTOVSCROLL, 0x0040);
+    assert_eq!(styles::ES_WANTRETURN, 0x1000);
+    assert_eq!(styles::LVS_OWNERDATA, 0x1000);
+    let at = rect(1, 2, 3, 4);
+    let edit = Control::multiline_edit(30, at);
+    assert_eq!(edit.class(), ControlClass::Edit);
+    assert_eq!(
+        edit.style(),
+        CHILD
+            | styles::WS_TABSTOP
+            | styles::WS_BORDER
+            | styles::WS_VSCROLL
+            | styles::ES_MULTILINE
+            | styles::ES_AUTOVSCROLL
+            | styles::ES_WANTRETURN
+    );
+    assert_eq!(
+        edit.style() & styles::ES_AUTOHSCROLL,
+        0,
+        "long lines wrap instead of scrolling sideways"
+    );
+    let list = Control::virtual_list_view(31, at);
+    assert_eq!(list.class(), ControlClass::ListView);
+    assert_eq!(
+        list.style(),
+        Control::list_view(31, at).style() | styles::LVS_OWNERDATA
+    );
+    for control in [edit, list] {
+        assert_eq!(control.rect(), at, "{control:?}");
+        assert_eq!(control.text(), "");
+        assert_eq!(control.ex_style(), 0);
+    }
+    let (_, items) = decode(
+        &DialogTemplate::new("Danh sách", 100, 100)
+            .with_control(Control::multiline_edit(30, at))
+            .with_control(Control::virtual_list_view(31, at))
+            .build()
+            .unwrap(),
+    );
+    assert_eq!(items[0].class, Class::Atom(EDIT_ATOM));
+    assert_eq!(items[1].class, Class::Name(LIST_VIEW_CLASS.to_owned()));
+    assert_ne!(items[1].style & styles::LVS_OWNERDATA, 0);
+}

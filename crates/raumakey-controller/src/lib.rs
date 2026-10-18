@@ -33,6 +33,9 @@
 //! - [`macro_list`]: the model of the macro list editor (D44): the rows of
 //!   `raumakey-macros.toml`, their checks (D29, D30), and the save that keeps what the editor
 //!   does not show, with its Vietnamese messages;
+//! - [`macro_dialog`]: the macro list editor itself: its template, cells, and the decisions
+//!   of its buttons (pure), and on Windows the dialog on a thread of its own
+//!   (`spawn_macro_list`), with its manual check list;
 //! - [`startup`]: `startup <none|shortcut|elevated-task>`;
 //! - [`convert`]: `convert` of files and of the clipboard;
 //! - [`elevation`]: the elevated restart of the privileged commands;
@@ -76,6 +79,7 @@ pub mod convert;
 pub mod desktop;
 pub mod elevation;
 pub mod install;
+pub mod macro_dialog;
 pub mod macro_list;
 pub mod notice;
 pub mod output;
