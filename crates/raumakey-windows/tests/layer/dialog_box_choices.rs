@@ -1,7 +1,8 @@
 //! `dialog_box`: the helpers that the exclusions dialog of the controller (D48) adds, on real
 //! dialog boxes: an editable drop-down combo box (`CBS_DROPDOWN`: the text of its edit, its
-//! items and the text of each, a choice from its list, what the user types into it) and the
-//! Open dialog owned by the dialog (`Dialog::choose_file`).
+//! items and the text of each, a choice from its list, what the user types into it), the Open
+//! dialog owned by the dialog (`Dialog::choose_file`), which control has the keyboard focus
+//! (`Dialog::has_focus`), and the keys pressed in a list view (`DialogHandler::list_key`).
 //!
 //! The dialogs stay out of the way as in `dialog_box`: `WS_EX_NOACTIVATE`, an explicit
 //! position, and a move to (-32000, -32000) in `init`, before Windows shows them. They are
@@ -31,7 +32,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     BM_CLICK, CB_GETCOUNT, CB_SETCURSEL, CallNextHookEx, GW_CHILD, GetDlgItem, GetWindow,
     HCBT_CREATEWND, HHOOK, SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
     SendMessageTimeoutW, SetWindowPos, SetWindowsHookExW, UnhookWindowsHookEx, WH_CBT, WM_CHAR,
-    WM_COMMAND, WM_GETTEXT, WM_GETTEXTLENGTH, WM_NULL,
+    WM_COMMAND, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN, WM_NULL,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -40,6 +41,12 @@ const SEND_TIMEOUT_MS: u32 = 10_000;
 
 const ID_COMBO: u16 = 101;
 const ID_BUTTON: u16 = 102;
+const ID_LIST: u16 = 103;
+/// An id that names no control.
+const ID_NONE: u16 = 999;
+
+/// `VK_DELETE`.
+const VK_DELETE: u16 = 0x2E;
 
 /// Marks the end of what a test waits for (see `Running::settle`).
 const BARRIER: u32 = 2;
@@ -75,6 +82,18 @@ enum Seen {
     Item(usize, Result<String, WinErrorKind>),
     /// What `Dialog::choose_file` returned, and how many windows a veto refused meanwhile.
     Chosen(Result<Option<PathBuf>, WinErrorKind>, u32),
+    /// What `Dialog::has_focus` answered for the combo box, the push button, the list view,
+    /// and an id that names no control.
+    Focus([bool; 4]),
+    Notify {
+        id: u16,
+        code: i32,
+    },
+    /// A key pressed in a list view (`DialogHandler::list_key`).
+    Key {
+        id: u16,
+        key: u16,
+    },
 }
 
 type Action = Box<dyn FnMut(&Dialog<'_>, &Sender<Seen>) + Send>;
@@ -140,6 +159,14 @@ impl DialogHandler for Driver {
         }
     }
 
+    fn notify(&mut self, _dialog: &Dialog, id: u16, code: i32) {
+        let _ = self.seen.send(Seen::Notify { id, code });
+    }
+
+    fn list_key(&mut self, _dialog: &Dialog, id: u16, key: u16) {
+        let _ = self.seen.send(Seen::Key { id, key });
+    }
+
     fn app_message(&mut self, _dialog: &Dialog, message: AppMessage, _: usize, _: isize) {
         let _ = self.seen.send(Seen::App(message.offset()));
     }
@@ -155,6 +182,7 @@ fn template() -> TemplateBytes {
         .at(-30_000, -30_000)
         .with_ex_style(styles::WS_EX_NOACTIVATE)
         .with_control(Control::drop_down_combo(ID_COMBO, rect(7, 7, 206, 12)))
+        .with_control(Control::list_view(ID_LIST, rect(7, 24, 206, 30)))
         .with_control(Control::push_button(ID_BUTTON, "Đổi", rect(7, 59, 50, 14)))
         .with_control(Control::push_button(
             IDCANCEL,
@@ -347,6 +375,74 @@ fn an_editable_combo_box_holds_typed_text_and_its_items() {
     assert!(seen.contains(&Seen::Selected(None)), "{seen:?}");
     assert_eq!(window_text(combo), "");
     assert_eq!(send(combo, CB_GETCOUNT, 0, 0), 1);
+}
+
+/// `Dialog::has_focus` names the control with the keyboard focus of the dialog's thread: the
+/// combo box while its edit has it, the push button, the list view; never another control, nor
+/// an id that names no control.
+#[test]
+fn the_control_with_the_focus_is_known() {
+    let running = started(
+        None,
+        Some(Box::new(|dialog, seen| {
+            for id in [ID_COMBO, ID_BUTTON, ID_LIST] {
+                dialog.focus(id);
+                let focus = [ID_COMBO, ID_BUTTON, ID_LIST, ID_NONE].map(|id| dialog.has_focus(id));
+                let _ = seen.send(Seen::Focus(focus));
+            }
+        })),
+    );
+    running.click();
+    let seen = running.settle();
+    let focus: Vec<&Seen> = seen
+        .iter()
+        .filter(|seen| matches!(seen, Seen::Focus(_)))
+        .collect();
+    assert_eq!(
+        focus,
+        [
+            &Seen::Focus([true, false, false, false]),
+            &Seen::Focus([false, true, false, false]),
+            &Seen::Focus([false, false, true, false]),
+        ]
+    );
+}
+
+/// A key pressed in a list view reaches the handler with its virtual-key code, after the
+/// notification `LVN_KEYDOWN` itself.
+#[test]
+fn a_key_pressed_in_a_list_view_reaches_the_handler() {
+    let running = started(None, None);
+    let _ = running.settle();
+    // The Delete key of the navigation block: scan code 0x53, extended.
+    send(
+        item(running.hwnd, ID_LIST),
+        WM_KEYDOWN,
+        usize::from(VK_DELETE),
+        0x0153_0001,
+    );
+    let seen = running.settle();
+    let keys: Vec<&Seen> = seen
+        .iter()
+        .filter(|seen| match seen {
+            Seen::Notify { code, .. } => *code == notifications::LVN_KEYDOWN,
+            Seen::Key { .. } => true,
+            _ => false,
+        })
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            &Seen::Notify {
+                id: ID_LIST,
+                code: notifications::LVN_KEYDOWN
+            },
+            &Seen::Key {
+                id: ID_LIST,
+                key: VK_DELETE
+            },
+        ]
+    );
 }
 
 thread_local! {

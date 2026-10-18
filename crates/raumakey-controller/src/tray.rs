@@ -28,7 +28,8 @@
 //! open. An exit closes the open boxes ([`Effect::DismissNotices`]) and never waits for them.
 //!
 //! **Hotkey changes** drained together count as their last one ([`coalesce`]); those left in
-//! the inbox when the hook stops at an exit are saved ([`Tray::flush_hotkeys`]).
+//! the inbox when the hook stops at an exit are saved ([`Tray::flush_inbox`]), and so are the
+//! edits of the exclusions dialog left there.
 //!
 //! **From the temporary folder** (an exe run from inside a ZIP, [`TrayStart::temporary_exe`])
 //! "Khởi động cùng Windows" makes no shortcut and asks the user to extract Raumakey first.
@@ -80,9 +81,10 @@
 //! Exiting is, in order, [`Effect::StopTyping`] (typing is plain at once),
 //! [`Effect::DismissNotices`], [`Effect::ClosePanel`], [`Effect::CloseMacroList`],
 //! [`Effect::CloseExclusions`] (none of them waits; the editor closes without saving, by
-//! design; the edits of the exclusions dialog went to the worker as they came, and one still
-//! in the inbox is dropped, like a request of the panel), [`Effect::FlushHotkeys`]
-//! (hotkey changes left in the inbox are saved),
+//! design; the edits of the exclusions dialog went to the worker as they came), then
+//! [`Effect::FlushInbox`] (what is left in the inbox: the last hotkey change and the edits of
+//! the exclusions dialog still go to the worker, in their order, and are saved; a request of
+//! the panel is dropped),
 //! [`Effect::FinishWorker`] (the worker runs what was sent and saves what is unsaved, for a
 //! bounded time), [`Effect::RemoveIcon`], and [`Effect::EndLoop`] (the message loop ends with
 //! [`LOOP_EXIT_CODE`]), all before the window procedure returns: after `WM_ENDSESSION` the
@@ -851,9 +853,9 @@ pub enum Effect {
     StopTyping,
     /// Close every open notice without waiting for it.
     DismissNotices,
-    /// Take the events left in the inbox and pass them to [`Tray::flush_hotkeys`], so that a
-    /// hotkey change made just before the exit is saved.
-    FlushHotkeys,
+    /// Take the events left in the inbox and pass them to [`Tray::flush_inbox`], so that a
+    /// hotkey change or an edit of the exclusions dialog made just before the exit is saved.
+    FlushInbox,
     /// Let the worker finish the commands sent and save what is unsaved (bounded).
     FinishWorker,
     /// Remove the icon.
@@ -1321,25 +1323,31 @@ impl Tray {
         effects
     }
 
-    /// At exit ([`Effect::FlushHotkeys`]): the events left in the inbox once the hook has
-    /// stopped. The last hotkey change among them is saved (the worker finishes after this);
-    /// everything else is dropped.
-    pub fn flush_hotkeys(&mut self, events: Vec<Event>) -> Vec<Effect> {
-        let last = events.into_iter().rev().find_map(|event| match event {
-            Event::Hotkey(vietnamese) => Some(vietnamese),
-            Event::Worker(_)
-            | Event::Answered(_)
-            | Event::Panel(_)
-            | Event::PanelClosed(_)
-            | Event::MacrosSaved
-            | Event::Exclusions(_)
-            | Event::ExclusionsClosed(_) => None,
-        });
-        let Some(vietnamese) = last else {
-            return Vec::new();
-        };
-        self.runtime = with_change(&self.runtime, Change::VietnameseMode(vietnamese));
-        vec![self.command(WorkerCommand::Apply(Change::VietnameseMode(vietnamese)))]
+    /// At exit ([`Effect::FlushInbox`]): the events left in the inbox once the hook has
+    /// stopped and the dialogs were closed. What the user did that the worker has not been
+    /// sent yet still goes to it (it finishes after this), in the order of the inbox: the last
+    /// hotkey change (saved, at its place, [`coalesce`]) and each edit of the exclusions
+    /// dialog (applied and saved as if it had come before the exit: it took effect in the
+    /// dialog the moment it was made). Everything else is dropped.
+    pub fn flush_inbox(&mut self, events: Vec<Event>) -> Vec<Effect> {
+        coalesce(events)
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Hotkey(vietnamese) => {
+                    self.runtime = with_change(&self.runtime, Change::VietnameseMode(vietnamese));
+                    Some(self.command(WorkerCommand::Apply(Change::VietnameseMode(vietnamese))))
+                }
+                Event::Exclusions(request) => {
+                    Some(self.command(WorkerCommand::Exclusions(request)))
+                }
+                Event::Worker(_)
+                | Event::Answered(_)
+                | Event::Panel(_)
+                | Event::PanelClosed(_)
+                | Event::MacrosSaved
+                | Event::ExclusionsClosed(_) => None,
+            })
+            .collect()
     }
 
     /// The user answered yes to `question` of a [`Notice`].
@@ -1693,7 +1701,7 @@ impl Tray {
             Effect::ClosePanel,
             Effect::CloseMacroList,
             Effect::CloseExclusions,
-            Effect::FlushHotkeys,
+            Effect::FlushInbox,
             Effect::FinishWorker,
             Effect::RemoveIcon,
             Effect::EndLoop,

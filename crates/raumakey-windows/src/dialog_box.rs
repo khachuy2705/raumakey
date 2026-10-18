@@ -34,7 +34,8 @@
 //! [`DialogHandler::close_requested`], which ends the dialog with `IDCANCEL` unless the handler
 //! vetoes. `IDOK` (the default button, Enter) is an ordinary command: the handler ends the
 //! dialog with [`Dialog::end`] once it accepted the input. `WM_NOTIFY` reaches
-//! [`DialogHandler::notify`] with the id and code of its `NMHDR`. Private messages
+//! [`DialogHandler::notify`] with the id and code of its `NMHDR`, and a key pressed in a list
+//! view (`LVN_KEYDOWN`) then reaches [`DialogHandler::list_key`] too. Private messages
 //! ([`AppMessage`](crate::window::AppMessage)) below [`RESERVED_FIRST`] reach
 //! [`DialogHandler::app_message`]. Everything else gets the default dialog processing.
 //!
@@ -87,10 +88,11 @@
 //!   processes nor refuses to post, so a forged one may point anywhere: the dialog procedure
 //!   copies the header with `ReadProcessMemory`, which fails instead of faulting on memory that
 //!   cannot be read, and hands it to the handler only when it names a control of the dialog by
-//!   its handle and id. The two requests of a virtual list view that the procedure answers
-//!   itself ([`Dialog::list_set_virtual_rows`]) pass the same check and are copied the same
-//!   way, and so is the text of a search, block by block within pages, up to its NUL and at
-//!   most 1,024 units: a text that cannot be read finds nothing. A search (`LVN_ODFINDITEMW`)
+//!   its handle and id; the key of an `LVN_KEYDOWN` is copied the same way. The two requests
+//!   of a virtual list view that the procedure answers itself
+//!   ([`Dialog::list_set_virtual_rows`]) pass the same check and are copied the same way, and
+//!   so is the text of a search, block by block within pages, up to its NUL and at most 1,024
+//!   units: a text that cannot be read finds nothing. A search (`LVN_ODFINDITEMW`)
 //!   is answered with its result alone (`DWLP_MSGRESULT`). A cell request (`LVN_GETDISPINFOW`)
 //!   is answered by setting the request's own `pszText` field to a text the dialog keeps, with
 //!   `WriteProcessMemory`, and only when `VirtualQuery` reports that field in committed
@@ -146,6 +148,9 @@ pub mod notifications {
     /// `LVN_ITEMCHANGED`: an item of a list view changed, such as its selection; one change of
     /// the selection reports each item that lost or gained it.
     pub const LVN_ITEMCHANGED: i32 = -101;
+    /// `LVN_KEYDOWN`: the user pressed a key while a list view had the focus; the key also
+    /// reaches [`DialogHandler::list_key`](super::DialogHandler::list_key).
+    pub const LVN_KEYDOWN: i32 = -155;
     /// `NM_DBLCLK`: the user double-clicked the control.
     pub const NM_DBLCLK: i32 = -3;
 }
@@ -174,9 +179,9 @@ mod win {
         LVIF_TEXT, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_DELETECOLUMN,
         LVM_ENSUREVISIBLE, LVM_GETHEADER, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW,
         LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMTEXTW, LVNI_SELECTED,
-        LVS_EX_FULLROWSELECT, NMHDR,
+        LVS_EX_FULLROWSELECT, NMHDR, NMLVKEYDOWN,
     };
-    use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus};
     use windows::Win32::UI::WindowsAndMessaging::{
         BM_GETCHECK, BM_SETCHECK, CB_ADDSTRING, CB_GETCURSEL, CB_GETLBTEXT, CB_GETLBTEXTLEN,
         CB_RESETCONTENT, CB_SETCURSEL, DLGTEMPLATE, DialogBoxIndirectParamW, EndDialog,
@@ -200,7 +205,7 @@ mod win {
     };
     use windows::Win32::UI::WindowsAndMessaging::{GWL_STYLE, GetWindowLongW};
 
-    use super::notifications::BN_CLICKED;
+    use super::notifications::{BN_CLICKED, LVN_KEYDOWN};
     use super::{BRING_TO_FRONT, DISMISS, REWRAP, is_reserved};
     use crate::dialog::{MessageKind, MessageResponse, message_box};
     use crate::dialog_template::styles::LVS_OWNERDATA;
@@ -276,6 +281,15 @@ mod win {
         /// [`Dialog::list_set_virtual_rows`]) never arrive here.
         fn notify(&mut self, dialog: &Dialog<'_>, id: u16, code: i32) {
             let _ = (dialog, id, code);
+        }
+
+        /// List view `id` reported a key that the user pressed while it had the focus
+        /// ([`LVN_KEYDOWN`](super::notifications::LVN_KEYDOWN), after
+        /// [`notify`](Self::notify) got it), with its virtual-key code, such as `VK_DELETE`
+        /// (0x2E). Any process of the desktop may send a list view keys, as any input: the
+        /// key is a plain value to act on as a key pressed by the user.
+        fn list_key(&mut self, dialog: &Dialog<'_>, id: u16, key: u16) {
+            let _ = (dialog, id, key);
         }
 
         /// The private `message` arrived with `wparam` and `lparam` (posted with
@@ -467,6 +481,22 @@ mod win {
                 };
                 self.state.focus_moved.set(true);
             }
+        }
+
+        /// Whether control `id` has the keyboard focus of the dialog's thread (`GetFocus`),
+        /// itself or through a window inside it (the edit of an editable combo box); false when
+        /// there is no such control. A handler that disables a control asks this first and
+        /// moves the focus elsewhere ([`focus`](Self::focus)): a disabled control keeps
+        /// nothing focused, and the keyboard would reach no control of the dialog.
+        pub fn has_focus(&self, id: u16) -> bool {
+            let Ok(control) = self.item(id) else {
+                return false;
+            };
+            // SAFETY: no preconditions; reads the focus of the calling thread, the dialog's.
+            let focus = unsafe { GetFocus() };
+            // SAFETY: a query about window handles, which USER validates.
+            !focus.is_invalid()
+                && (focus == control || unsafe { IsChild(control, focus) }.as_bool())
         }
 
         /// Replaces the items of drop-down list `id` with `items`, in order (`CB_RESETCONTENT`,
@@ -1593,7 +1623,13 @@ mod win {
             }
             WM_NOTIFY => {
                 if let Some(header) = notify_header(hwnd, lparam) {
-                    handler.notify(&dialog, low_word(header.idFrom), header.code as i32);
+                    let (id, code) = (low_word(header.idFrom), header.code as i32);
+                    handler.notify(&dialog, id, code);
+                    if code == LVN_KEYDOWN
+                        && let Some(key) = list_key(lparam)
+                    {
+                        handler.list_key(&dialog, id, key);
+                    }
                 }
                 // The default answer, 0, suits every notification.
                 FALSE
@@ -1624,6 +1660,16 @@ mod win {
         };
         // Controls report their id as `GetDlgCtrlID` gives it, widened with its sign.
         (child && id as isize as usize == header.idFrom).then_some(header)
+    }
+
+    /// The virtual-key code of the `NMLVKEYDOWN` that the `WM_NOTIFY` argument `lparam` points
+    /// to (its header checked by [`notify_header`] already), copied; `None` when it cannot be
+    /// read (see "Forged messages" in the module documentation).
+    fn list_key(lparam: LPARAM) -> Option<u16> {
+        // SAFETY: `NMLVKEYDOWN` holds a header of a window handle and integers, then two
+        // integers: any bytes make a valid one.
+        let down = unsafe { read_memory::<NMLVKEYDOWN>(lparam.0 as usize) }?;
+        Some(down.wVKey)
     }
 
     /// How many lent texts each virtual list view keeps ([`VirtualList`]): a list view may use

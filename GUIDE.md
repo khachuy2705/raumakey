@@ -315,8 +315,9 @@ apps = ["mstsc.exe", "msrdc.exe", "rdcman.exe", "vmconnect.exe"]
   - mở danh sách của ô đó và chọn một ứng dụng đang có cửa sổ (bấm **Làm mới** nếu vừa mở ứng
     dụng);
   - bấm **Duyệt…** và chọn tệp `.exe`.
-- **Xoá** bỏ dòng đang chọn. **Mặc định** (hỏi lại trước) đặt lại bốn ứng dụng điều khiển máy từ
-  xa ở dưới.
+- **Xoá** (hoặc phím Delete trong danh sách) bỏ dòng đang chọn; dòng kế tiếp được chọn, nên bấm
+  tiếp là xoá tiếp. **Mặc định** (hỏi lại trước) đặt lại bốn ứng dụng điều khiển máy từ xa ở
+  dưới.
 - Không có nút Lưu: mỗi thay đổi có hiệu lực và được ghi vào `raumakey.toml` ngay. Nếu bạn sửa tệp
   bằng tay trong lúc hộp thoại mở, danh sách trong hộp thoại đổi theo.
 

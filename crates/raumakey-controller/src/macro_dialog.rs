@@ -585,16 +585,18 @@ mod win {
         fn ask(&mut self, dialog: &Dialog<'_>, prompt: &Prompt) -> bool;
 
         /// Shows the Open dialog for one existing file of the types `filters`, owned by
-        /// `dialog`, and returns the path chosen; `None` when the user cancelled, the dialog
-        /// could not be shown, or `dialog` was dismissed meanwhile. `None` by default, without
-        /// showing anything (the tests answer from a script).
+        /// `dialog`, and returns the path chosen, or `None` when the user cancelled. Fails
+        /// when the Open dialog could not be shown, and with `E_ABORT`
+        /// (`WinErrorKind::Cancelled`) when `dialog` was dismissed meanwhile
+        /// ([`Dialog::choose_file`]). `Ok(None)` by default, without showing anything (the
+        /// tests answer from a script).
         fn choose_file(
             &mut self,
             dialog: &Dialog<'_>,
             filters: &[FileFilter<'_>],
-        ) -> Option<PathBuf> {
+        ) -> WinResult<Option<PathBuf>> {
             let _ = (dialog, filters);
-            None
+            Ok(None)
         }
     }
 
@@ -616,8 +618,8 @@ mod win {
             &mut self,
             dialog: &Dialog<'_>,
             filters: &[FileFilter<'_>],
-        ) -> Option<PathBuf> {
-            dialog.choose_file(filters).ok().flatten()
+        ) -> WinResult<Option<PathBuf>> {
+            dialog.choose_file(filters)
         }
     }
 

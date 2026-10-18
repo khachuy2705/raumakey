@@ -27,16 +27,24 @@
 //!   `FileDescription` of a running program of that name when one runs, else the product name
 //!   of the four defaults ([`builtin_description`], in English: these are product names),
 //!   else nothing. An entry of the list of running applications is [`program_entry`]
-//!   (`mstsc.exe – Remote Desktop Connection`).
+//!   (`mstsc.exe – Remote Desktop Connection`), and choosing it puts [`picked_text`] into the
+//!   edit (its executable as the file reads it: `tool` as `tool.exe`).
 //! - What "Thêm" does with the text of the edit ([`entered`]): it is normalized exactly as
 //!   `raumakey.toml` is read (`raumakey_config::normalize_excluded_app`: a name without
 //!   `.exe`, a path pasted from Explorer, quoted or not, any case), and an entry of the list of
-//!   running applications stands for its executable; a text that names no program is
-//!   explained ([`invalid_name_prompt`], a warning), a listed application is selected, and
-//!   only a new one is sent to the tray. "Thêm" is enabled while the edit holds text
-//!   ([`can_add`]). "Mặc định" asks first ([`defaults_prompt`]). After a refresh the
-//!   application just added is selected once it is listed, else the one selected before
-//!   ([`selection_after`]).
+//!   running applications stands for its executable, normalized the same way; a text that
+//!   names no program is explained ([`invalid_name_prompt`], a warning), a listed application
+//!   is selected, and only a new one is sent to the tray. "Thêm" is enabled while the edit
+//!   holds text ([`can_add`]). "Mặc định" asks first ([`defaults_prompt`]). An Open dialog of
+//!   "Duyệt…" that cannot be shown is explained ([`browse_error_prompt`], a warning).
+//! - The row selected after a refresh ([`selection_after`]): the application just added once
+//!   it is listed, else the one selected before while it is listed, else the [`neighbour`] of
+//!   the one just removed (the next row, which took its place, else the one before it), so
+//!   that "Xoá" stays enabled and removes the next one. The dialog waits for an edit's row
+//!   until the tray's answer: the tray shows the list again at once after every edit, and the
+//!   first refresh with another list is the answer; after it the edit is given up, so that an
+//!   application added that the answer does not list (the edit was overtaken) is not selected
+//!   later, whenever it comes to be listed.
 //!
 //! # Data flow
 //!
@@ -68,11 +76,18 @@
 //!   again and looks up once more what was not found. This reads the window manager's lists,
 //!   process image names, and version resources on the dialog's own thread: bounded work
 //!   that may take a moment at the opening and at "Làm mới", for the dialog alone.
-//! - **The edit.** Choosing an entry of the list puts its executable into the edit: the combo
-//!   box shows the entry's own text only after it reported the choice, so the handler posts
-//!   itself a private message and replaces the text then. The user may also type or paste a
-//!   name or a path, or choose a program with "Duyệt…" (the Open dialog, programs only, owned
-//!   by the dialog), whose path goes into the edit; "Thêm" normalizes it.
+//! - **The edit.** Choosing an entry of the list (with the mouse or the arrow keys) puts its
+//!   executable into the edit ([`picked_text`]): the combo box shows the entry's own text only
+//!   after it reported the choice, so the handler posts itself a private message and replaces
+//!   the text then. The user may also type or paste a name or a path, or choose a program with
+//!   "Duyệt…" (the Open dialog, programs only, owned by the dialog), whose path goes into the
+//!   edit; "Thêm" normalizes it.
+//! - **The keyboard.** Enter in the edit presses "Thêm", and the Delete key in the list
+//!   removes the selected application, as "Xoá" does. A control that has the focus is never
+//!   disabled with it: the focus goes to the edit first (a disabled control keeps nothing
+//!   focused, and the keyboard would reach no control). So after "Thêm" (also clicked) the
+//!   focus is in the emptied edit, ready for the next name, and after "Xoá" it stays on
+//!   "Xoá", which the row selected next keeps enabled, until the list is empty.
 //! - **Boxes.** After every message box and the Open dialog, whose modal loops run inside the
 //!   handler, the dialog shows the shared state again: a refresh posted meanwhile did not
 //!   reach it.
@@ -95,17 +110,22 @@
 //!    four defaults with their descriptions ("Remote Desktop Connection" and so on, or the
 //!    description of the running program).
 //! 2. Open the list of the combo box: the applications with a window, each once, with its
-//!    description, Raumakey not among them; choose Notepad: the edit holds `notepad.exe`
-//!    only. Type `mspaint` and press Enter: a row `mspaint.exe` is added and selected, and the
-//!    edit is empty. Start another program and press "Làm mới": it is in the list.
+//!    description, Raumakey not among them (nor Settings while it is not open); choose
+//!    Notepad: the edit holds `notepad.exe` only; the arrow keys in the closed combo box do
+//!    the same. Type `mspaint` and press Enter: a row `mspaint.exe` is added and selected, and
+//!    the edit is empty, with the focus. Type another name and click "Thêm": the focus is back
+//!    in the edit; type at once. Start another program and press "Làm mới": it is in the list.
 //! 3. Paste `"C:\Windows\System32\notepad.exe"` (Explorer's "Copy as path") and press "Thêm":
 //!    the row of `notepad.exe` is selected, nothing is added. Type `C:\` and press "Thêm": a
 //!    warning box owned by the dialog, in Vietnamese; nothing changes.
 //! 4. "Duyệt…": the Open dialog lists folders and programs only ("Chương trình (*.exe)");
 //!    choose one: its path is in the edit; "Thêm" adds its file name. Cancel it: nothing
 //!    changes.
-//! 5. Select a row: "Xoá" is enabled; press it: the row goes. "Mặc định": the question names
-//!    the four defaults; "Không" changes nothing, "Có" puts them back.
+//! 5. Select a row: "Xoá" is enabled; press it: the row goes and the next row is selected
+//!    (the one before after the last row); press Space or Enter again and again: one row
+//!    after the other goes, and once the list is empty the focus is in the edit. Select a row
+//!    and press Delete in the list: it goes too. "Mặc định": the question names the four
+//!    defaults; "Không" changes nothing, "Có" puts them back.
 //! 6. Esc, "Đóng", and the close box close it without asking.
 //! 7. At 150 % (and dragged between monitors of different scale) the texts are sharp and
 //!    whole, the introduction on its two lines.
@@ -115,10 +135,12 @@ use raumakey_model::host::ExeName;
 use raumakey_windows::dialog_template::{
     Control, DialogRect, DialogTemplate, IDCANCEL, STATIC_ID, styles,
 };
+use raumakey_windows::error::WinError;
 use raumakey_windows::file_dialog::FileFilter;
 use raumakey_windows::window::AppMessage;
 
 use crate::macro_dialog::{Placement, Prompt, PromptKind};
+use crate::notice::win_error_text;
 
 /// The dialog's title.
 pub const TITLE: &str = "Raumakey \u{2013} Ứng dụng loại trừ";
@@ -164,6 +186,9 @@ pub const DEFAULTS_QUESTION: &str = "Đặt lại danh sách về các ứng d�
 /// Raumakey exits."
 pub const NOT_SAVED: &str = "Không có thư mục để lưu cấu hình, nên thay đổi chỉ có hiệu lực tới \
                              khi Raumakey thoát.";
+/// The warning when the Open dialog of "Duyệt…" cannot be shown: "The file chooser could not
+/// be opened" ([`browse_error_prompt`] adds why).
+pub const BROWSE_FAILED: &str = "Không mở được hộp thoại chọn tệp";
 /// The file types of "Duyệt…": programs only.
 pub const PROGRAMS: [FileFilter<'static>; 1] = [FileFilter {
     label: "Chương trình (*.exe)",
@@ -226,6 +251,15 @@ pub fn program_entry(program: &Program) -> String {
     }
 }
 
+/// What a choice of `program` from the list of running applications puts into the edit: its
+/// executable as `raumakey.toml` reads it (`raumakey_config::normalize_excluded_app`: a
+/// process image without an extension, `tool`, as `tool.exe`), else as it is (and "Thêm"
+/// explains it).
+pub fn picked_text(program: &Program) -> String {
+    normalize_excluded_app(program.exe.as_str())
+        .map_or_else(|| program.exe.as_str().to_owned(), String::from)
+}
+
 /// What "Thêm" makes of the text of the edit ([`entered`]).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Entered {
@@ -240,8 +274,8 @@ pub enum Entered {
 }
 
 /// What "Thêm" makes of `text` with `apps` listed and `running` in the list of running
-/// applications: an entry of that list ([`program_entry`]) stands for its executable, and any
-/// other text is normalized as `raumakey.toml` is read
+/// applications: an entry of that list ([`program_entry`]) stands for its executable, and that
+/// executable or any other text is normalized as `raumakey.toml` is read
 /// (`raumakey_config::normalize_excluded_app`).
 pub fn entered(text: &str, apps: &[ExeName], running: &[Program]) -> Entered {
     if !can_add(text) {
@@ -250,8 +284,8 @@ pub fn entered(text: &str, apps: &[ExeName], running: &[Program]) -> Entered {
     let chosen = running
         .iter()
         .find(|program| program_entry(program) == text)
-        .map(|program| program.exe.clone());
-    let Some(exe) = chosen.or_else(|| normalize_excluded_app(text)) else {
+        .map(|program| program.exe.as_str());
+    let Some(exe) = normalize_excluded_app(chosen.unwrap_or(text)) else {
         return Entered::Invalid;
     };
     match apps.iter().position(|listed| *listed == exe) {
@@ -280,15 +314,42 @@ pub fn defaults_prompt() -> Prompt {
     Prompt::new(PromptKind::Question, DEFAULTS_QUESTION.to_owned())
 }
 
+/// The warning when the Open dialog cannot be shown: [`BROWSE_FAILED`] and why
+/// (`crate::notice::win_error_text`), as the notices tell an error of Windows.
+pub fn browse_error_prompt(error: &WinError) -> Prompt {
+    Prompt::new(
+        PromptKind::Warning,
+        format!("{BROWSE_FAILED} ({}).", win_error_text(error)),
+    )
+}
+
 /// The row to select once `apps` are shown: that of `added` (the application just added) when
-/// it is listed, else that of `selected` (the one selected before), else none.
+/// it is listed, else that of `selected` (the one selected before) when it is, else that of
+/// `neighbour` (the [`neighbour`] of the application just removed, which took its place),
+/// else none.
 pub fn selection_after(
     selected: Option<&ExeName>,
     added: Option<&ExeName>,
+    neighbour: Option<&ExeName>,
     apps: &[ExeName],
 ) -> Option<usize> {
     let row = |exe: &ExeName| apps.iter().position(|listed| listed == exe);
-    added.and_then(row).or_else(|| selected.and_then(row))
+    added
+        .and_then(row)
+        .or_else(|| selected.and_then(row))
+        .or_else(|| neighbour.and_then(row))
+}
+
+/// The application to select once the one at `row` of `apps` is removed: the next one, which
+/// takes its place, else the one before it (the last row was removed), else none (it was the
+/// only one, or there is no such row). So "Xoá" stays enabled, and pressed again removes the
+/// next application.
+pub fn neighbour(apps: &[ExeName], row: usize) -> Option<&ExeName> {
+    if row >= apps.len() {
+        return None;
+    }
+    apps.get(row + 1)
+        .or_else(|| row.checked_sub(1).and_then(|before| apps.get(before)))
 }
 
 fn rect(x: i16, y: i16, cx: i16, cy: i16) -> DialogRect {
@@ -359,7 +420,7 @@ mod win {
     use raumakey_windows::dialog_box::{
         DetachedDialog, Dialog, DialogHandler, notifications, spawn_dialog,
     };
-    use raumakey_windows::error::WinResult;
+    use raumakey_windows::error::{WinErrorKind, WinResult};
     use raumakey_windows::module::Module;
     use raumakey_windows::programs::{
         process_description, running_applications, running_processes,
@@ -368,9 +429,9 @@ mod win {
 
     use super::{
         COLUMNS, EXCLUSIONS_REFRESH, Entered, ID_ADD, ID_APP, ID_BROWSE, ID_DEFAULTS, ID_INTRO,
-        ID_LIST, ID_NOT_SAVED, ID_REFRESH, ID_REMOVE, INTRO, PROGRAMS, Placement, Program, can_add,
-        defaults_prompt, entered, invalid_name_prompt, not_saved_text, program_entry, row_cells,
-        selection_after, template,
+        ID_LIST, ID_NOT_SAVED, ID_REFRESH, ID_REMOVE, INTRO, PROGRAMS, Placement, Program,
+        browse_error_prompt, can_add, defaults_prompt, entered, invalid_name_prompt, neighbour,
+        not_saved_text, picked_text, program_entry, row_cells, selection_after, template,
     };
     use crate::exclusions::{ExclusionsRequest, ExclusionsState};
     use crate::macro_dialog::{APP_ICON_ID, MessageBoxes, Prompter};
@@ -382,6 +443,35 @@ mod win {
     /// choice from the list of running applications, to put the choice's executable into the
     /// edit once the combo box has shown the entry's text.
     const PICKED: u32 = 2;
+
+    /// `VK_DELETE`: removes the selected application in the list, as "Xoá" does.
+    const VK_DELETE: u16 = 0x2E;
+
+    /// Enables or disables control `id`. A control that has the keyboard focus gives it to the
+    /// edit first ([`ID_APP`]): a disabled control keeps nothing focused, and the keyboard
+    /// would reach no control of the dialog.
+    fn set_enabled(dialog: &Dialog<'_>, id: u16, enabled: bool) {
+        if !enabled && dialog.has_focus(id) {
+            dialog.focus(ID_APP);
+        }
+        dialog.set_enabled(id, enabled);
+    }
+
+    /// The row that the edit sent last waits for ([`selection_after`]), with the list shown
+    /// when it was sent. The tray shows the list again at once after every edit, before the
+    /// worker answers; the first refresh that shows another list is the answer (or something
+    /// that overtook the edit), and the edit is given up after it: its row is not selected
+    /// later, whenever it comes to be listed.
+    #[derive(Debug)]
+    struct Awaited {
+        /// "Thêm": the application added, selected first once it is listed.
+        added: Option<ExeName>,
+        /// "Xoá": the [`neighbour`] of the application removed, selected once that one is
+        /// gone (unless the user selected another row meanwhile).
+        neighbour: Option<ExeName>,
+        /// The list shown when the edit was sent.
+        sent_with: Vec<ExeName>,
+    }
 
     /// How the dialog reaches the tray; `crate::desktop` implements it over the tray's inbox
     /// and the state the tray's thread shares with the dialog. Its methods run on the dialog's
@@ -414,8 +504,9 @@ mod win {
     }
 
     /// The real [`Programs`]: `raumakey_windows::programs` (the applications with an
-    /// unowned, visible window that is no tool window, other than this process; the
-    /// `FileDescription` of the program of a running process with that image name).
+    /// unowned, visible window that is no tool window and not cloaked, other than this
+    /// process; the `FileDescription` of the program of a running process with that image
+    /// name, from the first table of its version resource that holds one).
     #[derive(Clone, Copy, Debug, Default)]
     pub struct RunningPrograms;
 
@@ -456,8 +547,8 @@ mod win {
         descriptions: Descriptions,
         /// The running applications in the combo box's list, in its order.
         running: Vec<Program>,
-        /// The application just added: selected once a refresh lists it.
-        added: Option<ExeName>,
+        /// What the edit sent last waits for.
+        awaited: Option<Awaited>,
     }
 
     impl<P: Prompter, R: Programs, L: ExclusionsLink> fmt::Debug for ExclusionsDialog<P, R, L> {
@@ -481,13 +572,14 @@ mod win {
                 apps: Vec::new(),
                 descriptions: Descriptions::new(),
                 running: Vec::new(),
-                added: None,
+                awaited: None,
             }
         }
 
         /// Shows the shared state: the rows (with the descriptions looked up for the
-        /// applications not looked up yet), the selection ([`selection_after`]), the note, and
-        /// the buttons that need a selection or a text.
+        /// applications not looked up yet), the selection ([`selection_after`], with what the
+        /// edit sent last waits for: [`Awaited`]), the note, and the buttons that need a
+        /// selection or a text.
         fn show(&mut self, dialog: &Dialog<'_>) {
             let state = self.link.state();
             let selected = dialog
@@ -502,16 +594,18 @@ mod win {
                 .collect();
             // Names and descriptions hold no NUL; a failure leaves the rows shown before.
             let _ = dialog.list_set_virtual_rows(ID_LIST, &rows);
-            let row = selection_after(selected.as_ref(), self.added.as_ref(), &state.apps);
-            if self
-                .added
-                .as_ref()
-                .is_some_and(|added| state.apps.contains(added))
-            {
-                self.added = None;
+            let awaited = self.awaited.as_ref();
+            let row = selection_after(
+                selected.as_ref(),
+                awaited.and_then(|awaited| awaited.added.as_ref()),
+                awaited.and_then(|awaited| awaited.neighbour.as_ref()),
+                &state.apps,
+            );
+            if awaited.is_some_and(|awaited| awaited.sent_with != state.apps) {
+                self.awaited = None;
             }
             let _ = dialog.list_select(ID_LIST, row);
-            dialog.set_enabled(ID_REMOVE, row.is_some());
+            set_enabled(dialog, ID_REMOVE, row.is_some());
             // Wrapped at spaces, since Windows would cut a Vietnamese word.
             let _ = dialog.set_text_wrapped(ID_NOT_SAVED, not_saved_text(state.can_save));
             self.apps = state.apps;
@@ -562,7 +656,7 @@ mod win {
         /// "Thêm" is enabled while the edit holds text.
         fn follow_edit(&self, dialog: &Dialog<'_>) {
             let text = dialog.text(ID_APP).unwrap_or_default();
-            dialog.set_enabled(ID_ADD, can_add(&text));
+            set_enabled(dialog, ID_ADD, can_add(&text));
         }
 
         /// "Thêm": the text of the edit ([`entered`]).
@@ -578,26 +672,39 @@ mod win {
                 }
                 Entered::Listed(row) => {
                     let _ = dialog.list_select(ID_LIST, Some(row));
-                    dialog.set_enabled(ID_REMOVE, true);
+                    set_enabled(dialog, ID_REMOVE, true);
                 }
                 Entered::New(exe) => {
                     self.link.request(ExclusionsRequest::Add(exe.clone()));
-                    self.added = Some(exe);
+                    self.awaited = Some(Awaited {
+                        added: Some(exe),
+                        neighbour: None,
+                        sent_with: self.apps.clone(),
+                    });
                     let _ = dialog.set_text(ID_APP, "");
+                    // Ready for the next name, also after a click, which gave "Thêm" the
+                    // focus: the button is disabled now.
+                    dialog.focus(ID_APP);
                     self.follow_edit(dialog);
                 }
             }
         }
 
-        /// "Xoá": the selected application.
+        /// "Xoá" (and the Delete key in the list): the selected application. Once it is gone,
+        /// its [`neighbour`] is selected.
         fn remove(&mut self, dialog: &Dialog<'_>) {
-            let selected = dialog
-                .list_selected(ID_LIST)
-                .and_then(|row| self.apps.get(row))
-                .cloned();
-            if let Some(exe) = selected {
-                self.link.request(ExclusionsRequest::Remove(exe));
-            }
+            let Some(row) = dialog.list_selected(ID_LIST) else {
+                return;
+            };
+            let Some(exe) = self.apps.get(row).cloned() else {
+                return;
+            };
+            self.awaited = Some(Awaited {
+                added: None,
+                neighbour: neighbour(&self.apps, row).cloned(),
+                sent_with: self.apps.clone(),
+            });
+            self.link.request(ExclusionsRequest::Remove(exe));
         }
 
         /// "Mặc định", after "yes" to [`defaults_prompt`].
@@ -605,29 +712,42 @@ mod win {
             let yes = self.prompter.ask(dialog, &defaults_prompt());
             self.show(dialog);
             if yes {
+                self.awaited = None;
                 self.link.request(ExclusionsRequest::Defaults);
             }
         }
 
-        /// "Duyệt…": the path chosen goes into the edit.
+        /// "Duyệt…": the path chosen goes into the edit. An Open dialog that cannot be shown
+        /// is explained ([`browse_error_prompt`]); one that the dismissal of the dialog closed
+        /// (`E_ABORT`) is not.
         fn browse(&mut self, dialog: &Dialog<'_>) {
             let chosen = self.prompter.choose_file(dialog, &PROGRAMS);
             // A refresh posted while the Open dialog was open did not reach the handler.
             self.show(dialog);
-            if let Some(path) = chosen {
-                let _ = dialog.set_text(ID_APP, &path.to_string_lossy());
-                self.follow_edit(dialog);
-                dialog.focus(ID_APP);
+            match chosen {
+                Ok(Some(path)) => {
+                    let _ = dialog.set_text(ID_APP, &path.to_string_lossy());
+                    self.follow_edit(dialog);
+                    dialog.focus(ID_APP);
+                }
+                Ok(None) => {}
+                Err(error) if error.kind() == WinErrorKind::Cancelled => {}
+                Err(error) => {
+                    self.prompter.ask(dialog, &browse_error_prompt(&error));
+                    // A refresh posted while the box was open did not reach the handler.
+                    self.show(dialog);
+                }
             }
         }
 
-        /// A choice from the list of running applications: its executable goes into the edit.
+        /// A choice from the list of running applications: its executable goes into the edit
+        /// ([`picked_text`]).
         fn picked(&self, dialog: &Dialog<'_>) {
             let program = dialog
                 .combo_selected(ID_APP)
                 .and_then(|index| self.running.get(index));
             if let Some(program) = program {
-                let _ = dialog.set_text(ID_APP, program.exe.as_str());
+                let _ = dialog.set_text(ID_APP, &picked_text(program));
             }
             self.follow_edit(dialog);
         }
@@ -682,7 +802,13 @@ mod win {
 
         fn notify(&mut self, dialog: &Dialog<'_>, id: u16, code: i32) {
             if (id, code) == (ID_LIST, notifications::LVN_ITEMCHANGED) {
-                dialog.set_enabled(ID_REMOVE, dialog.list_selected(ID_LIST).is_some());
+                set_enabled(dialog, ID_REMOVE, dialog.list_selected(ID_LIST).is_some());
+            }
+        }
+
+        fn list_key(&mut self, dialog: &Dialog<'_>, id: u16, key: u16) {
+            if (id, key) == (ID_LIST, VK_DELETE) {
+                self.remove(dialog);
             }
         }
 

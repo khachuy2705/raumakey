@@ -40,6 +40,7 @@ fn notification_codes_have_their_win32_values() {
     assert_eq!(notifications::CBN_EDITCHANGE, 5);
     assert_eq!(notifications::EN_CHANGE, 0x0300);
     assert_eq!(notifications::LVN_ITEMCHANGED, -101);
+    assert_eq!(notifications::LVN_KEYDOWN, -155);
     assert_eq!(notifications::NM_DBLCLK, -3);
 }
 

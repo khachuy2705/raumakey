@@ -118,7 +118,7 @@ fn exit_effects() -> Vec<Effect> {
         Effect::ClosePanel,
         Effect::CloseMacroList,
         Effect::CloseExclusions,
-        Effect::FlushHotkeys,
+        Effect::FlushInbox,
         Effect::FinishWorker,
         Effect::RemoveIcon,
         Effect::EndLoop,
@@ -563,7 +563,7 @@ fn exit_saves_the_last_hotkey_change_left_in_the_inbox() {
     let mut tray = running(Vietnamese);
     assert_eq!(choose(&mut tray, TrayCommand::Exit), exit_effects());
     assert_eq!(
-        tray.flush_hotkeys(vec![
+        tray.flush_inbox(vec![
             Event::Hotkey(false),
             Event::Answered(Question::Recover),
             Event::Hotkey(true),
@@ -576,7 +576,7 @@ fn exit_saves_the_last_hotkey_change_left_in_the_inbox() {
     );
     assert_eq!(tray.mode(), English);
     assert_eq!(
-        tray.flush_hotkeys(vec![Event::Answered(Question::Recover)]),
+        tray.flush_inbox(vec![Event::Answered(Question::Recover)]),
         []
     );
 }
@@ -1998,7 +1998,7 @@ fn exit_stops_the_hook_finishes_the_worker_then_removes_the_icon() {
             Effect::ClosePanel,
             Effect::CloseMacroList,
             Effect::CloseExclusions,
-            Effect::FlushHotkeys,
+            Effect::FlushInbox,
             Effect::FinishWorker,
             Effect::RemoveIcon,
             Effect::EndLoop,
@@ -3072,7 +3072,7 @@ fn exit_closes_the_panel_and_nothing_follows() {
     assert_eq!(tray.on_event(Event::PanelClosed(1)), []);
     assert_eq!(send(&mut tray, (SHOW_PANEL, 0, 0)), answered(Vec::new()));
     assert_eq!(
-        tray.flush_hotkeys(vec![Event::Hotkey(false), Event::PanelClosed(1)]),
+        tray.flush_inbox(vec![Event::Hotkey(false), Event::PanelClosed(1)]),
         [worker(
             1,
             WorkerCommand::Apply(Change::VietnameseMode(false))
@@ -3183,7 +3183,7 @@ fn the_macro_list_editor_is_closed_at_the_exit() {
     let worker_finishes = effects.iter().position(|e| *e == Effect::FinishWorker);
     assert!(panel < editor && editor < worker_finishes, "{effects:?}");
     assert_eq!(tray.on_event(Event::MacrosSaved), []);
-    assert_eq!(tray.flush_hotkeys(vec![Event::MacrosSaved]), []);
+    assert_eq!(tray.flush_inbox(vec![Event::MacrosSaved]), []);
 }
 
 // --- The exclusions dialog (D48) ---------------------------------------------------------------
@@ -3450,8 +3450,8 @@ fn the_close_of_a_replaced_exclusions_dialog_does_not_stop_the_refreshes() {
 }
 
 /// Exit closes the dialog without waiting, after the panel and the macro list editor and
-/// before the worker finishes; nothing acts on it afterwards, and its events left in the inbox
-/// are dropped.
+/// before the worker finishes; nothing acts on it afterwards, and its close left in the inbox
+/// is dropped (its edits are not: see the next test).
 #[test]
 fn exit_closes_the_exclusions_dialog_and_nothing_follows() {
     let mut tray = with_exclusions_dialog(start(Vietnamese));
@@ -3467,19 +3467,41 @@ fn exit_closes_the_exclusions_dialog_and_nothing_follows() {
     );
     assert_eq!(tray.on_event(Event::ExclusionsClosed(1)), []);
     assert_eq!(panel_request(&mut tray, PanelRequest::Exclusions), []);
-    assert_eq!(
-        tray.flush_hotkeys(vec![
-            Event::Exclusions(ExclusionsRequest::Defaults),
-            Event::ExclusionsClosed(1),
-        ]),
-        []
-    );
+    assert_eq!(tray.flush_inbox(vec![Event::ExclusionsClosed(1)]), []);
     // Before the start the dialog's events do nothing either.
     let mut tray = Tray::new(start(Vietnamese), messages());
     assert_eq!(
         exclusions_request(&mut tray, ExclusionsRequest::Defaults),
         []
     );
+}
+
+/// At exit the edits of the exclusions dialog left in the inbox go to the worker before it
+/// finishes, in their order, with the last hotkey change at its place among them: each took
+/// effect for the user the moment it was made. Nothing else of the inbox acts.
+#[test]
+fn exit_sends_the_exclusions_edits_left_in_the_inbox_to_the_worker() {
+    let mut tray = running(Vietnamese);
+    assert_eq!(choose(&mut tray, TrayCommand::Exit), exit_effects());
+    let add = ExclusionsRequest::Add(exe("putty.exe"));
+    assert_eq!(
+        tray.flush_inbox(vec![
+            Event::Exclusions(add.clone()),
+            Event::Hotkey(false),
+            Event::ExclusionsClosed(1),
+            Event::Panel(PanelRequest::OpenConfig),
+            Event::Exclusions(ExclusionsRequest::Defaults),
+            Event::Hotkey(true),
+            Event::MacrosSaved,
+        ]),
+        [
+            worker(1, WorkerCommand::Exclusions(add)),
+            worker(2, WorkerCommand::Exclusions(ExclusionsRequest::Defaults)),
+            worker(3, WorkerCommand::Apply(Change::VietnameseMode(true))),
+        ]
+    );
+    assert_eq!(tray.mode(), Vietnamese);
+    assert_eq!(tray.flush_inbox(Vec::new()), []);
 }
 
 /// The dialog's events keep their order among the events, like the panel's.

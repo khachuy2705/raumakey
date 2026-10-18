@@ -966,10 +966,18 @@ apps = ["mstsc.exe", "msrdc.exe", "rdcman.exe", "vmconnect.exe"]
   - ô **Ứng dụng:** dạng combo nhập được: gõ hoặc dán tên, đường dẫn, hoặc chọn một ứng dụng đang
     có cửa sổ (nút **Làm mới** đọc lại danh sách này); nút **Duyệt…** mở hộp thoại chọn tệp
     `.exe`;
-  - các nút **Thêm**, **Xoá**, **Mặc định** (hỏi lại trước), **Đóng**.
+  - các nút **Thêm**, **Xoá**, **Mặc định** (hỏi lại trước), **Đóng**. Phím Delete trong danh
+    sách xoá như **Xoá**; sau khi xoá, dòng kế tiếp (nếu xoá dòng cuối thì dòng trước nó) được
+    chọn để xoá tiếp. Hộp thoại không bao giờ vô hiệu hoá nút đang giữ focus mà không chuyển
+    focus về ô **Ứng dụng:** trước, nên người dùng bàn phím không bị mất focus (ví dụ sau khi
+    bấm **Thêm**, focus nằm ở ô nhập, sẵn cho tên kế tiếp).
+- Nếu hộp thoại chọn tệp của **Duyệt…** không mở được, một cảnh báo nói rõ lỗi; hộp thoại không
+  lặng lẽ bỏ qua.
 - Tên nhập vào được chuẩn hoá đúng như một mục của `[exclusions] apps` (`normalize_excluded_app`).
   Tên không hợp lệ thì hộp thoại báo; tên đã có thì dòng đó được chọn.
 - Như bảng cấu hình, không có nút Lưu: mỗi lần thêm, xoá hay đặt lại đi qua tray tới worker,
   được áp dụng và ghi ngay vào `raumakey.toml`; một thay đổi chưa lưu được vẫn có hiệu lực và được
   thử lưu lại. Hộp thoại hiện danh sách mà tray gửi lại, nên cũng đổi theo khi tệp được sửa tay.
 - Hộp thoại chạy trên luồng riêng như bảng cấu hình; mỗi lúc chỉ có một; thoát Raumakey đóng nó.
+  Một thay đổi bấm ngay trước khi thoát, còn nằm trong hàng đợi của tray, vẫn được gửi tới worker
+  và được lưu trước khi worker kết thúc, như lần đổi chế độ cuối cùng bằng phím tắt.

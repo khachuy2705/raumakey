@@ -136,10 +136,11 @@
 //! Exit, `WM_CLOSE`, and the end of the session stop the hook first (typing is plain at
 //! once), close the open message boxes, the panel, the macro list editor, and the exclusions
 //! dialog without waiting for them (the editor without saving, by design; the edits of the
-//! exclusions dialog went to the worker as they came), save the hotkey changes left in the
-//! inbox, let the worker finish the commands sent and save what is
-//! unsaved (at most [`WORKER_FINISH_TIMEOUT`], so a change made just before is saved), remove
-//! the icon, and end the loop with 0, all inside the message: after `WM_ENDSESSION` the
+//! exclusions dialog went to the worker as they came), send the worker what is left in the
+//! inbox for it (the last hotkey change and the edits of the exclusions dialog that came just
+//! before the exit, `Tray::flush_inbox`), let the worker finish the commands sent and save
+//! what is unsaved (at most [`WORKER_FINISH_TIMEOUT`], so a change made just before is saved),
+//! remove the icon, and end the loop with 0, all inside the message: after `WM_ENDSESSION` the
 //! process may end at any time. Any other way out stops the hook too: when the window is
 //! destroyed while the menu is open (a `WM_CLOSE` reaches `DefWindowProcW` during its modal
 //! loop), the handler takes the same steps when it is freed; when the tray cannot start, the
@@ -890,9 +891,9 @@ impl<S: TrayShell, V: TrayServices> TrayWindow<S, V> {
                 Effect::Worker { seq, command } => self.services.send(seq, command),
                 Effect::StopTyping => self.services.stop_typing(),
                 Effect::DismissNotices => self.shell.dismiss_notices(),
-                Effect::FlushHotkeys => {
+                Effect::FlushInbox => {
                     let events = self.take_events();
-                    let next = self.tray.flush_hotkeys(events);
+                    let next = self.tray.flush_inbox(events);
                     self.run(owner, next);
                 }
                 Effect::FinishWorker => self.services.finish_worker(),
@@ -967,7 +968,7 @@ impl<S: TrayShell, V: TrayServices> Drop for TrayWindow<S, V> {
             self.shell.close_macro_list();
             self.shell.close_exclusions();
             let events = self.take_events();
-            for effect in self.tray.flush_hotkeys(events) {
+            for effect in self.tray.flush_inbox(events) {
                 if let Effect::Worker { seq, command } = effect {
                     self.services.send(seq, command);
                 }
@@ -1810,5 +1811,88 @@ impl Prompter for SilentOffScreen {
 
     fn ask(&mut self, _dialog: &Dialog<'_>, _prompt: &Prompt) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+    use crate::exclusions::default_apps;
+
+    const WAIT: Duration = Duration::from_secs(10);
+
+    /// A notification area that the test never asks anything.
+    struct NoArea;
+
+    impl NotifyArea for NoArea {
+        fn add(&mut self, _owner: HWND, _icon: IconState) -> bool {
+            false
+        }
+
+        fn modify(&mut self, _icon: IconState) -> bool {
+            false
+        }
+
+        fn delete(&mut self) {}
+    }
+
+    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + WAIT;
+        while !done() {
+            assert!(Instant::now() < deadline, "{what} in time");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The exclusions dialog counts as up once its window took a message after `init` (the
+    /// refresh that `init` posts itself): an opening that can no longer reach it then starts a
+    /// new dialog, instead of taking the one that is gone for one still starting. The dialog
+    /// of the test (off every monitor, never activated, through the link of the real shell)
+    /// reports no close, so it is gone without being marked closed, as in the moment between
+    /// the end of a dialog and its `on_close`.
+    #[test]
+    fn an_exclusions_dialog_that_was_up_and_is_gone_is_replaced() {
+        let (inbox, events) = mpsc::channel();
+        let mut shell = ShellTray::with_area(NoArea, inbox.clone(), WakeTarget::default())
+            .with_off_screen_dialogs();
+        let state = ExclusionsState {
+            apps: default_apps(),
+            can_save: true,
+        };
+        let shared = shown(state.clone(), 1);
+        let link = TrayLink {
+            shared: Arc::clone(&shared),
+            inbox,
+            wake: Arc::clone(&shell.wake),
+        };
+        let dialog = spawn_exclusions_with(
+            Placement::OffScreen,
+            SilentOffScreen,
+            RunningPrograms,
+            link,
+            || {},
+        )
+        .unwrap();
+        wait_until("the dialog was up", || lock(&shared).up);
+        dialog.dismiss();
+        wait_until("the dialog was gone", || dialog.is_closed());
+        assert!(!lock(&shared).closed);
+        shell.exclusions = Some(OpenDialog {
+            dialog,
+            shared: Arc::clone(&shared),
+        });
+
+        shell.open_exclusions(2, state);
+        assert!(
+            lock(&shared).closed,
+            "the dialog that is gone counts as closed"
+        );
+        let open = shell.exclusions.as_ref().expect("a new dialog");
+        assert!(!Arc::ptr_eq(&open.shared, &shared));
+        assert_eq!(lock(&open.shared).serial, 2);
+        shell.close_exclusions();
+        assert_eq!(events.recv_timeout(WAIT), Ok(Event::ExclusionsClosed(2)));
     }
 }

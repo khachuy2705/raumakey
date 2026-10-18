@@ -1198,6 +1198,44 @@ fn hotkey_changes_left_at_the_exit_are_saved_before_the_worker_finishes() {
     });
 }
 
+/// An edit of the exclusions dialog still in the inbox at the exit reaches the worker before
+/// it finishes, like the last hotkey change.
+#[test]
+fn exclusions_edits_left_at_the_exit_reach_the_worker_before_it_finishes() {
+    on_fresh_thread(|| {
+        let log = Log::default();
+        let (services, _feed) = FakeServices::new(&log);
+        let add = ExclusionsRequest::Add(ExeName::new("putty.exe").unwrap());
+        let services = services.on_stop(vec![
+            Event::Exclusions(add.clone()),
+            Event::ExclusionsClosed(1),
+        ]);
+        let window = window_for(
+            "test-tray-flush-exclusions",
+            tray(English),
+            FakeShell::new(&log),
+            services,
+            NO_TICKS,
+        );
+        post(&window, WM_CLOSE, 0, 0);
+        assert_eq!(run_loop_with_watchdog(), LOOP_EXIT_CODE);
+        assert_eq!(
+            log.take(),
+            [
+                Call::Show(icon(English, InputMethod::Telex)),
+                Call::StopTyping,
+                Call::Dismiss,
+                Call::ClosePanel,
+                Call::CloseMacroList,
+                Call::CloseExclusions,
+                Call::Send(1, WorkerCommand::Exclusions(add)),
+                Call::FinishWorker,
+                Call::Remove,
+            ]
+        );
+    });
+}
+
 /// A save error is shown in a message box; the "yes" to its recovery question comes back
 /// through the inbox and goes to the worker.
 #[test]

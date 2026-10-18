@@ -1,15 +1,16 @@
 //! The exclusions dialog (`exclusions_dialog`, D48): its template, texts, the descriptions and
-//! cells of its rows, the entries of its list of running applications, what "Thêm" makes of
-//! the text typed, pasted, or chosen, and the row selected after a refresh
-//! (host-independent); on Windows, the real dialog on a thread of its own, off every monitor.
+//! cells of its rows, the entries of its list of running applications and what a choice of one
+//! puts into the edit, what "Thêm" makes of the text typed, pasted, or chosen, and the row
+//! selected after a refresh (host-independent); on Windows, the real dialog on a thread of its
+//! own, off every monitor, never activated.
 
 use raumakey_controller::exclusions::{ExclusionsState, default_apps};
 use raumakey_controller::exclusions_dialog::{
-    APP_LABEL, COLUMNS, DEFAULTS_QUESTION, DIALOG_SIZE, EXCLUSIONS_REFRESH, Entered, ID_ADD,
-    ID_APP, ID_BROWSE, ID_DEFAULTS, ID_INTRO, ID_LIST, ID_NOT_SAVED, ID_REFRESH, ID_REMOVE, INTRO,
-    INVALID_NAME, NOT_SAVED, PROGRAMS, Program, TITLE, builtin_description, can_add,
-    defaults_prompt, entered, invalid_name_prompt, not_saved_text, program_entry, row_cells,
-    selection_after, template,
+    APP_LABEL, BROWSE_FAILED, COLUMNS, DEFAULTS_QUESTION, DIALOG_SIZE, EXCLUSIONS_REFRESH, Entered,
+    ID_ADD, ID_APP, ID_BROWSE, ID_DEFAULTS, ID_INTRO, ID_LIST, ID_NOT_SAVED, ID_REFRESH, ID_REMOVE,
+    INTRO, INVALID_NAME, NOT_SAVED, PROGRAMS, Program, TITLE, browse_error_prompt,
+    builtin_description, can_add, defaults_prompt, entered, invalid_name_prompt, neighbour,
+    not_saved_text, picked_text, program_entry, row_cells, selection_after, template,
 };
 use raumakey_controller::macro_dialog::{Placement, PromptKind};
 use raumakey_model::host::ExeName;
@@ -17,6 +18,7 @@ use raumakey_windows::dialog_box::is_reserved;
 use raumakey_windows::dialog_template::{
     Control, ControlClass, DROPPED_LIST_HEIGHT, DialogRect, IDCANCEL, STATIC_ID, styles,
 };
+use raumakey_windows::error::WinError;
 use raumakey_windows::window::is_postable;
 
 /// Common Controls 6 for the dialog, as `raumakey.exe`'s manifest asks for it; shared with the
@@ -62,6 +64,7 @@ fn the_texts_are_raumakeys_own_vietnamese() {
         NOT_SAVED,
         "Không có thư mục để lưu cấu hình, nên thay đổi chỉ có hiệu lực tới khi Raumakey thoát."
     );
+    assert_eq!(BROWSE_FAILED, "Không mở được hộp thoại chọn tệp");
     assert_eq!(PROGRAMS.len(), 1);
     assert_eq!(PROGRAMS[0].label, "Chương trình (*.exe)");
     assert_eq!(PROGRAMS[0].patterns, "*.exe");
@@ -81,6 +84,13 @@ fn the_prompts_are_a_warning_and_a_question() {
     let question = defaults_prompt();
     assert_eq!(question.kind(), PromptKind::Question);
     assert_eq!(question.text(), DEFAULTS_QUESTION);
+    // The Open dialog could not be shown: why, as the notices tell an error of Windows.
+    let failed = browse_error_prompt(&WinError::new(0x8004_0002_u32 as i32, "GetOpenFileNameW"));
+    assert_eq!(failed.kind(), PromptKind::Warning);
+    assert_eq!(
+        failed.text(),
+        "Không mở được hộp thoại chọn tệp (lỗi 0x80040002 tại GetOpenFileNameW)."
+    );
 }
 
 /// The line under "Thêm" says that nothing is saved without a folder, and nothing otherwise.
@@ -226,27 +236,93 @@ fn the_text_of_the_edit_is_normalized_as_the_file_is_read() {
     );
 }
 
+fn program(name: &str, description: Option<&str>) -> Program {
+    Program {
+        exe: exe(name),
+        description: description.map(str::to_owned),
+    }
+}
+
+/// An entry of the running applications stands for its executable as the file reads it: a
+/// process image without an extension (`tool`) is added as `tool.exe`, and the edit shows it
+/// so once it is chosen; an image whose name the file cannot hold is put into the edit as it
+/// is, and "Thêm" explains it.
+#[test]
+fn a_running_application_is_taken_as_the_file_reads_its_name() {
+    let running = vec![
+        program("tool", None),
+        program("helper", Some("Trợ giúp")),
+        program("...", None),
+    ];
+    assert_eq!(
+        entered("tool", &[], &running),
+        Entered::New(exe("tool.exe"))
+    );
+    assert_eq!(
+        entered("helper \u{2013} Trợ giúp", &[], &running),
+        Entered::New(exe("helper.exe"))
+    );
+    assert_eq!(
+        entered("helper \u{2013} Trợ giúp", &[exe("helper.exe")], &running),
+        Entered::Listed(0)
+    );
+    assert_eq!(entered("...", &[], &running), Entered::Invalid);
+    assert_eq!(picked_text(&running[0]), "tool.exe");
+    assert_eq!(picked_text(&running[1]), "helper.exe");
+    assert_eq!(picked_text(&running[2]), "...");
+    assert_eq!(
+        picked_text(&program("mstsc.exe", Some("Remote Desktop Connection"))),
+        "mstsc.exe"
+    );
+}
+
 // ---- Selection after a refresh ----
 
 /// After a refresh the row of the application just added is selected once it is listed;
-/// otherwise the application selected before stays selected where it is now, or nothing is.
+/// otherwise the application selected before stays selected where it is now; otherwise the
+/// neighbour of the application just removed, which took its place; or nothing.
 #[test]
 fn the_selection_follows_the_application_across_a_refresh() {
     let apps = vec![exe("msrdc.exe"), exe("putty.exe"), exe("notepad.exe")];
+    let (putty, notepad, gone) = (exe("putty.exe"), exe("notepad.exe"), exe("gone.exe"));
     assert_eq!(
-        selection_after(Some(&exe("putty.exe")), Some(&exe("notepad.exe")), &apps),
+        selection_after(Some(&putty), Some(&notepad), None, &apps),
         Some(2)
     );
     assert_eq!(
-        selection_after(Some(&exe("putty.exe")), Some(&exe("gone.exe")), &apps),
+        selection_after(Some(&putty), Some(&gone), None, &apps),
         Some(1)
     );
+    assert_eq!(selection_after(Some(&putty), None, None, &apps), Some(1));
     assert_eq!(
-        selection_after(Some(&exe("putty.exe")), None, &apps),
+        selection_after(Some(&exe("mstsc.exe")), None, None, &apps),
+        None
+    );
+    assert_eq!(selection_after(None, None, None, &apps), None);
+    // The application removed is gone: its neighbour is selected.
+    assert_eq!(
+        selection_after(Some(&gone), None, Some(&notepad), &apps),
+        Some(2)
+    );
+    // Not yet gone, or the user chose another row meanwhile: that row stays.
+    assert_eq!(
+        selection_after(Some(&putty), None, Some(&notepad), &apps),
         Some(1)
     );
-    assert_eq!(selection_after(Some(&exe("mstsc.exe")), None, &apps), None);
-    assert_eq!(selection_after(None, None, &apps), None);
+    assert_eq!(selection_after(None, None, Some(&gone), &apps), None);
+}
+
+/// The row that takes the place of a removed one: the next, else the one before it (the last
+/// row was removed), else none (it was the only one).
+#[test]
+fn the_neighbour_of_a_removed_row_takes_its_place() {
+    let apps = vec![exe("a.exe"), exe("b.exe"), exe("c.exe")];
+    assert_eq!(neighbour(&apps, 0), Some(&apps[1]));
+    assert_eq!(neighbour(&apps, 1), Some(&apps[2]));
+    assert_eq!(neighbour(&apps, 2), Some(&apps[1]));
+    assert_eq!(neighbour(&apps, 3), None, "no such row");
+    assert_eq!(neighbour(&apps[..1], 0), None);
+    assert_eq!(neighbour(&[], 0), None);
 }
 
 // ---- The template ----
@@ -456,13 +532,14 @@ fn state(apps: &[&str], can_save: bool) -> ExclusionsState {
 
 /// The real dialog on a thread of its own (`spawn_exclusions_with`, off every monitor, never
 /// activated), driven from the test thread with `SendMessageW` as Windows drives it; its
-/// questions are answered from a script, the Open dialog answers a scripted path, the running
-/// programs are made up, and its link to the tray is a shared state and a channel. Every wait
-/// has a timeout.
+/// questions are answered from a script, the Open dialog answers a scripted path (or error),
+/// the running programs are made up, and its link to the tray is a shared state and a
+/// channel. Every wait has a timeout.
 #[cfg(windows)]
 mod win {
     use std::collections::{BTreeMap, VecDeque};
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::{self, Receiver, Sender};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -471,13 +548,14 @@ mod win {
     use raumakey_controller::exclusions_dialog::{
         DEFAULTS_QUESTION, EXCLUSIONS_REFRESH, ExclusionsLink, ID_ADD, ID_APP, ID_BROWSE,
         ID_DEFAULTS, ID_INTRO, ID_LIST, ID_NOT_SAVED, ID_REFRESH, ID_REMOVE, INTRO, INVALID_NAME,
-        NOT_SAVED, Program, Programs, TITLE, program_entry, spawn_exclusions_with,
+        NOT_SAVED, Program, Programs, TITLE, browse_error_prompt, program_entry,
+        spawn_exclusions_with,
     };
     use raumakey_controller::macro_dialog::{Placement, Prompt, PromptKind, Prompter};
     use raumakey_model::host::ExeName;
-    use raumakey_windows::dialog_box::notifications::CBN_SELCHANGE;
     use raumakey_windows::dialog_box::{DetachedDialog, Dialog};
     use raumakey_windows::dialog_template::IDCANCEL;
+    use raumakey_windows::error::{E_ABORT, WinError, WinResult};
     use raumakey_windows::file_dialog::FileFilter;
     use raumakey_windows::strings::until_nul;
     use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
@@ -487,19 +565,29 @@ mod win {
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
     use windows::Win32::UI::WindowsAndMessaging::{
-        BM_CLICK, CB_GETCOUNT, CB_GETLBTEXT, CB_GETLBTEXTLEN, CB_SETCURSEL, GW_CHILD, GetDlgItem,
-        GetWindow, GetWindowRect, IsWindow, IsWindowVisible, SMTO_NORMAL, SWP_NOACTIVATE,
-        SWP_NOSIZE, SWP_NOZORDER, SendMessageTimeoutW, SetWindowPos, WM_CHAR, WM_COMMAND,
-        WM_GETTEXT, WM_GETTEXTLENGTH, WM_NULL,
+        BM_CLICK, CB_GETCOUNT, CB_GETLBTEXT, CB_GETLBTEXTLEN, GUITHREADINFO, GW_CHILD, GetDlgItem,
+        GetGUIThreadInfo, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsWindow,
+        IsWindowVisible, SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+        SendMessageTimeoutW, SetWindowPos, WM_CHAR, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN,
+        WM_NEXTDLGCTL, WM_NULL,
     };
     use windows::core::PWSTR;
 
     use super::common_controls_v6::{CCM_GETVERSION, CommonControls6};
-    use super::{exe, state};
+    use super::{exe, program, state};
 
     const WAIT: Duration = Duration::from_secs(30);
     /// Milliseconds a sent message may take before the test fails.
     const SEND_TIMEOUT_MS: u32 = 30_000;
+
+    /// `VK_DOWN`.
+    const VK_DOWN: u16 = 0x28;
+    /// `VK_DELETE`.
+    const VK_DELETE: u16 = 0x2E;
+    /// The scan codes of the arrow down and Delete keys of the navigation block, in the
+    /// `lParam` of their `WM_KEYDOWN` (extended keys).
+    const SCAN_DOWN: isize = 0x0150_0001;
+    const SCAN_DELETE: isize = 0x0153_0001;
 
     /// What the dialog did, reported from its thread.
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -529,11 +617,15 @@ mod win {
     }
 
     /// Moves the dialog off-screen before it is shown, answers questions from `answers` (then
-    /// "no") and the Open dialog with `chosen`, without showing anything.
+    /// "no") and the Open dialog with `chosen`, without showing anything. While the Open
+    /// dialog is "open", the tray sends `meanwhile`: the shared state changes, and the refresh
+    /// posted then is lost (as one posted during a modal loop is).
     struct FakePrompter {
         events: Sender<Event>,
         answers: Answers,
-        chosen: Option<PathBuf>,
+        chosen: WinResult<Option<PathBuf>>,
+        meanwhile: Option<ExclusionsState>,
+        shared: Shared,
     }
 
     impl Prompter for FakePrompter {
@@ -567,12 +659,15 @@ mod win {
             &mut self,
             _dialog: &Dialog<'_>,
             filters: &[FileFilter<'_>],
-        ) -> Option<PathBuf> {
+        ) -> WinResult<Option<PathBuf>> {
             let patterns = filters
                 .iter()
                 .map(|filter| format!("{} | {}", filter.label, filter.patterns))
                 .collect();
             let _ = self.events.send(Event::Browsed(patterns));
+            if let Some(state) = self.meanwhile.take() {
+                *self.shared.lock().unwrap() = state;
+            }
             self.chosen.clone()
         }
     }
@@ -596,14 +691,25 @@ mod win {
     }
 
     /// The tray as the dialog sees it: the shared state, and the requests into a channel.
+    /// `starting` is what the tray sends while the dialog starts: the shared state changes
+    /// once the dialog read it the first time, and the refresh posted then is refused (the
+    /// dialog's window is not published yet). `reads` counts the reads of the state.
     struct FakeLink {
         state: Shared,
         events: Sender<Event>,
+        starting: Option<ExclusionsState>,
+        reads: Arc<AtomicUsize>,
     }
 
     impl ExclusionsLink for FakeLink {
         fn state(&mut self) -> ExclusionsState {
-            self.state.lock().unwrap().clone()
+            let mut shared = self.state.lock().unwrap();
+            let current = shared.clone();
+            if let Some(next) = self.starting.take() {
+                *shared = next;
+            }
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            current
         }
 
         fn request(&mut self, request: ExclusionsRequest) {
@@ -622,6 +728,7 @@ mod win {
         answers: Answers,
         shared: Shared,
         running: Running,
+        reads: Arc<AtomicUsize>,
         hwnd: HWND,
     }
 
@@ -629,13 +736,6 @@ mod win {
         fn drop(&mut self) {
             // A failed test leaves no dialog behind.
             self.dialog.dismiss();
-        }
-    }
-
-    fn program(name: &str, description: Option<&str>) -> Program {
-        Program {
-            exe: exe(name),
-            description: description.map(str::to_owned),
         }
     }
 
@@ -647,17 +747,50 @@ mod win {
         ]
     }
 
+    /// How a test opens the dialog (see [`FakePrompter`] and [`FakeLink`]).
+    struct Setup {
+        chosen: WinResult<Option<PathBuf>>,
+        meanwhile: Option<ExclusionsState>,
+        starting: Option<ExclusionsState>,
+        running: Vec<Program>,
+    }
+
+    impl Default for Setup {
+        fn default() -> Self {
+            Self {
+                chosen: Ok(None),
+                meanwhile: None,
+                starting: None,
+                running: running_programs(),
+            }
+        }
+    }
+
     /// Opens the dialog on `initial`, the Open dialog answering `chosen`, and waits until it
     /// is shown (far off-screen).
     fn open(initial: ExclusionsState, chosen: Option<PathBuf>) -> Opened {
+        open_with(
+            initial,
+            Setup {
+                chosen: Ok(chosen),
+                ..Setup::default()
+            },
+        )
+    }
+
+    /// [`open`] as `setup` has it.
+    fn open_with(initial: ExclusionsState, setup: Setup) -> Opened {
         let (sender, events) = mpsc::channel();
         let answers: Answers = Arc::default();
         let shared: Shared = Arc::new(Mutex::new(initial));
-        let running: Running = Arc::new(Mutex::new(running_programs()));
+        let running: Running = Arc::new(Mutex::new(setup.running));
+        let reads = Arc::new(AtomicUsize::new(0));
         let prompter = FakePrompter {
             events: sender.clone(),
             answers: Arc::clone(&answers),
-            chosen,
+            chosen: setup.chosen,
+            meanwhile: setup.meanwhile,
+            shared: Arc::clone(&shared),
         };
         let programs = FakePrograms {
             running: Arc::clone(&running),
@@ -669,6 +802,8 @@ mod win {
         let link = FakeLink {
             state: Arc::clone(&shared),
             events: sender.clone(),
+            starting: setup.starting,
+            reads: Arc::clone(&reads),
         };
         let closed = sender;
         let dialog = {
@@ -702,6 +837,7 @@ mod win {
             answers,
             shared,
             running,
+            reads,
             hwnd,
         }
     }
@@ -716,6 +852,17 @@ mod win {
         fn refresh(&self, state: ExclusionsState) {
             *self.shared.lock().unwrap() = state;
             assert!(self.dialog.post(EXCLUSIONS_REFRESH, 0, 0));
+        }
+
+        /// [`refresh`](Self::refresh), and waits until the dialog has shown it.
+        fn refreshed(&self, state: ExclusionsState) {
+            let before = self.reads.load(Ordering::SeqCst);
+            self.refresh(state);
+            wait_until("the refresh was shown", || {
+                self.reads.load(Ordering::SeqCst) > before
+            });
+            // The read comes before the rows are set: the dialog answers once it is done.
+            send(self.hwnd, WM_NULL, 0, 0);
         }
 
         /// Waits for the close and returns the events before it.
@@ -758,6 +905,12 @@ mod win {
         unsafe { GetDlgItem(Some(dialog), i32::from(id)) }.unwrap()
     }
 
+    /// The edit of the combo box: its only child.
+    fn combo_edit(dialog: HWND) -> HWND {
+        // SAFETY: only reads the window list.
+        unsafe { GetWindow(item(dialog, ID_APP), GW_CHILD) }.unwrap()
+    }
+
     fn text(hwnd: HWND) -> String {
         let length = send(hwnd, WM_GETTEXTLENGTH, 0, 0) as usize;
         let mut buffer = vec![0_u16; length + 1];
@@ -769,20 +922,44 @@ mod win {
         text(item(dialog, id))
     }
 
-    /// Types `typed` at the end of the empty edit of the combo box (its only child) as the
-    /// keyboard does (`WM_CHAR`): the edit reports each change to the combo box, which reports
+    /// Types `typed` at the end of the empty edit of the combo box as the keyboard does
+    /// (`WM_CHAR`): the edit reports each change to the combo box, which reports
     /// `CBN_EDITCHANGE` to the dialog. (A `WM_SETTEXT`, to the combo box or its edit, reports
     /// nothing, as the handler's own changes do not.)
     fn type_into_edit(dialog: HWND, typed: &str) {
-        // SAFETY: only reads the window list.
-        let edit = unsafe { GetWindow(item(dialog, ID_APP), GW_CHILD) }.unwrap();
+        let edit = combo_edit(dialog);
         for unit in typed.encode_utf16() {
             send(edit, WM_CHAR, usize::from(unit), 1);
         }
     }
 
+    /// The key `key` (with the `lParam` of its scan code) pressed in `window`, as the keyboard
+    /// sends it to the window with the focus.
+    fn press(window: HWND, key: u16, scan: isize) {
+        send(window, WM_KEYDOWN, usize::from(key), scan);
+    }
+
     fn click(dialog: HWND, id: u16) {
         send(item(dialog, id), BM_CLICK, 0, 0);
+    }
+
+    /// Gives control `id` the keyboard focus, as a click with the mouse on it does (the dialog
+    /// manager's `WM_NEXTDLGCTL`).
+    fn focus_on(dialog: HWND, id: u16) {
+        send(dialog, WM_NEXTDLGCTL, item(dialog, id).0 as usize, 1);
+    }
+
+    /// The window with the keyboard focus of the dialog's thread (null for none).
+    fn focus_of(dialog: HWND) -> HWND {
+        // SAFETY: only reads the thread of a window.
+        let thread = unsafe { GetWindowThreadProcessId(dialog, None) };
+        let mut info = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: `info` is a valid out buffer with its size set.
+        unsafe { GetGUIThreadInfo(thread, &mut info) }.unwrap();
+        info.hwndFocus
     }
 
     fn is_enabled(dialog: HWND, id: u16) -> bool {
@@ -872,6 +1049,10 @@ mod win {
         }
     }
 
+    fn browsed() -> Event {
+        Event::Browsed(vec!["Chương trình (*.exe) | *.exe".to_owned()])
+    }
+
     fn defaults() -> ExclusionsState {
         state(
             &["mstsc.exe", "msrdc.exe", "rdcman.exe", "vmconnect.exe"],
@@ -908,6 +1089,7 @@ mod win {
                 .collect::<Vec<_>>()
         );
         assert_eq!(label(hwnd, ID_APP), "");
+        assert_eq!(focus_of(hwnd), combo_edit(hwnd), "the edit has the focus");
         assert_eq!(label(hwnd, ID_INTRO).replace('\n', " "), INTRO);
         assert_eq!(label(hwnd, ID_NOT_SAVED), "");
         // Off every monitor.
@@ -917,6 +1099,29 @@ mod win {
         assert!(frame.right < 0 && frame.bottom < 0, "{frame:?}");
         click(hwnd, IDCANCEL);
         assert_eq!(opened.closed(), [Event::Closing]);
+    }
+
+    /// A list the tray sends while the dialog is starting (its refresh is refused before the
+    /// dialog's window is published) is shown once the dialog is up.
+    #[test]
+    fn a_list_sent_while_the_dialog_starts_is_shown_once_it_is_up() {
+        let opened = open_with(
+            defaults(),
+            Setup {
+                starting: Some(state(&["putty.exe"], false)),
+                ..Setup::default()
+            },
+        );
+        let hwnd = opened.hwnd;
+        // `open` waited until the dialog was shown: what `init` posted itself came before.
+        assert_eq!(
+            rows(hwnd),
+            [[
+                "putty.exe".to_owned(),
+                "PuTTY: a free SSH client".to_owned()
+            ]]
+        );
+        assert_eq!(label(hwnd, ID_NOT_SAVED).replace('\n', " "), NOT_SAVED);
     }
 
     /// A name typed (here without `.exe`, in capitals) and "Thêm": one request to add the
@@ -935,6 +1140,9 @@ mod win {
         assert_eq!(label(hwnd, ID_APP), "");
         assert!(!is_enabled(hwnd, ID_ADD));
         assert_eq!(row_count(hwnd), 4, "the dialog changes no row itself");
+        // The tray shows the list again at once, before the worker answers: nothing moves.
+        opened.refreshed(defaults());
+        assert_eq!(selected(hwnd), -1);
         let mut added = defaults();
         added.apps.push(exe("putty.exe"));
         opened.refresh(added);
@@ -944,6 +1152,44 @@ mod win {
         assert_eq!(selected(hwnd), 4);
         assert!(is_enabled(hwnd, ID_REMOVE));
         assert_eq!(opened.waiting(), []);
+    }
+
+    /// A click on "Thêm" gives it the focus; once the name is sent and the edit emptied,
+    /// "Thêm" is disabled and the focus is in the edit, for the next name: never on the
+    /// disabled button, nor nowhere.
+    #[test]
+    fn after_a_click_on_add_the_focus_is_in_the_edit() {
+        let opened = open(defaults(), None);
+        let hwnd = opened.hwnd;
+        type_into_edit(hwnd, "putty");
+        focus_on(hwnd, ID_ADD);
+        assert_eq!(focus_of(hwnd), item(hwnd, ID_ADD));
+        click(hwnd, ID_ADD);
+        assert_eq!(
+            opened.waiting(),
+            [Event::Request(ExclusionsRequest::Add(exe("putty.exe")))]
+        );
+        assert!(!is_enabled(hwnd, ID_ADD));
+        assert_eq!(focus_of(hwnd), combo_edit(hwnd));
+    }
+
+    /// An application added that the tray's answer does not list (the edit was overtaken, by
+    /// a hand edit or another dialog) is given up at that answer: a later list that holds it
+    /// does not select it.
+    #[test]
+    fn an_added_application_that_the_answer_does_not_list_is_given_up() {
+        let opened = open(defaults(), None);
+        let hwnd = opened.hwnd;
+        type_into_edit(hwnd, "putty");
+        click(hwnd, ID_ADD);
+        assert_eq!(opened.waiting().len(), 1);
+        opened.refreshed(defaults());
+        opened.refresh(state(&["mstsc.exe"], true));
+        wait_until("the answer was shown", || row_count(hwnd) == 1);
+        assert_eq!(selected(hwnd), -1);
+        opened.refresh(state(&["mstsc.exe", "putty.exe"], true));
+        wait_until("the later list was shown", || row_count(hwnd) == 2);
+        assert_eq!(selected(hwnd), -1, "not selected any more");
     }
 
     /// A path of a listed application selects its row and sends nothing.
@@ -971,20 +1217,22 @@ mod win {
         assert_eq!(row_count(hwnd), 4);
     }
 
-    /// Choosing an entry of the list of running applications puts its executable into the
-    /// edit (not the entry with its description); "Thêm" then adds it.
+    /// Choosing an entry of the list of running applications with the keyboard (the arrow key
+    /// in the closed combo box) puts its executable into the edit, not the entry with its
+    /// description, which the combo box shows first; "Thêm" then adds it.
     #[test]
-    fn a_running_application_chosen_from_the_list_puts_its_executable_into_the_edit() {
+    fn a_running_application_chosen_with_the_keyboard_puts_its_executable_into_the_edit() {
         let opened = open(defaults(), None);
         let hwnd = opened.hwnd;
-        let combo = item(hwnd, ID_APP);
-        send(combo, CB_SETCURSEL, 1, 0);
-        let wparam = usize::from(ID_APP) | (usize::from(CBN_SELCHANGE) << 16);
-        send(hwnd, WM_COMMAND, wparam, combo.0 as isize);
-        wait_until("the choice was put into the edit", || {
-            label(hwnd, ID_APP) == "winword.exe"
+        press(combo_edit(hwnd), VK_DOWN, SCAN_DOWN);
+        wait_until("the first choice was put into the edit", || {
+            label(hwnd, ID_APP) == "notepad.exe"
         });
         assert!(is_enabled(hwnd, ID_ADD));
+        press(combo_edit(hwnd), VK_DOWN, SCAN_DOWN);
+        wait_until("the second choice was put into the edit", || {
+            label(hwnd, ID_APP) == "winword.exe"
+        });
         click(hwnd, ID_ADD);
         assert_eq!(
             opened.waiting(),
@@ -992,23 +1240,103 @@ mod win {
         );
     }
 
-    /// "Xoá" is enabled with a selection and asks to remove the selected application; a
-    /// refresh without it leaves nothing selected.
+    /// A running program whose image has no extension is chosen and added as the file reads
+    /// it: `tool.exe`.
     #[test]
-    fn remove_sends_the_selected_application() {
+    fn a_running_application_without_an_extension_is_added_as_the_file_reads_it() {
+        let opened = open_with(
+            defaults(),
+            Setup {
+                running: vec![program("tool", None)],
+                ..Setup::default()
+            },
+        );
+        let hwnd = opened.hwnd;
+        assert_eq!(combo_items(hwnd), ["tool"]);
+        press(combo_edit(hwnd), VK_DOWN, SCAN_DOWN);
+        wait_until("the choice was put into the edit", || {
+            label(hwnd, ID_APP) == "tool.exe"
+        });
+        click(hwnd, ID_ADD);
+        assert_eq!(
+            opened.waiting(),
+            [Event::Request(ExclusionsRequest::Add(exe("tool.exe")))]
+        );
+    }
+
+    /// "Xoá" is enabled with a selection and asks to remove the selected application, and keeps
+    /// the focus: once the tray's list no longer holds it, the row that took its place is
+    /// selected (the one before after the last row), so "Xoá" stays enabled and removes the
+    /// next one; once the list is empty, the focus goes to the edit before "Xoá" is disabled.
+    #[test]
+    fn remove_sends_the_selected_application_and_selects_its_neighbour() {
         let opened = open(defaults(), None);
         let hwnd = opened.hwnd;
         select(hwnd, 2);
         assert!(is_enabled(hwnd, ID_REMOVE));
+        focus_on(hwnd, ID_REMOVE);
         click(hwnd, ID_REMOVE);
         assert_eq!(
             opened.waiting(),
             [Event::Request(ExclusionsRequest::Remove(exe("rdcman.exe")))]
         );
+        // The tray shows the list again at once, before the worker answers: nothing moves.
+        opened.refreshed(defaults());
+        assert_eq!(selected(hwnd), 2);
+        // The answer: the row of vmconnect.exe took its place and is selected.
         opened.refresh(state(&["mstsc.exe", "msrdc.exe", "vmconnect.exe"], true));
-        wait_until("the refresh was shown", || row_count(hwnd) == 3);
-        assert_eq!(selected(hwnd), -1);
+        wait_until("the answer was shown", || row_count(hwnd) == 3);
+        assert_eq!(selected(hwnd), 2);
+        assert!(is_enabled(hwnd, ID_REMOVE));
+        assert_eq!(focus_of(hwnd), item(hwnd, ID_REMOVE));
+
+        // Again: the last row goes, and the one before it is selected.
+        click(hwnd, ID_REMOVE);
+        assert_eq!(
+            opened.waiting(),
+            [Event::Request(ExclusionsRequest::Remove(exe(
+                "vmconnect.exe"
+            )))]
+        );
+        opened.refresh(state(&["mstsc.exe", "msrdc.exe"], true));
+        wait_until("the second answer was shown", || row_count(hwnd) == 2);
+        assert_eq!(selected(hwnd), 1);
+        assert_eq!(focus_of(hwnd), item(hwnd, ID_REMOVE));
+
+        // Down to the only row: once it is gone, the focus is in the edit.
+        opened.refreshed(state(&["msrdc.exe"], true));
+        assert_eq!(selected(hwnd), 0);
+        click(hwnd, ID_REMOVE);
+        assert_eq!(
+            opened.waiting(),
+            [Event::Request(ExclusionsRequest::Remove(exe("msrdc.exe")))]
+        );
+        opened.refresh(state(&[], true));
+        wait_until("the empty list was shown", || row_count(hwnd) == 0);
         assert!(!is_enabled(hwnd, ID_REMOVE));
+        assert_eq!(focus_of(hwnd), combo_edit(hwnd));
+    }
+
+    /// The Delete key in the list removes the selected application, as "Xoá" does; with
+    /// nothing selected it does nothing, and other keys do nothing.
+    #[test]
+    fn the_delete_key_in_the_list_removes_the_selected_application() {
+        let opened = open(defaults(), None);
+        let hwnd = opened.hwnd;
+        let list = item(hwnd, ID_LIST);
+        press(list, VK_DELETE, SCAN_DELETE);
+        assert_eq!(opened.waiting(), []);
+        select(hwnd, 1);
+        press(list, VK_DOWN, SCAN_DOWN);
+        assert_eq!(opened.waiting(), []);
+        let row = usize::try_from(selected(hwnd)).unwrap();
+        press(list, VK_DELETE, SCAN_DELETE);
+        assert_eq!(
+            opened.waiting(),
+            [Event::Request(ExclusionsRequest::Remove(
+                defaults().apps[row].clone()
+            ))]
+        );
     }
 
     /// "Mặc định" asks first: "no" sends nothing, "yes" asks for the defaults.
@@ -1040,12 +1368,7 @@ mod win {
         let opened = open(defaults(), Some(chosen.clone()));
         let hwnd = opened.hwnd;
         click(hwnd, ID_BROWSE);
-        assert_eq!(
-            opened.waiting(),
-            [Event::Browsed(vec![
-                "Chương trình (*.exe) | *.exe".to_owned()
-            ])]
-        );
+        assert_eq!(opened.waiting(), [browsed()]);
         assert_eq!(label(hwnd, ID_APP), chosen.to_str().unwrap());
         assert!(is_enabled(hwnd, ID_ADD));
         click(hwnd, ID_ADD);
@@ -1061,6 +1384,70 @@ mod win {
         click(hwnd, ID_BROWSE);
         assert_eq!(opened.waiting().len(), 1);
         assert_eq!(label(hwnd, ID_APP), "đang gõ");
+    }
+
+    /// A refresh posted while the Open dialog was open did not reach the dialog: it shows the
+    /// shared state once the Open dialog is gone.
+    #[test]
+    fn after_the_open_dialog_the_dialog_shows_the_state_again() {
+        let chosen = PathBuf::from(r"C:\Tools\putty.exe");
+        let opened = open_with(
+            defaults(),
+            Setup {
+                chosen: Ok(Some(chosen.clone())),
+                meanwhile: Some(state(&["putty.exe"], true)),
+                ..Setup::default()
+            },
+        );
+        let hwnd = opened.hwnd;
+        click(hwnd, ID_BROWSE);
+        assert_eq!(opened.waiting(), [browsed()]);
+        assert_eq!(
+            rows(hwnd),
+            [[
+                "putty.exe".to_owned(),
+                "PuTTY: a free SSH client".to_owned()
+            ]]
+        );
+        assert_eq!(label(hwnd, ID_APP), chosen.to_str().unwrap());
+    }
+
+    /// An Open dialog that cannot be shown is explained in a warning owned by the dialog, with
+    /// the error; nothing else changes. One that failed because the dialog is being dismissed
+    /// tells nothing.
+    #[test]
+    fn an_open_dialog_that_cannot_be_shown_is_explained() {
+        let error = WinError::new(0x8004_0002_u32 as i32, "GetOpenFileNameW");
+        let opened = open_with(
+            defaults(),
+            Setup {
+                chosen: Err(error),
+                ..Setup::default()
+            },
+        );
+        let hwnd = opened.hwnd;
+        type_into_edit(hwnd, "đang gõ");
+        click(hwnd, ID_BROWSE);
+        assert_eq!(
+            opened.waiting(),
+            [
+                browsed(),
+                asked(PromptKind::Warning, browse_error_prompt(&error).text())
+            ]
+        );
+        assert_eq!(label(hwnd, ID_APP), "đang gõ");
+        assert_eq!(row_count(hwnd), 4);
+        drop(opened);
+
+        let opened = open_with(
+            defaults(),
+            Setup {
+                chosen: Err(WinError::new(E_ABORT, "GetOpenFileNameW")),
+                ..Setup::default()
+            },
+        );
+        click(opened.hwnd, ID_BROWSE);
+        assert_eq!(opened.waiting(), [browsed()]);
     }
 
     /// A refresh shows the list the tray sends, and, without a folder, the note that nothing
