@@ -1426,6 +1426,10 @@ Các quyết định ngày 2026-10-18 (thiết kế §22):
   tiếng Anh; mặc định là `mstsc.exe`, `msrdc.exe`, `rdcman.exe`, `vmconnect.exe`. `Settings` thêm
   vào đầu các quy tắc của snapshot một quy tắc `vietnamese = false`, `macros = false` cho mỗi exe.
   Biểu tượng hiện E khi ứng dụng ở foreground bị loại trừ (thiết kế §22.7).
+- **D48 — Hộp thoại ứng dụng loại trừ.** Nút "Ứng dụng loại trừ…" trong nhóm "Hệ thống" của bảng
+  cấu hình mở một hộp thoại riêng để thêm (gõ tên, chọn ứng dụng đang có cửa sổ, hoặc Duyệt… tệp
+  `.exe`), xoá và đặt lại danh sách `[exclusions] apps`. Mỗi thay đổi đi qua worker và được lưu
+  ngay; hộp thoại hiện danh sách mà tray gửi lại (thiết kế §22.8).
 
 ---
 
@@ -1495,7 +1499,7 @@ thủ công ở module `typing` và `desktop` của controller, và `GUIDE.md` �
 
 ## 17. Bảng cấu hình và danh sách gõ tắt (2026-10-18)
 
-Mục này theo dõi các task của D43–D47 (thiết kế §22). Mỗi task được làm trong một Git worktree
+Mục này theo dõi các task của D43–D48 (thiết kế §22). Mỗi task được làm trong một Git worktree
 riêng, theo TDD, được review độc lập rồi mới merge.
 
 ### 17.1 Task
@@ -1509,6 +1513,7 @@ riêng, theo TDD, được review độc lập rồi mới merge.
 | S5 | Ngắt dòng tiếng Việt | Thêm sau khi ảnh chụp bảng thật cho thấy GDI ngắt giữa chữ tiếng Việt: Raumakey tự ngắt dòng ở dấu cách cho nhãn nhiều dòng và mọi hộp thông báo; đóng đúng các hộp thông báo OK khi thoát |
 | S6 | Nháy đúp và biểu tượng khi loại trừ | D46; phần tray của D47: theo dõi cửa sổ foreground (`SetWinEventHook`), biểu tượng E và tooltip cho ứng dụng bị loại trừ |
 | S7 | Loại trừ ứng dụng | D47: bảng `[exclusions]` của `raumakey.toml` (giải mã từng trường, mặc định, ghi lại), nối vào chính sách của snapshot, kiểm chứng trên đường gõ |
+| S8 | Hộp thoại ứng dụng loại trừ | D48: sửa `[exclusions]` qua `Settings` và worker với đủ bảo đảm như thay đổi từ bảng; nút trong bảng; hộp thoại có danh sách, combo ứng dụng đang chạy, Duyệt…; liệt kê ứng dụng có cửa sổ và đọc `FileDescription` trong `raumakey-windows` |
 
 ### 17.2 Trạng thái
 

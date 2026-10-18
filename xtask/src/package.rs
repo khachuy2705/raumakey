@@ -200,8 +200,9 @@ Menu (nhấp chuột phải vào biểu tượng V/E)
 Loại trừ ứng dụng
   Trong các ứng dụng có tên ở mục [exclusions] của raumakey.toml, Raumakey
   luôn gõ tiếng Anh và biểu tượng hiện E. Mặc định gồm các ứng dụng điều
-  khiển máy từ xa như Remote Desktop Connection (mstsc.exe). Thêm hoặc bớt
-  tên tệp exe trong dòng apps = [...], rồi lưu raumakey.toml.
+  khiển máy từ xa như Remote Desktop Connection (mstsc.exe). Sửa danh sách
+  bằng nút \"Ứng dụng loại trừ…\" của bảng cấu hình, hoặc thêm, bớt tên tệp
+  exe trong dòng apps = [...] rồi lưu raumakey.toml.
 
 Gõ tắt (macro)
   Danh sách gõ tắt nằm trong file raumakey-macros.toml, cùng thư mục với
@@ -572,6 +573,8 @@ mod tests {
             "[exclusions]",
             "mstsc.exe",
             "luôn gõ tiếng Anh",
+            // The exclusions dialog (D48).
+            "Ứng dụng loại trừ…",
             // Macros.
             "raumakey-macros.toml",
             "GUIDE.md",

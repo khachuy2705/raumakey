@@ -221,6 +221,7 @@ Ctrl+Shift, chọn trong menu hay sửa tệp bằng tay, các ô trong bảng �
 | Gõ tắt | Danh sách gõ tắt… | Mở hộp thoại sửa danh sách gõ tắt (mục 5.5) | `raumakey-macros.toml` |
 | Hệ thống | Khởi động cùng Windows | Tạo hoặc xoá shortcut `Raumakey.lnk` trong thư mục Startup của bạn | `[system] startup` |
 | Hệ thống | Mở bảng này khi Raumakey chạy | Bỏ chọn nếu bạn không muốn bảng hiện mỗi lần khởi động (kể cả khi đăng nhập Windows) | `[system] show_panel_on_start` |
+| Hệ thống | Ứng dụng loại trừ… | Mở hộp thoại quản lý các ứng dụng luôn gõ tiếng Anh (mục 5.4) | `[exclusions] apps` |
 
 Các nút ở cuối bảng:
 
@@ -303,6 +304,21 @@ show_panel_on_start = true    # mở bảng cấu hình khi Raumakey chạy
 # Ứng dụng luôn gõ tiếng Anh: tên tệp exe, không phân biệt hoa thường
 apps = ["mstsc.exe", "msrdc.exe", "rdcman.exe", "vmconnect.exe"]
 ```
+
+**Hộp thoại "Ứng dụng loại trừ".** Cách dễ nhất để sửa danh sách: mở bảng cấu hình, bấm
+**Ứng dụng loại trừ…**.
+
+- Danh sách có hai cột: **Tệp chương trình** và **Mô tả** (tên mà chương trình tự ghi, khi
+  Raumakey tìm thấy nó đang chạy).
+- Thêm một ứng dụng theo một trong ba cách, rồi bấm **Thêm**:
+  - gõ hoặc dán tên vào ô **Ứng dụng:**, ví dụ `notepad` hay cả đường dẫn;
+  - mở danh sách của ô đó và chọn một ứng dụng đang có cửa sổ (bấm **Làm mới** nếu vừa mở ứng
+    dụng);
+  - bấm **Duyệt…** và chọn tệp `.exe`.
+- **Xoá** bỏ dòng đang chọn. **Mặc định** (hỏi lại trước) đặt lại bốn ứng dụng điều khiển máy từ
+  xa ở dưới.
+- Không có nút Lưu: mỗi thay đổi có hiệu lực và được ghi vào `raumakey.toml` ngay. Nếu bạn sửa tệp
+  bằng tay trong lúc hộp thoại mở, danh sách trong hộp thoại đổi theo.
 
 **Loại trừ ứng dụng.** Trong các ứng dụng có tên trong `[exclusions] apps`, Raumakey không biến đổi
 phím nào và không mở rộng gõ tắt, dù đang ở chế độ V. Biểu tượng hiện **E** khi một ứng dụng như
@@ -423,6 +439,10 @@ như mô tả và báo lại.
 | 28 | Click một lần vào biểu tượng, rồi click lần nữa sau khoảng một giây | Mỗi click đổi chế độ một lần; bảng không mở |
 | 29 | Ở chế độ V, mở Remote Desktop Connection (`mstsc.exe`) và gõ `tieengs vieetj` vào ô tên máy | Ra nguyên văn "tieengs vieetj"; biểu tượng là **E**, tooltip ghi `mstsc.exe` và "ứng dụng loại trừ"; chuyển sang Notepad thì biểu tượng là **V** và gõ ra "tiếng việt" |
 | 30 | Trong `raumakey.toml` đặt `apps = []`, lưu, đợi 2 giây, mở lại Remote Desktop Connection và gõ `tieengs` | Ra "tiếng"; biểu tượng là **V**. Thêm `"notepad.exe"` vào danh sách: trong Notepad biểu tượng là **E** và phím không bị biến đổi |
+| 31 | Mở bảng cấu hình, bấm **Ứng dụng loại trừ…** | Hộp thoại hiện bốn ứng dụng mặc định với mô tả; chữ không bị cắt |
+| 32 | Trong hộp thoại, gõ `notepad`, bấm **Thêm**; mở Notepad và gõ `tieengs` | Dòng `notepad.exe` xuất hiện; `raumakey.toml` có `notepad.exe`; trong Notepad biểu tượng là **E** và ra nguyên văn "tieengs" |
+| 33 | Chọn một ứng dụng đang mở trong danh sách của ô **Ứng dụng:**, rồi **Thêm**; sau đó **Duyệt…**, chọn một tệp `.exe`, **Thêm** | Cả hai ứng dụng được thêm |
+| 34 | Chọn dòng `notepad.exe`, bấm **Xoá**; rồi bấm **Mặc định**, chọn **Yes** | Notepad gõ lại được "tiếng"; danh sách về đúng bốn ứng dụng mặc định |
 
 ### 5.7 Dòng lệnh
 

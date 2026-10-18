@@ -751,6 +751,7 @@ quyết định D43–D45, kế hoạch §17 ghi task và trạng thái.
 |     không phải tiếng Việt         |  +- Hệ thống --------------------------+
 +-----------------------------------+  | [ ] Khởi động cùng Windows          |
                                        | [x] Mở bảng này khi Raumakey chạy   |
+                                       | [Ứng dụng loại trừ…]  (từ D48)      |
                                        +-------------------------------------+
 Mọi thay đổi có hiệu lực và được lưu ngay.
 Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml
@@ -945,5 +946,30 @@ apps = ["mstsc.exe", "msrdc.exe", "rdcman.exe", "vmconnect.exe"]
   phím trong luồng của cửa sổ foreground, không có thì lớp của chính cửa sổ foreground. Nhờ vậy
   một quy tắc có `window_class` cho biểu tượng và việc gõ cùng một kết quả. Watcher chỉ báo khi
   cửa sổ foreground đổi; focus chuyển bên trong một cửa sổ được tray thấy ở nhịp 2 giây kế tiếp.
-- Danh sách chỉ sửa trong tệp, như chủ dự án yêu cầu; sửa tay có hiệu lực sau khoảng 2 giây. Một
-  mục không phải tên exe hợp lệ bị bỏ qua và được báo theo đường dẫn schema (`exclusions.apps[2]`).
+- Ban đầu danh sách chỉ sửa trong tệp, như chủ dự án yêu cầu; từ D48 (§22.8) nó cũng được sửa trong
+  hộp thoại "Ứng dụng loại trừ". Sửa tay có hiệu lực sau khoảng 2 giây. Một mục không phải tên exe
+  hợp lệ bị bỏ qua và được báo theo đường dẫn schema (`exclusions.apps[2]`).
+
+### 22.8 Hộp thoại ứng dụng loại trừ (D48)
+
+- Chủ dự án muốn quản lý danh sách loại trừ (§22.7) trong một cửa sổ riêng, không chỉ bằng cách
+  sửa tệp. Ảnh hộp thoại "Special Cases" của EVKey chỉ dùng để hiểu nhu cầu; bố cục, câu chữ và
+  cách chọn ứng dụng của Raumakey là thiết kế riêng, và chỉ quản lý một việc: ứng dụng luôn gõ tiếng
+  Anh. Các tuỳ chọn riêng cho từng ứng dụng (luôn bật tiếng Việt, kiểu gõ hay bảng mã riêng) nằm
+  ngoài phạm vi.
+- Mở bằng nút **Ứng dụng loại trừ…** trong nhóm "Hệ thống" của bảng cấu hình.
+- Hộp thoại "Raumakey – Ứng dụng loại trừ" gồm:
+  - một dòng giải thích: trong các ứng dụng của danh sách, Raumakey luôn gõ tiếng Anh và không mở
+    rộng gõ tắt; mọi thay đổi có hiệu lực và được lưu ngay;
+  - danh sách hai cột, **Tệp chương trình** và **Mô tả**. Mô tả là `FileDescription` của chương
+    trình khi tìm thấy nó đang chạy; với bốn ứng dụng mặc định, Raumakey có sẵn tên sản phẩm;
+  - ô **Ứng dụng:** dạng combo nhập được: gõ hoặc dán tên, đường dẫn, hoặc chọn một ứng dụng đang
+    có cửa sổ (nút **Làm mới** đọc lại danh sách này); nút **Duyệt…** mở hộp thoại chọn tệp
+    `.exe`;
+  - các nút **Thêm**, **Xoá**, **Mặc định** (hỏi lại trước), **Đóng**.
+- Tên nhập vào được chuẩn hoá đúng như một mục của `[exclusions] apps` (`normalize_excluded_app`).
+  Tên không hợp lệ thì hộp thoại báo; tên đã có thì dòng đó được chọn.
+- Như bảng cấu hình, không có nút Lưu: mỗi lần thêm, xoá hay đặt lại đi qua tray tới worker,
+  được áp dụng và ghi ngay vào `raumakey.toml`; một thay đổi chưa lưu được vẫn có hiệu lực và được
+  thử lưu lại. Hộp thoại hiện danh sách mà tray gửi lại, nên cũng đổi theo khi tệp được sửa tay.
+- Hộp thoại chạy trên luồng riêng như bảng cấu hình; mỗi lúc chỉ có một; thoát Raumakey đóng nó.
