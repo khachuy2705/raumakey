@@ -87,6 +87,7 @@ fn options() -> impl Strategy<Value = EngineOptions> {
     (
         prop::sample::select(vec![
             InputMethod::Telex,
+            InputMethod::SimpleTelex,
             InputMethod::Vni,
             InputMethod::Viqr,
             InputMethod::UserDefined,
@@ -112,6 +113,7 @@ fn options() -> impl Strategy<Value = EngineOptions> {
             auto_case_macro: flags[7],
             user_keymap_id: Some(USER_MAP.to_owned()),
             context_limit_codepoints: limit,
+            charset: Default::default(),
         })
 }
 

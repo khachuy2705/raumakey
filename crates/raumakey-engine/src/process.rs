@@ -3,7 +3,7 @@
 use raumakey_model::error::EngineError;
 use raumakey_model::input::{InputEvent, InputKind};
 use raumakey_model::macros::{Boundary, CaseMode};
-use raumakey_model::options::{EngineOptions, Normalization};
+use raumakey_model::options::{EngineOptions, InputMethod, Normalization};
 use raumakey_model::transaction::EditTransaction;
 use raumakey_model::utf16;
 
@@ -255,6 +255,7 @@ fn character(request: &Request<'_>) -> Result<EngineResult, EngineError> {
             spell_check: options.spell_check,
             free_marking: options.free_marking,
             modern_tone: options.modern_tone,
+            standalone_horn: options.input_method != InputMethod::SimpleTelex,
         };
         match word::process_key(&prior.word, key, keymap.lookup(key), &ctx) {
             KeyOutcome::Boundary => boundary::commit(request, Boundary::Punctuation),

@@ -5,7 +5,7 @@ use raumakey_config::{
 use raumakey_model::host::ExeName;
 use raumakey_model::hotkey::{Hotkey, HotkeyConfig};
 use raumakey_model::keymap::{KeyAction, KeyBinding, KeyMap, Tone};
-use raumakey_model::options::{EngineOptions, InputMethod, Normalization};
+use raumakey_model::options::{EngineOptions, InputMethod, Normalization, OutputCharset};
 
 /// The example of plan §5.1 for `raumakey.toml` (`config.toml` in the plan), verbatim.
 const PLAN_EXAMPLE: &str = r#"version = 1
@@ -51,11 +51,13 @@ fn issue(path: &str, reason: IssueReason) -> FieldIssue {
 }
 
 #[test]
-fn defaults_mirror_engine_defaults_v1_and_default_hotkeys() {
+fn defaults_mirror_engine_defaults_v2_and_default_hotkeys() {
     let doc = ConfigDocument::defaults();
     assert_eq!(doc.version, 1);
     assert_eq!(doc.revision, 0);
-    assert_eq!(doc.engine_options(), EngineOptions::defaults_v1());
+    // D51: the product defaults are version 2, without spell checking.
+    assert_eq!(doc.engine_options(), EngineOptions::defaults_v2());
+    assert!(!doc.input.spell_check);
     assert_eq!(doc.hotkeys, HotkeyConfig::default());
     assert_eq!(doc.system.startup, StartupMode::None);
     assert!(doc.system.show_panel_on_start);
@@ -93,6 +95,7 @@ fn engine_options_convert_both_ways() {
         auto_case_macro: false,
         user_keymap_id: Some("mine".into()),
         context_limit_codepoints: 100,
+        charset: Default::default(),
     };
     let mut doc = ConfigDocument::defaults();
     doc.keymaps.push(KeyMap {
@@ -215,6 +218,65 @@ fn encoded_defaults_round_trip_and_start_with_version() {
     let back = ConfigDocument::decode(&text).unwrap();
     assert!(back.issues.is_empty());
     assert_eq!(back.document, doc);
+}
+
+/// D54: `[input] charset` names the charset the hook types in (`unicode` by default); a bad
+/// value is reported and the default applies.
+#[test]
+fn the_charset_is_read_written_and_checked() {
+    let defaults = ConfigDocument::defaults();
+    assert_eq!(defaults.input.charset, OutputCharset::Unicode);
+    assert!(
+        defaults.encode().unwrap().contains("charset = \"unicode\""),
+        "written on the first run"
+    );
+    let loaded = ConfigDocument::decode(
+        "version = 1
+[input]
+charset = \"vni-windows\"
+",
+    )
+    .unwrap();
+    assert!(loaded.issues.is_empty(), "{:?}", loaded.issues);
+    assert_eq!(loaded.document.input.charset, OutputCharset::VniWindows);
+    assert_eq!(
+        loaded.document.engine_options().charset,
+        OutputCharset::VniWindows
+    );
+    let text = loaded.document.encode().unwrap();
+    assert!(text.contains("charset = \"vni-windows\""), "{text}");
+    let bad = ConfigDocument::decode(
+        "version = 1
+[input]
+charset = \"klingon\"
+",
+    )
+    .unwrap();
+    assert_eq!(
+        bad.issues,
+        [issue("input.charset", IssueReason::InvalidValue)]
+    );
+    assert_eq!(bad.document.input.charset, OutputCharset::Unicode);
+}
+
+/// D53: `method = "simple-telex"` selects Simple Telex and is written back as it is.
+#[test]
+fn simple_telex_is_a_method_of_the_file() {
+    let loaded = ConfigDocument::decode(
+        "version = 1
+[input]
+method = \"simple-telex\"
+",
+    )
+    .unwrap();
+    assert!(loaded.issues.is_empty(), "{:?}", loaded.issues);
+    assert_eq!(loaded.document.input.method, InputMethod::SimpleTelex);
+    assert_eq!(
+        loaded.document.engine_options().input_method,
+        InputMethod::SimpleTelex
+    );
+    let text = loaded.document.encode().unwrap();
+    assert!(text.contains("method = \"simple-telex\""), "{text}");
 }
 
 #[test]

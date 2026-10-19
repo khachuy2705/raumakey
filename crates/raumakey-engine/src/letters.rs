@@ -26,8 +26,8 @@ pub(crate) struct Letter {
     pub(crate) upper: bool,
     /// Diacritic mark.
     pub(crate) mark: Mark,
-    /// Standalone `ư` produced by Telex `w`.
-    pub(crate) from_w: bool,
+    /// Standalone `ư` produced by Telex `w`: the key that typed it.
+    pub(crate) from_w: Option<char>,
 }
 
 impl Letter {
@@ -37,7 +37,7 @@ impl Letter {
             base: key.to_ascii_lowercase(),
             upper: key.is_ascii_uppercase(),
             mark: Mark::None,
-            from_w: false,
+            from_w: None,
         })
     }
 
@@ -47,7 +47,7 @@ impl Letter {
             base: 'u',
             upper: key.is_uppercase(),
             mark: Mark::Horn,
-            from_w: true,
+            from_w: Some(key),
         }
     }
 

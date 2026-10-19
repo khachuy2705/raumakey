@@ -26,7 +26,7 @@ use raumakey_model::hotkey::{Hotkey, HotkeyConfig, HotkeyKey};
 use raumakey_model::input::vk;
 use raumakey_model::keymap::{BaseVowel, KeyAction, KeyBinding, KeyMap, Tone};
 use raumakey_model::macros::{BoundaryPolicy, CasePolicy, MacroEntry, MacroId};
-use raumakey_model::options::{InputMethod, Normalization};
+use raumakey_model::options::{InputMethod, Normalization, OutputCharset};
 use raumakey_model::policy::{
     AppRule, CompatibilityConfig, NamedSet, ProbeRecord, RuleAction, SecureFieldMode, Transport,
 };
@@ -212,6 +212,7 @@ fn keymaps_with_extras() -> impl Strategy<Value = (Vec<KeyMap>, EntryExtras<Stri
 fn input_section() -> impl Strategy<Value = InputSection> {
     let methods = vec![
         InputMethod::Telex,
+        InputMethod::SimpleTelex,
         InputMethod::Vni,
         InputMethod::Viqr,
         InputMethod::UserDefined,
@@ -227,20 +228,24 @@ fn input_section() -> impl Strategy<Value = InputSection> {
         prop::option::of("[A-Za-z0-9._-]{1,64}"),
         select(forms),
         8u32..=128,
+        select(OutputCharset::ALL.to_vec()),
         toml_extensions(0),
     )
         .prop_map(
-            |(flags, method, user_keymap, normalization, context_limit, extensions)| InputSection {
-                enabled: flags[0],
-                method,
-                user_keymap,
-                normalization,
-                modern_tone: flags[1],
-                free_marking: flags[2],
-                spell_check: flags[3],
-                auto_restore_invalid: flags[4],
-                context_limit,
-                extensions,
+            |(flags, method, user_keymap, normalization, context_limit, charset, extensions)| {
+                InputSection {
+                    enabled: flags[0],
+                    method,
+                    user_keymap,
+                    normalization,
+                    modern_tone: flags[1],
+                    free_marking: flags[2],
+                    spell_check: flags[3],
+                    auto_restore_invalid: flags[4],
+                    context_limit,
+                    charset,
+                    extensions,
+                }
             },
         )
 }
@@ -440,14 +445,25 @@ fn rule_action() -> impl Strategy<Value = RuleAction> {
         prop::option::of(any::<bool>()),
         prop::option::of(any::<bool>()),
         prop::option::of(any::<u32>()),
+        prop::option::of(any::<bool>()),
     )
         .prop_map(
-            |(transport, reset_on_mouse, macros, vietnamese, max_delete_before)| RuleAction {
+            |(
                 transport,
                 reset_on_mouse,
                 macros,
                 vietnamese,
                 max_delete_before,
+                autocomplete_guard,
+            )| {
+                RuleAction {
+                    transport,
+                    reset_on_mouse,
+                    macros,
+                    vietnamese,
+                    max_delete_before,
+                    autocomplete_guard,
+                }
             },
         )
 }

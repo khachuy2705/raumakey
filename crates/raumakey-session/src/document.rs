@@ -21,12 +21,19 @@ use core::fmt;
 /// [`MAX_INSERT_UNITS`](raumakey_model::transaction::MAX_INSERT_UNITS).
 /// ([`new`](Self::new) is public so that tests of a port can build requests of their own.)
 ///
-/// `Debug` shows only the unit counts: the request carries document text.
+/// A request also says whether the host's policy sets the
+/// [`autocomplete_guard`](raumakey_model::policy::HostPolicy::autocomplete_guard) (D49): a
+/// port that edits blind, with Backspaces, then clears an inline completion the host may have
+/// selected after the caret before it deletes anything. A port that checks the text (TSF)
+/// ignores it, since such a selection already fails step 1.
+///
+/// `Debug` shows only the unit counts and the guard: the request carries document text.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct EditRequest<'a> {
     delete_before: u32,
     expected: &'a [u16],
     insert: &'a [u16],
+    autocomplete_guard: bool,
 }
 
 impl<'a> EditRequest<'a> {
@@ -41,6 +48,15 @@ impl<'a> EditRequest<'a> {
             delete_before: u32::try_from(expected.len()).unwrap_or(u32::MAX),
             expected,
             insert,
+            autocomplete_guard: false,
+        }
+    }
+
+    /// The same request, guarded against an inline completion when `guard` is set (D49).
+    pub fn with_autocomplete_guard(self, guard: bool) -> Self {
+        Self {
+            autocomplete_guard: guard,
+            ..self
         }
     }
 
@@ -59,6 +75,11 @@ impl<'a> EditRequest<'a> {
     pub fn insert(&self) -> &'a [u16] {
         self.insert
     }
+
+    /// Whether a blind port clears an inline completion of the host before deleting (D49).
+    pub fn autocomplete_guard(&self) -> bool {
+        self.autocomplete_guard
+    }
 }
 
 impl fmt::Debug for EditRequest<'_> {
@@ -66,6 +87,7 @@ impl fmt::Debug for EditRequest<'_> {
         f.debug_struct("EditRequest")
             .field("delete_before", &self.delete_before)
             .field("insert_units", &self.insert.len())
+            .field("autocomplete_guard", &self.autocomplete_guard)
             .finish()
     }
 }

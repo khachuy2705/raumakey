@@ -294,8 +294,10 @@
 //!     arrow keys move only among the check boxes of its own group ("Gõ tiếng Việt" alone,
 //!     "Cách gõ", "Gõ tắt", "Hệ thống"), never into the method list or onto a button, so the
 //!     method changes only in the list itself. Esc, Enter (with the focus on a check box),
-//!     "Đóng", and the close box each close the panel; nothing is asked and every change
-//!     stays saved.
+//!     "Thu nhỏ", and the close box each close the panel and leave the icon in the
+//!     notification area; nothing is asked and every change stays saved. "Đóng" (D50) exits
+//!     Raumakey as "Thoát" of the menu does: the panel and the icon go, typing is plain at
+//!     once, and the last change is in `raumakey.toml`.
 //! 27. **Exit and sign-out with the panel open:** "Thoát" from the menu and a sign-out each
 //!     close the panel at once with the controller (also with the "Mặc định" question open);
 //!     no hang. `taskkill /IM raumakey.exe` without `/F` is no exit: it sends `WM_CLOSE` only
@@ -427,8 +429,8 @@ use crate::exclusions_dialog::{
 use crate::macro_dialog::{MessageBoxes, Placement, Prompt, Prompter, spawn_macro_list_with};
 use crate::notice::{Notice, NoticeKind, panel_error_notice};
 use crate::panel::{
-    ControlValue, ID_METHOD, PANEL_REFRESH, PanelRequest, PanelState, PanelView, ValueKind,
-    confirmation, off_screen_panel_template, panel_template, request, value_kind,
+    ControlValue, ID_CHARSET, ID_METHOD, PANEL_REFRESH, PanelRequest, PanelState, PanelView,
+    ValueKind, confirmation, off_screen_panel_template, panel_template, request, value_kind,
 };
 use crate::run::{Desktop, Opened, ShortcutState, TypingStartError, shortcut_state};
 use crate::settings::{Settings, is_temporary_path};
@@ -1445,6 +1447,14 @@ impl PanelDialog {
         }
         // An item that is not there selects nothing.
         let _ = dialog.combo_select(ID_METHOD, view.method);
+        let same_charsets = self
+            .shown
+            .as_ref()
+            .is_some_and(|shown| shown.charsets == view.charsets);
+        if !same_charsets && dialog.combo_set_items(ID_CHARSET, &view.charsets).is_err() {
+            view.charsets.clear();
+        }
+        let _ = dialog.combo_select(ID_CHARSET, view.charset);
         for (id, text) in &view.texts {
             // Texts hold no NUL (paths and hotkey names); a refused one keeps the old text.
             let _ = dialog.set_text(*id, text);

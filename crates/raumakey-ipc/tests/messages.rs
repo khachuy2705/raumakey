@@ -629,7 +629,8 @@ fn the_compatibility_configuration_decodes_exactly_like_the_model_types() {
     let rules = r#"[
         {"exe": "a.exe"},
         {"exe": "B.EXE", "window_class": "W", "transport": "synthetic-key",
-         "reset_on_mouse": false, "macros": true, "vietnamese": false, "max_delete_before": 7},
+         "reset_on_mouse": false, "macros": true, "vietnamese": false, "max_delete_before": 7,
+         "autocomplete_guard": true},
         {"exe": "c.exe", "window_class": null, "transport": null,
          "future": {"nested": [1, "x"]}}
     ]"#;
@@ -643,11 +644,16 @@ fn the_compatibility_configuration_decodes_exactly_like_the_model_types() {
                 "rule": "#,
             rules,
             r#", "future": [1, 2, 3],
-                "named_set": [{"name": "s", "members": ["x.exe"], "action": {"macros": false}}],
+                "named_set": [{"name": "s", "members": ["x.exe"],
+                               "action": {"macros": false, "autocomplete_guard": false}}],
                 "probe": [{"exe": "p.exe", "probe_version": 1, "tsf_range_edit": true}]}"#,
         ]
         .concat(),
     ];
+    // D49: the guard reaches the model from both a rule and a named set.
+    let guarded: CompatibilityConfig = serde_json::from_str(&accepted[3]).unwrap();
+    assert_eq!(guarded.rules[1].action.autocomplete_guard, Some(true));
+    assert_eq!(guarded.named_sets[0].action.autocomplete_guard, Some(false));
     for compatibility in &accepted {
         let expected: CompatibilityConfig = serde_json::from_str(compatibility).unwrap();
         let body = runtime_body_with_compatibility(compatibility);
@@ -665,6 +671,7 @@ fn the_compatibility_configuration_decodes_exactly_like_the_model_types() {
         r#"{"rule": [{"exe": "a.exe", "transport": "warp"}]}"#,
         r#"{"rule": [{"exe": "a.exe", "max_delete_before": -1}]}"#,
         r#"{"rule": [{"exe": "a.exe", "reset_on_mouse": 1}]}"#,
+        r#"{"rule": [{"exe": "a.exe", "autocomplete_guard": "yes"}]}"#,
         r#"{"rule": [{"exe": "a.exe", "exe": "b.exe"}]}"#,
         r#"{"rule": [{"exe": "a.exe", "macros": true, "macros": false}]}"#,
         r#"{"rule": {"exe": "a.exe"}}"#,

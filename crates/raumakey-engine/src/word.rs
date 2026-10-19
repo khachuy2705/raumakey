@@ -20,6 +20,8 @@ pub(crate) struct Ctx {
     pub(crate) free_marking: bool,
     /// New tone placement.
     pub(crate) modern_tone: bool,
+    /// Telex `w` with no vowel to change types `ư` (every method but Simple Telex, D53).
+    pub(crate) standalone_horn: bool,
 }
 
 /// The current word: items, one word-level tone, and typing state.
@@ -96,6 +98,23 @@ impl Word {
                 .items
                 .iter()
                 .any(|item| item.letter().is_some_and(|l| l.mark != Mark::None))
+    }
+
+    /// True when the word passes the structure check (D52, [`syllable::has_shape`]): only
+    /// Vietnamese letters, one group of vowels, and a coda or none.
+    pub(crate) fn has_shape(&self) -> bool {
+        self.viet_letters()
+            .is_some_and(|letters| syllable::has_shape(&letters))
+    }
+
+    /// True when the word ends as a syllable without spell checking (D52): it has the
+    /// structure ([`Word::has_shape`]), and after its onset comes a rhyme of the syllable list
+    /// whose tone fits its coda ([`syllable::has_complete_rhyme`]).
+    pub(crate) fn has_complete_rhyme(&self) -> bool {
+        self.viet_letters().is_some_and(|letters| {
+            syllable::has_shape(&letters)
+                && syllable::has_complete_rhyme(&letters, self.tone.map(|(tone, _)| tone))
+        })
     }
 
     /// True for a complete Vietnamese syllable that obeys the tone/coda rule.
@@ -185,7 +204,7 @@ impl Word {
         if let Some(letter) = self.items.get_mut(index).and_then(Item::letter_mut) {
             letter.mark = mark;
             if mark != Mark::Horn {
-                letter.from_w = false;
+                letter.from_w = None;
             }
         }
     }
@@ -300,7 +319,7 @@ pub(crate) fn process_key(
         base.raw.push(key);
         return KeyOutcome::Changed(base);
     }
-    let literal = base.literal_mode || (ctx.spell_check && !base.class().is_valid());
+    let literal = base.literal_mode || !base.passes(ctx);
     if !literal {
         for &action in actions {
             match try_apply(&base, action, key, ctx) {
@@ -320,7 +339,15 @@ pub(crate) fn process_key(
     KeyOutcome::Changed(base)
 }
 
-/// Applies one action with the free-marking and spell-check gates.
+impl Word {
+    /// Whether keys may transform the word: it passes the structure check (D52) and, with
+    /// spell checking, is the beginning of a Vietnamese syllable.
+    fn passes(&self, ctx: &Ctx) -> bool {
+        self.has_shape() && (!ctx.spell_check || self.class().is_valid())
+    }
+}
+
+/// Applies one action with the free-marking, structure, and spell-check gates.
 fn try_apply(word: &Word, action: KeyAction, key: char, ctx: &Ctx) -> Outcome {
     let marks_allowed = ctx.free_marking || word.ends_in_cluster();
     let outcome = match action {
@@ -330,7 +357,10 @@ fn try_apply(word: &Word, action: KeyAction, key: char, ctx: &Ctx) -> Outcome {
         KeyAction::Circumflex if marks_allowed => circumflex_any(word, key),
         KeyAction::Breve if marks_allowed => breve(word, key),
         KeyAction::Horn if marks_allowed => horn(word, key),
-        KeyAction::HornOrBreve if !word.has_vowel() => standalone_u_horn(word, key),
+        KeyAction::HornOrBreve if !word.has_vowel() && ctx.standalone_horn => {
+            standalone_u_horn(word, key)
+        }
+        KeyAction::HornOrBreve if !word.has_vowel() => Outcome::NotApplicable,
         KeyAction::HornOrBreve if marks_allowed => horn_or_breve(word, key),
         KeyAction::Stroke if ctx.free_marking || word.is_bare_d() => stroke(word, key),
         _ => Outcome::NotApplicable,
@@ -338,10 +368,10 @@ fn try_apply(word: &Word, action: KeyAction, key: char, ctx: &Ctx) -> Outcome {
     match outcome {
         Outcome::Applied(mut next) => {
             next.reposition_tone(ctx.modern_tone);
-            if ctx.spell_check && !next.class().is_valid() {
-                Outcome::NotApplicable
-            } else {
+            if next.passes(ctx) {
                 Outcome::Applied(next)
+            } else {
+                Outcome::NotApplicable
             }
         }
         other => other,
@@ -485,13 +515,21 @@ fn horn(word: &Word, key: char) -> Outcome {
     fallback.map_or(Outcome::NotApplicable, Outcome::Applied)
 }
 
-/// Reverts the horn at `index`; a standalone `ư` (Telex `w`) is removed entirely.
+/// Reverts the horn at `index`. A standalone `ư` (Telex `w`) is removed entirely when it ends
+/// the word (`ww` is `w`); before other letters, the key that typed it comes back, so that no
+/// letter is lost (`wiw` stays `wiw`).
 fn remove_horn(word: &Word, index: usize) -> Word {
-    let standalone = word.letter_at(index).is_some_and(|l| l.from_w);
-    if !standalone {
+    let Some(key) = word.letter_at(index).and_then(|l| l.from_w) else {
         return word.with_mark(index, Mark::None);
-    }
+    };
     let mut next = word.clone();
+    if index + 1 < next.items.len() {
+        if let Some(item) = next.items.get_mut(index) {
+            *item = Item::literal(key);
+        }
+        next.tone = next.tone.filter(|&(_, at)| at != index);
+        return next;
+    }
     if index < next.items.len() {
         next.items.remove(index);
     }
@@ -552,6 +590,7 @@ mod tests {
         spell_check: true,
         free_marking: true,
         modern_tone: false,
+        standalone_horn: true,
     };
 
     /// Feeds `keys` and returns the rendered word; `|` marks a boundary in the output.

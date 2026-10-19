@@ -15,8 +15,9 @@
 //!
 //! Each window has its own text with the caret at its end; the application types a key with
 //! the real key state, not with the hook's view of it, so a hook that tracks the keys wrongly
-//! shows up as a wrong text. Nothing here touches the desktop of the machine running the
-//! tests.
+//! shows up as a wrong text. A window may complete text inline, as a browser's address bar
+//! does ([`Sim::complete_inline`]). Nothing here touches the desktop of the machine running
+//! the tests.
 
 #![allow(dead_code)]
 
@@ -266,14 +267,28 @@ impl TypingPlatform for FakePlatform {
 }
 
 /// The application of a window: its text, caret at the end, and a pending dead key.
+///
+/// An application that completes text inline (a browser's address bar, Excel) has
+/// `completions`: after a typed character, when the text is the start of one of them, the
+/// rest of the first such completion follows the caret, selected. Typing replaces the
+/// selection; a Backspace deletes only the selection when there is one, and no completion
+/// follows a deletion.
 #[derive(Debug, Default)]
 struct App {
     text: Vec<u16>,
     dead: Option<u16>,
+    completions: Vec<Vec<u16>>,
+    selected: Vec<u16>,
 }
 
 impl App {
     fn type_units(&mut self, units: &[u16]) {
+        self.selected.clear();
+        self.insert(units);
+        self.complete();
+    }
+
+    fn insert(&mut self, units: &[u16]) {
         let Some(dead) = self.dead.take() else {
             self.text.extend_from_slice(units);
             return;
@@ -292,7 +307,23 @@ impl App {
         }
     }
 
+    /// Selects the rest of the first completion that starts with the text.
+    fn complete(&mut self) {
+        let text = &self.text;
+        if let Some(completion) = self
+            .completions
+            .iter()
+            .find(|completion| completion.len() > text.len() && completion.starts_with(text))
+        {
+            self.selected = completion[text.len()..].to_vec();
+        }
+    }
+
     fn backspace(&mut self) {
+        if !self.selected.is_empty() {
+            self.selected.clear();
+            return;
+        }
         if self.dead.take().is_some() {
             return;
         }
@@ -387,12 +418,21 @@ impl Sim {
         self.handler.platform_mut()
     }
 
-    /// The text of window `hwnd`.
+    /// The text that window `hwnd` shows, a selected completion included.
     pub fn text(&self, hwnd: isize) -> String {
         self.apps
             .get(&hwnd)
-            .map(|app| String::from_utf16_lossy(&app.text))
+            .map(|app| String::from_utf16_lossy(&[&app.text[..], &app.selected[..]].concat()))
             .unwrap_or_default()
+    }
+
+    /// Window `hwnd` completes text inline with `completions`, as a browser's address bar
+    /// completes the addresses of its history.
+    pub fn complete_inline(&mut self, hwnd: isize, completions: &[&str]) {
+        self.apps.entry(hwnd).or_default().completions = completions
+            .iter()
+            .map(|completion| completion.encode_utf16().collect())
+            .collect();
     }
 
     /// The modes the observer was told, in order.

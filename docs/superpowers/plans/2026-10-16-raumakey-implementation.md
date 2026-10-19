@@ -1,11 +1,11 @@
 # Kế hoạch triển khai Raumakey
 
-**Ngày:** 2026-10-16 (cập nhật lần cuối 2026-10-18: hợp đồng bằng chứng cho cổng phát hành ở §12,
+**Ngày:** 2026-10-16 (cập nhật lần cuối 2026-10-19: hợp đồng bằng chứng cho cổng phát hành ở §12,
 trạng thái triển khai ở §14, các quyết định ở §15, bản portable một tệp ở D38–D42 và §16, bảng
-cấu hình và danh sách gõ tắt ở D43–D45 và §17)
-**Trạng thái:** Đang áp dụng; việc triển khai đang được tiến hành (xem §14, §16 và §17). D38–D42
-thay thế các phần nói về TIP, installer và thư mục dữ liệu (thiết kế §21); D43–D45 thêm bảng cấu
-hình (thiết kế §22).
+cấu hình và danh sách gõ tắt ở D43–D45 và §17, gợi ý tự hoàn thành ở D49 và §18, D51–D55 ở §19)
+**Trạng thái:** Đang áp dụng; việc triển khai đang được tiến hành (xem §14, §16, §17 và §18).
+D38–D42 thay thế các phần nói về TIP, installer và thư mục dữ liệu (thiết kế §21); D43–D45 thêm bảng
+cấu hình (thiết kế §22); D49 sửa cách hook sửa chữ trong ứng dụng tự hoàn thành (thiết kế §23).
 **Đầu vào:** `docs/superpowers/specs/2026-10-16-raumakey-design.md` (thiết kế, có thẩm quyền),
 `docs/reference/evkey_clean_room_spec.md` (tài liệu tham chiếu hành vi clean-room),
 `docs/reference/evkey_compatibility_test_matrix.md` (các vector tương thích).
@@ -747,6 +747,9 @@ probe_version = 1
 tsf_range_edit = false
 ```
 
+D49 thêm trường hành động tuỳ chọn `autocomplete_guard` (bool) cho `[[rule]]` và cho `action` của
+`[[named_set]]`, ví dụ `autocomplete_guard = true` (thiết kế §23).
+
 ---
 
 ## 6. `raumakey-policy`
@@ -768,8 +771,11 @@ tsf_range_edit = false
   `chromium-family` = msedge.exe, chrome.exe, brave.exe, vivaldi.exe, opera.exe, ms-teams.exe,
   teams.exe, slack.exe, discord.exe → `reset_on_mouse = true`; `terminals` = windowsterminal.exe,
   wt.exe, openconsole.exe, conhost.exe → `reset_on_mouse = true`; `games` = rỗng, không có hành
-  động. Kết quả văn bản cho các host này bằng với oracle tổng quát (ma trận #26); mỗi tập giữ hành
-  động riêng của nó (ma trận #28).
+  động; `autocomplete` (D49) = chrome.exe, msedge.exe, firefox.exe, brave.exe, opera.exe,
+  vivaldi.exe, chromium.exe, browser.exe, waterfox.exe, whale.exe, excel.exe →
+  `autocomplete_guard = true`. Kết quả văn bản cho các host này bằng với oracle tổng quát (ma trận
+  #26); mỗi tập giữ hành động riêng của nó (ma trận #28). `HostPolicy::autocomplete_guard` mặc định
+  là `false`.
 - `hotkey::HotkeyClassifier`: nhận các sự kiện key-down/key-up kèm trạng thái phím bổ trợ; báo
   `HotkeyAction` cho các tổ hợp đã cấu hình. Một hotkey `ModifiersOnly` kích hoạt khi nhả phím bổ
   trợ cuối cùng, chỉ khi không có phím nào khác được nhấn trong lúc giữ các phím bổ trợ.
@@ -1430,6 +1436,29 @@ Các quyết định ngày 2026-10-18 (thiết kế §22):
   cấu hình mở một hộp thoại riêng để thêm (gõ tên, chọn ứng dụng đang có cửa sổ, hoặc Duyệt… tệp
   `.exe`), xoá và đặt lại danh sách `[exclusions] apps`. Mỗi thay đổi đi qua worker và được lưu
   ngay; hộp thoại hiện danh sách mà tray gửi lại (thiết kế §22.8).
+- **D49 — Gợi ý tự hoàn thành (2026-10-19).** Trong host mà chính sách bật `autocomplete_guard`, một
+  lần sửa mù có xoá chữ bắt đầu bằng ký tự giữ chỗ U+202F, cộng thêm một Backspace để xoá nó, để
+  phần gợi ý bôi đen của thanh địa chỉ hay của Excel không nuốt mất Backspace đầu tiên ("aâ"). Named
+  set mặc định thứ tư `autocomplete` bật cờ này cho các trình duyệt và Excel; `[[rule]]` trong
+  `raumakey-app-rules.toml` bật hoặc tắt cho từng exe. Word không có trong danh sách vì AutoCorrect
+  (thiết kế §23).
+- **D50 — Nút "Thu nhỏ" và "Đóng" của bảng cấu hình (2026-10-19).** "Thu nhỏ" là nút Cancel và nút
+  mặc định (Enter, Esc và nút X cũng vậy): đóng bảng, Raumakey vẫn ở khay hệ thống. "Đóng" là nút
+  thường, gửi `PanelRequest::Exit`; tray thoát đúng như mục "Thoát" của menu, không hỏi lại
+  (thiết kế §22.9).
+- **D51 — Mặc định tắt kiểm tra chính tả (2026-10-19).** `EngineOptions::defaults_v2()` =
+  `defaults_v1()` với `spell_check = false`, `DEFAULTS_VERSION = 2`; mọi mặc định của sản phẩm dùng
+  v2, các vector vẫn dùng v1 (thiết kế §24.1). Sửa D4 ở điểm này.
+- **D52 — Kiểm tra cấu trúc âm tiết.** Luôn chạy: chỉ chữ cái tiếng Việt, phụ âm rồi nhiều nhất một
+  nhóm nguyên âm rồi `c ch m n ng nh p t` hoặc không; khi tắt kiểm tra chính tả, từ đã biến đổi mà
+  không đạt cấu trúc được khôi phục ở cuối từ (thiết kế §24.2).
+- **D53 — Telex đơn giản.** `InputMethod::SimpleTelex` (`"simple-telex"`): Telex mà `w` đứng riêng
+  không sinh "ư"; mục menu id 13 (thiết kế §24.3).
+- **D54 — Bảng mã.** `[input] charset`, `EngineOptions::charset` (`OutputCharset`): Unicode, TCVN3,
+  VNI Windows, Unicode tổ hợp, CP 1258; hook mã hoá phần xoá và phần chèn (thiết kế §24.4).
+- **D55 — Công cụ dò tên chương trình.** Hình tâm ngắm trong hộp thoại "Ứng dụng loại trừ": kéo thả
+  vào một cửa sổ để điền tên exe vào ô; `Control::window_picker`, `Dialog::enable_window_picker`,
+  `WindowPick` (thiết kế §24.5).
 
 ---
 
@@ -1499,8 +1528,8 @@ thủ công ở module `typing` và `desktop` của controller, và `GUIDE.md` �
 
 ## 17. Bảng cấu hình và danh sách gõ tắt (2026-10-18)
 
-Mục này theo dõi các task của D43–D48 (thiết kế §22). Mỗi task được làm trong một Git worktree
-riêng, theo TDD, được review độc lập rồi mới merge.
+Mục này theo dõi các task của D43–D48 và D50 (thiết kế §22). Mỗi task được làm theo TDD và được
+review độc lập; S1–S8 được làm trong một Git worktree riêng rồi mới merge.
 
 ### 17.1 Task
 
@@ -1514,6 +1543,7 @@ riêng, theo TDD, được review độc lập rồi mới merge.
 | S6 | Nháy đúp và biểu tượng khi loại trừ | D46; phần tray của D47: theo dõi cửa sổ foreground (`SetWinEventHook`), biểu tượng E và tooltip cho ứng dụng bị loại trừ |
 | S7 | Loại trừ ứng dụng | D47: bảng `[exclusions]` của `raumakey.toml` (giải mã từng trường, mặc định, ghi lại), nối vào chính sách của snapshot, kiểm chứng trên đường gõ |
 | S8 | Hộp thoại ứng dụng loại trừ | D48: sửa `[exclusions]` qua `Settings` và worker với đủ bảo đảm như thay đổi từ bảng; nút trong bảng; hộp thoại có danh sách, combo ứng dụng đang chạy, Duyệt…; liệt kê ứng dụng có cửa sổ và đọc `FileDescription` trong `raumakey-windows` |
+| S9 | Nút Thu nhỏ và Đóng | D50: nút "Thu nhỏ" (Cancel, mặc định) và "Đóng" (thoát) trong template; `PanelRequest::Exit`; tray thoát như menu; tài liệu và `README.txt` của gói |
 
 ### 17.2 Trạng thái
 
@@ -1530,6 +1560,7 @@ Mọi task đã xong, đã được review độc lập và sửa theo review. `
 | S6 | Xong | `aa01688`, `683f8ae` | Sửa: nháy đúp với cú nhấn thứ hai giữ lâu vẫn đổi chế độ; `WM_LBUTTONDBLCLK` muộn; hai cú nháy chậm bị coi là nháy đúp; lớp cửa sổ khác với hook |
 | S7 | Xong | `7be95c2`, `e9a818d` | Chấp thuận; sửa: một tên exe có `İ` làm mất mọi loại trừ; dấu chấm và dấu cách ở cuối tên; báo cáo khi vượt 4.096 quy tắc |
 | S8 | Xong | `4752301`, `ecbddc1`, `8136f95` | Chấp thuận; sửa: mất focus sau Thêm/Xoá; cửa sổ bị cloak trong danh sách; mô tả theo bản dịch; sửa đổi lúc thoát; bốn test không fail khi thiếu mã |
+| S9 | Xong (2026-10-19) | chưa commit | Tự review; không có review độc lập riêng (thay đổi nhỏ, có smoke test exe thật bên dưới) |
 
 Bằng chứng cho bản sửa đổi `8136f95`, chạy ngày 2026-10-18 trên host phát triển Windows 11 x86_64
 (Rust 1.99.1, `rust-lld` + `xwin`), khi không có Raumakey nào khác đang chạy:
@@ -1564,3 +1595,111 @@ thật (thứ tự thông báo mà shell gửi), biểu tượng E khi Remote De
 thoại chọn tệp của Duyệt…. Các danh sách kiểm
 tra thủ công ở module `typing`, `desktop` và `macro_dialog` của controller, và `GUIDE.md` §5.6,
 chưa được chạy. Không điều nào ở trên là bằng chứng về hành vi khi chạy thật.
+
+Bằng chứng cho S9 (D50), chạy ngày 2026-10-19 trên cùng host, cùng lúc với A1 (§18):
+
+| Lệnh | Kết quả |
+|---|---|
+| `cargo xtask ci` (fmt, Clippy hai bộ feature, test, fuzz smoke) | Đạt: 2,635 và 2,709 test đạt, 0 không đạt, 25 bị bỏ qua; fuzz smoke 10 đạt |
+| Test i686 (WOW64) | 1,071 đạt, 0 không đạt, 16 bị bỏ qua |
+| `cargo xtask cross --release`, `inspect --release`, `package --release` | Đạt; 66 mục kiểm tra; mỗi package 6 tệp |
+
+Smoke test với `raumakey.exe` của package release, chạy trong một thư mục trống dưới `target\`,
+với hook mức thấp thật và bấm nút bằng `BM_CLICK`:
+
+- Lần chạy đầu: bảng hiện, có nút "Thu nhỏ" (id 2) và "Đóng" (id 144).
+- "Thu nhỏ": bảng đóng, tiến trình vẫn chạy.
+- Chạy exe lần nữa: lần chạy thứ hai thoát với mã 0, bảng của bản đang chạy hiện lại (D45).
+- "Đóng": tiến trình thoát với mã 0, không còn cửa sổ bảng hay tiến trình `raumakey.exe` nào.
+
+Chưa kiểm chứng: mục 39–40 của `GUIDE.md` §5.6 (biểu tượng ở khay, gõ sau khi thu nhỏ và sau khi
+thoát, Esc và nút X) chưa được chạy bằng tay.
+
+---
+
+## 18. Gợi ý tự hoàn thành (2026-10-19)
+
+Mục này theo dõi task của D49 (thiết kế §23). Chủ dự án báo lỗi: trên thanh địa chỉ của Chrome, gõ
+`aa` ra "aâ".
+
+### 18.1 Task
+
+| # | Task | Phạm vi |
+|---|---|---|
+| A1 | Bảo vệ lần sửa mù trước gợi ý tự hoàn thành | `HostPolicy::autocomplete_guard` và `RuleAction::autocomplete_guard`; named set mặc định `autocomplete`; phân giải trong `raumakey-policy`; đọc và ghi trong `raumakey-app-rules.toml` và wire form IPC; cờ của `EditRequest` trong lõi phiên; ký tự giữ chỗ U+202F và Backspace thêm trong `BlindDocument`; cửa sổ tự hoàn thành trong bộ mô phỏng của test gõ phím; tài liệu (thiết kế §23, `GUIDE.md`, `README.txt` của gói) |
+
+### 18.2 Trạng thái
+
+| Task | Trạng thái | Review |
+|---|---|---|
+| A1 | Xong | Một agent review độc lập: phần cài đặt đúng, không sót trường mới ở chỗ nào. Sửa theo review: test của từ thứ hai không chạm tới gợi ý; test model thiếu hai thành viên; fuzz smoke thiếu khoá mới; cảnh báo về `raumakey-app-rules.toml` ở đoạn loại trừ theo lớp cửa sổ; ghi rõ Backspace trong từ, Enter sau từ và lần gửi lỗi một phần. Điểm "Backspace thật chỉ xoá gợi ý làm lệch engine" không đúng: Backspace trong từ là một lần sửa của engine nên đã được bảo vệ; hai test mới khẳng định điều này |
+
+Bằng chứng, chạy ngày 2026-10-19 trên host phát triển Windows 11 x86_64 (Rust 1.99.1, `rust-lld` +
+`xwin`), khi không có Raumakey nào khác đang chạy:
+
+| Lệnh | Kết quả |
+|---|---|
+| `cargo xtask ci`: fmt và Clippy với `-D warnings`, feature mặc định và cả sáu feature `evkey-compat` | Đạt |
+| `cargo xtask ci`: `cargo test --locked --workspace` | 2,634 đạt, 0 không đạt, 25 bị bỏ qua |
+| Cũng các test đó với các feature `evkey-compat` | 2,708 đạt, 0 không đạt, 25 bị bỏ qua |
+| `cargo xtask ci`: bước fuzz smoke | 10 đạt |
+| Test i686 (WOW64), lệnh ở `GUIDE.md` §3 | 1,071 đạt, 0 không đạt, 16 bị bỏ qua |
+| `cargo xtask cross --release` | Đạt (x86_64, i686, aarch64) |
+| `cargo xtask inspect --release` | Cả 66 mục kiểm tra đều đạt |
+| `cargo xtask package --release` | Đạt: mỗi package có 6 tệp |
+| `raumakey.exe --version` của package | `Raumakey 0.1.0`; checksum khớp `SHA256SUMS` |
+| Thử đột biến: tắt guard trong `BlindDocument` | 6 trong 9 test `typing::autocomplete` fail |
+
+Chưa kiểm chứng: việc gõ trong Chrome, Edge, Firefox, Cốc Cốc, Excel và Google Docs thật. Các mục
+35–38 của `GUIDE.md` §5.6 và mục 20 của danh sách kiểm tra module `typing` chưa được chạy. Không điều
+nào ở trên là bằng chứng về hành vi khi chạy thật.
+
+---
+
+## 19. Chính tả, Telex đơn giản, bảng mã, dò tên chương trình (2026-10-19)
+
+Mục này theo dõi các task của D51–D55 (thiết kế §24).
+
+### 19.1 Task
+
+| # | Task | Phạm vi |
+|---|---|---|
+| B1 | Mặc định tắt kiểm tra chính tả | D51: `defaults_v2`, `DEFAULTS_VERSION = 2`; config, tray, settings dùng v2; bộ chạy vector giữ v1 |
+| B2 | Kiểm tra cấu trúc | D52: `syllable::has_shape`, cổng của `word.rs`, khôi phục ở `boundary.rs` khi tắt kiểm tra chính tả |
+| B3 | Telex đơn giản | D53: `InputMethod::SimpleTelex`, `Ctx::standalone_horn`, bảng cấu hình, menu khay (id 13), tooltip, fuzz |
+| B4 | Bảng mã | D54: `OutputCharset`, `EngineOptions::charset`, `[input] charset`, mã hoá trong `BlindDocument`, ô "Bảng mã:", `Change::Charset` |
+| B5 | Dò tên chương trình | D55: `Control::window_picker`, `Dialog::enable_window_picker`, `WindowPick`; hình tâm ngắm và dòng hướng dẫn trong hộp thoại loại trừ; `Programs::process_exe` |
+| B6 | Tài liệu | Thiết kế §22.1, §22.8, §24; kế hoạch §15, §19; `GUIDE.md`; `README.txt` của gói; rustdoc |
+
+### 19.2 Trạng thái
+
+Mọi task đã xong theo TDD (ghi chép task: mục "Chính tả, Telex đơn giản, bảng mã, dò tên chương
+trình"). Một agent review độc lập; đã sửa theo review: CP 1258 gõ bằng ký tự của trang mã 1258,
+khôi phục từ không có vần tiếng Việt khi tắt kiểm tra chính tả, `wiw` không mất chữ, huỷ việc kéo
+khi handler bận, và phủ test cho Telex đơn giản và bảng mã.
+
+Bằng chứng, chạy ngày 2026-10-19 trên host phát triển Windows 11 x86_64 (Rust 1.99.1, `rust-lld` +
+`xwin`), khi không có Raumakey nào khác đang chạy:
+
+| Lệnh | Kết quả |
+|---|---|
+| `cargo xtask ci`: fmt và Clippy với `-D warnings`, cả hai bộ feature | Đạt |
+| `cargo xtask ci`: `cargo test --locked --workspace` | 2,655 đạt, 0 không đạt, 25 bị bỏ qua |
+| Cũng các test đó với các feature `evkey-compat` | 2,729 đạt, 0 không đạt, 25 bị bỏ qua |
+| `cargo xtask ci`: bước fuzz smoke | 10 đạt |
+| Test i686 (WOW64) | 1,078 đạt, 0 không đạt, 16 bị bỏ qua |
+| `cargo xtask cross --release`, `inspect --release`, `package --release` | Đạt; 66 mục kiểm tra; mỗi package 6 tệp |
+
+Smoke test với `raumakey.exe` của package release trong một thư mục trống dưới `target\`:
+
+- Bảng cấu hình: danh sách kiểu gõ có 4 mục (Telex, Telex đơn giản, VNI, VIQR), danh sách bảng mã có
+  5 mục, Unicode được chọn; ô "Kiểm tra chính tả" không được chọn; `raumakey.toml` của lần chạy đầu
+  có `spell_check = false` và `charset = "unicode"`.
+- "Ứng dụng loại trừ…": hộp thoại có hình dò (đã có ảnh con trỏ chữ thập) và dòng hướng dẫn trên
+  hai dòng.
+- "Đóng" của bảng: tiến trình thoát với mã 0, cả hai cửa sổ đóng.
+
+Chưa kiểm chứng: gõ thật trong ứng dụng (mục 41–46 của `GUIDE.md` §5.6), nhất là TCVN3 và VNI
+Windows với font tương ứng, và kéo hình dò bằng chuột thật. Không điều nào ở trên là bằng chứng về
+hành vi khi chạy thật.
+

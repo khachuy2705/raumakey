@@ -4,8 +4,9 @@ use core::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// Version of the default policy returned by [`EngineOptions::defaults_v1`].
-pub const DEFAULTS_VERSION: u32 = 1;
+/// Version of the product defaults, [`EngineOptions::defaults_v2`] (D51). Version 1
+/// ([`EngineOptions::defaults_v1`], plan D4) stays available: the engine's vectors state it.
+pub const DEFAULTS_VERSION: u32 = 2;
 
 /// Supported input methods.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -13,6 +14,10 @@ pub const DEFAULTS_VERSION: u32 = 1;
 pub enum InputMethod {
     /// Telex.
     Telex,
+    /// Simple Telex (D53): Telex without the standalone `w`, which changes only a vowel
+    /// before it (`aw`, `ow`, `uw`).
+    #[serde(rename = "simple-telex")]
+    SimpleTelex,
     /// VNI.
     Vni,
     /// VIQR.
@@ -32,6 +37,46 @@ pub enum Normalization {
     Nfd,
     /// Emit text as produced, without normalizing.
     Preserve,
+}
+
+/// The charset the keyboard hook types in (D54). The engine works in Unicode; the hook
+/// encodes what it deletes and inserts. The names are those of `raumakey-converter`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OutputCharset {
+    /// Precomposed Unicode.
+    #[default]
+    Unicode,
+    /// TCVN3 (ABC), for the `.Vn` fonts.
+    Tcvn3,
+    /// VNI Windows, for the VNI fonts.
+    VniWindows,
+    /// Decomposed Unicode ("Unicode tổ hợp").
+    UnicodeNfd,
+    /// Windows-1258 ("Vietnamese locale CP 1258").
+    Cp1258,
+}
+
+impl OutputCharset {
+    /// Every charset, in the order of the settings panel.
+    pub const ALL: [Self; 5] = [
+        Self::Unicode,
+        Self::Tcvn3,
+        Self::VniWindows,
+        Self::UnicodeNfd,
+        Self::Cp1258,
+    ];
+
+    /// The stable name, as in `raumakey.toml` and `raumakey-converter`.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Unicode => "unicode",
+            Self::Tcvn3 => "tcvn3",
+            Self::VniWindows => "vni-windows",
+            Self::UnicodeNfd => "unicode-nfd",
+            Self::Cp1258 => "cp1258",
+        }
+    }
 }
 
 /// Why options were rejected.
@@ -81,6 +126,9 @@ pub struct EngineOptions {
     pub user_keymap_id: Option<String>,
     /// Maximum keys tracked for one word before ownership is dropped.
     pub context_limit_codepoints: u32,
+    /// The charset the keyboard hook types in (D54); the engine ignores it.
+    #[serde(default)]
+    pub charset: OutputCharset,
 }
 
 impl EngineOptions {
@@ -89,7 +137,17 @@ impl EngineOptions {
     /// Largest accepted context limit.
     pub const MAX_CONTEXT: u32 = 128;
 
-    /// Raumakey defaults, version [`DEFAULTS_VERSION`].
+    /// Raumakey defaults, version 2 ([`DEFAULTS_VERSION`], D51): version 1 with spell checking
+    /// off. The engine's structure check keeps words that cannot be Vietnamese (`EVKey`)
+    /// untouched without it.
+    pub fn defaults_v2() -> Self {
+        Self {
+            spell_check: false,
+            ..Self::defaults_v1()
+        }
+    }
+
+    /// Raumakey defaults, version 1 (plan D4).
     pub fn defaults_v1() -> Self {
         Self {
             enabled: true,
@@ -104,6 +162,7 @@ impl EngineOptions {
             auto_case_macro: true,
             user_keymap_id: None,
             context_limit_codepoints: 32,
+            charset: OutputCharset::Unicode,
         }
     }
 

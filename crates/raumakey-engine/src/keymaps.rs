@@ -68,10 +68,15 @@ fn build(id: &str, name: &str, table: &[(char, KeyAction)]) -> KeyMap {
 /// Returns the built-in key map of `method`; `UserDefined` has none.
 pub(crate) fn builtin(method: InputMethod) -> Option<&'static KeyMap> {
     static TELEX_MAP: OnceLock<KeyMap> = OnceLock::new();
+    static SIMPLE_TELEX_MAP: OnceLock<KeyMap> = OnceLock::new();
     static VNI_MAP: OnceLock<KeyMap> = OnceLock::new();
     static VIQR_MAP: OnceLock<KeyMap> = OnceLock::new();
     match method {
         InputMethod::Telex => Some(TELEX_MAP.get_or_init(|| build("telex", "Telex", TELEX))),
+        // The keys of Telex; the engine leaves out the standalone `w` (D53).
+        InputMethod::SimpleTelex => {
+            Some(SIMPLE_TELEX_MAP.get_or_init(|| build("simple-telex", "Simple Telex", TELEX)))
+        }
         InputMethod::Vni => Some(VNI_MAP.get_or_init(|| build("vni", "VNI", VNI))),
         InputMethod::Viqr => Some(VIQR_MAP.get_or_init(|| build("viqr", "VIQR", VIQR))),
         InputMethod::UserDefined => None,

@@ -294,6 +294,74 @@ pub(crate) fn split(symbols: &[char]) -> Split {
     }
 }
 
+/// The codas a syllable may end with, and their prefixes (`""`: an open syllable).
+const SHAPE_CODAS: &[&[char]] = &[
+    &[],
+    &['c'],
+    &['c', 'h'],
+    &['m'],
+    &['n'],
+    &['n', 'g'],
+    &['n', 'h'],
+    &['p'],
+    &['t'],
+];
+
+/// The structure check (D52), which applies with or without spell checking: `letters` (all
+/// Vietnamese letters) are consonants, then at most one group of vowels, then one of the
+/// codas `c ch m n ng nh p t` or none. Neither the consonants before the vowels nor the
+/// vowels of the group are checked here (spell checking checks both); a mark still needs an
+/// onset that [`split`] knows, since it looks for its vowel there.
+pub(crate) fn has_shape(letters: &[char]) -> bool {
+    let onset = letters.iter().take_while(|&&c| !is_vowel(c)).count();
+    let rest = letters.get(onset..).unwrap_or_default();
+    let vowels = rest.iter().take_while(|&&c| is_vowel(c)).count();
+    let coda = rest.get(vowels..).unwrap_or_default();
+    SHAPE_CODAS.contains(&coda)
+}
+
+/// Every rhyme of the syllable list (a vowel cluster and a coda that goes with it, after any
+/// onset or after `qu`), sorted and unique.
+fn rhymes() -> &'static [Vec<char>] {
+    static RHYMES: OnceLock<Vec<Vec<char>>> = OnceLock::new();
+    RHYMES.get_or_init(|| {
+        let mut list: Vec<Vec<char>> = MAIN_RHYMES
+            .iter()
+            .chain(AFTER_QU_RHYMES)
+            .flat_map(|(cluster, codas)| {
+                codas
+                    .iter()
+                    .map(move |coda| cluster.chars().chain(coda.chars()).collect())
+            })
+            .collect();
+        list.sort();
+        list.dedup();
+        list
+    })
+}
+
+/// The end of a word without spell checking (D52): after its onset (the consonants it starts
+/// with, or `gi` or `qu` before a vowel) comes a rhyme of the syllable list, and the tone fits
+/// the coda ([`tone_fits_coda`]). The onset itself is not checked: spell checking does that.
+pub(crate) fn has_complete_rhyme(letters: &[char], tone: Option<Tone>) -> bool {
+    let leading = letters.iter().take_while(|&&c| !is_vowel(c)).count();
+    let merged = matches!(
+        letters,
+        ['g', 'i', next, ..] | ['q', 'u', next, ..] if is_vowel(*next)
+    );
+    let starts = [Some(leading), merged.then_some(2)];
+    let rhymes = rhymes();
+    let rhyme_found = starts.into_iter().flatten().any(|start| {
+        letters.get(start..).is_some_and(|rhyme| {
+            !rhyme.is_empty()
+                && rhymes
+                    .binary_search_by(|known| known.as_slice().cmp(rhyme))
+                    .is_ok()
+        })
+    });
+    rhyme_found && tone_fits_coda(letters, tone)
+}
+
 /// Tone/coda rule for complete words: codas `c ch p t` allow only acute, dot, or no tone.
 pub(crate) fn tone_fits_coda(letters: &[char], tone: Option<Tone>) -> bool {
     let coda = letters.get(split(letters).cluster..).unwrap_or_default();

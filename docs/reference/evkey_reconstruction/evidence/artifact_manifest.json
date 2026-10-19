@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "analysis": {
+    "mode": "static-only",
+    "binary_execution": false,
+    "authenticode_image_digest_verified": false,
+    "line_hashes_embedded": false,
+    "line_hashes_note_vi": "Các deliverable trích dẫn nguồn theo file:dòng-dòng, không nhúng hash theo dòng; vì vậy không có bảng line-hash nào cần đồng bộ khi sửa deliverable. Khi cập nhật nội dung, chỉ cần kiểm tra lại phạm vi dòng citation.",
+    "notes_vi": "Certificate table và X.509 đã được parse; không khẳng định chữ ký khớp bytes hiện tại hoặc được hệ thống tin cậy."
+  },
+  "original_zip": {
+    "display_name": "EVKey.zip",
+    "local_evidence_path": "/root/.hermes/cache/documents/doc_934bc563bd94_EVKey.zip",
+    "size_bytes": 1504714,
+    "sha256": "59ac1ceeb7fce4407f5565a9ecf885210b450a3b789e035f06d07728e26e78bc",
+    "format": "zip"
+  },
+  "artifacts": [
+    {"path":"arm64/EVKeyArm64.exe","size_bytes":819056,"sha256":"7c2aa18379e673954cd04cdd2e6cc3f4c8c5f531a80666b20c20ed90772b4ba8","architecture":"ARM64","kind":"EXE"},
+    {"path":"arm64/evkimearm64.dll","size_bytes":214896,"sha256":"5f288a34a1e44fe8ea240b76e61c77d068a80c508a05e85cbfcf289652e693f9","architecture":"ARM64","kind":"DLL"},
+    {"path":"x64/EVKey64.exe","size_bytes":810352,"sha256":"5490731bb563cd22d36f3816c4eef9ed9c3b487cdc6023330002a59858e2f5ad","architecture":"x86-64","kind":"EXE"},
+    {"path":"x64/evkime32.dll","size_bytes":157040,"sha256":"91b978ab3c816f78125afae8d4fe2390d2fa1ce3d696d2df223cb6f6b193d53d","architecture":"x86","kind":"DLL"},
+    {"path":"x64/evkime64.dll","size_bytes":187248,"sha256":"1d53028833d6f44bb1dc47baf2ac7c5cea92aa9194a44d841fb26fcf25b9a65f","architecture":"x86-64","kind":"DLL"},
+    {"path":"x86/EVKey32.exe","size_bytes":708464,"sha256":"56e06c73aa35674de12f9d4a4dc2485717b57ddc332f8c878e7019c529923c8b","architecture":"x86","kind":"EXE"},
+    {"path":"x86/evkime32.dll","size_bytes":157040,"sha256":"91b978ab3c816f78125afae8d4fe2390d2fa1ce3d696d2df223cb6f6b193d53d","architecture":"x86","kind":"DLL"}
+  ],
+  "duplicate_relations": [
+    {
+      "type": "byte-identical",
+      "sha256": "91b978ab3c816f78125afae8d4fe2390d2fa1ce3d696d2df223cb6f6b193d53d",
+      "paths": ["x64/evkime32.dll", "x86/evkime32.dll"]
+    }
+  ],
+  "unikey_baseline": {
+    "repository_url": "https://github.com/hochanh/unikey-source.git",
+    "commit": "e3b8f3b53bdaa700945a62e99129df625509cd38",
+    "role": "comparison-baseline-not-EVKey-proof",
+    "license_note_vi": "Phải tham khảo các file license thực tế trong repository tại commit này trước khi tái sử dụng source; manifest không khẳng định một license cụ thể."
+  },
+  "source_reports": [
+    "research/unikey_baseline.md",
+    "research/pe_inventory.md",
+    "research/evkey64_exe.md",
+    "research/evkime_dlls.md"
+  ],
+  "selected_pseudocode": [
+    "artifacts/evkey64_pseudocode.md",
+    "artifacts/evkime_pseudocode.md"
+  ],
+  "restricted_evidence": {
+    "role": "decompiler-output-for-address-level-follow-up-only",
+    "not_an_implementation_input": true,
+    "distribution_note_vi": "Đây là decompiler output của binary có bản quyền. Nhóm clean-room implementation MUST NOT nhận các file này; chỉ dùng trong nhóm phân tích/review, không đưa vào hợp đồng spec/test và không sao chép control flow vào code mới.",
+    "files": [
+      {"path":"artifacts/evkime32_ghidra_all.c","size_bytes":995079,"sha256":"bb1d72efdd76611090d7537f67211d57c84e26900df3bc4dbe010324cafc39b4","scope":"x86/evkime32.dll (x64/evkime32.dll byte-identical)","format":"Ghidra 11.4.2 C export"},
+      {"path":"artifacts/evkime64_ghidra_all.c","size_bytes":931261,"sha256":"688aee9e4938f5ae7e11b4093cdb7d32b2e9c73ac972e780165bd52800bd1eab","scope":"x64/evkime64.dll","format":"Ghidra 11.4.2 C export"},
+      {"path":"artifacts/evkimearm64_ghidra_all.c","size_bytes":1077216,"sha256":"33681e349f4609b7e626357c489b2b2a2b9589c8c994569ab9faf42b024e57f7","scope":"arm64/evkimearm64.dll","format":"Ghidra 11.4.2 C export"}
+    ]
+  },
+  "generated_artifacts": [
+    "README.md",
+    "EVKey_reconstruction_report.md",
+    "clean_room_spec.md",
+    "compatibility_test_matrix.md",
+    "diagrams/evkey_architecture.html",
+    "evidence/artifact_manifest.json"
+  ],
+  "evidence_notes": [
+    "evidence/review_round1.md",
+    "evidence/fix_round1.md",
+    "evidence/review_round2.md",
+    "evidence/fix_round2.md"
+  ]
+}

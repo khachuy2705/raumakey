@@ -24,7 +24,7 @@ use raumakey_macro::{EntryError, EntryIssue, MacroError, MacroTable};
 use raumakey_model::host::{ExeName, HostContext, SessionId};
 use raumakey_model::hotkey::{Hotkey, HotkeyConfig};
 use raumakey_model::macros::MacroId;
-use raumakey_model::options::{EngineOptions, InputMethod};
+use raumakey_model::options::{EngineOptions, InputMethod, OutputCharset};
 use raumakey_model::policy::{AppRule, CompatibilityConfig, HostPolicy, RuleAction};
 use raumakey_policy::CompatibilityPolicy;
 
@@ -202,12 +202,12 @@ fn the_real_write_probe_leaves_only_the_configuration_behind() {
 }
 
 #[test]
-fn the_default_snapshots_are_defaults_v1_with_the_ctrl_shift_toggle() {
+fn the_default_snapshots_are_defaults_v2_with_the_ctrl_shift_toggle() {
     let folders = Folders::new();
     let (settings, _) = folders.open();
     let runtime = settings.runtime_snapshot();
     assert_eq!(runtime.config_revision, 1);
-    assert_eq!(runtime.options, EngineOptions::defaults_v1());
+    assert_eq!(runtime.options, EngineOptions::defaults_v2());
     assert!(runtime.vietnamese_mode);
     assert!(settings.vietnamese_mode());
     assert!(!runtime.diagnostics_enabled);
@@ -222,7 +222,11 @@ fn the_default_snapshots_are_defaults_v1_with_the_ctrl_shift_toggle() {
             CompatibilityConfig::defaults_v1()
         )
     );
-    let defaults = RuntimeSnapshot::defaults_v1();
+    // The product options are version 2 (D51): no spell checking.
+    let defaults = RuntimeSnapshot {
+        options: EngineOptions::defaults_v2(),
+        ..RuntimeSnapshot::defaults_v1()
+    };
     assert_eq!(
         RuntimeSnapshot {
             config_revision: 0,
@@ -244,7 +248,7 @@ fn the_second_run_loads_the_file_and_keeps_the_users_values() {
         settings
             .apply(Change::InputMethod(InputMethod::Vni))
             .unwrap();
-        settings.apply(Change::SpellCheck(false)).unwrap();
+        settings.apply(Change::SpellCheck(true)).unwrap();
         settings.apply(Change::VietnameseMode(false)).unwrap();
     }
     let before = fs::read(folders.config()).unwrap();
@@ -256,12 +260,12 @@ fn the_second_run_loads_the_file_and_keeps_the_users_values() {
     let document = settings.document();
     assert_eq!(document.revision, 4);
     assert_eq!(document.input.method, InputMethod::Vni);
-    assert!(!document.input.spell_check);
+    assert!(document.input.spell_check);
     assert!(!document.input.enabled);
     let runtime = settings.runtime_snapshot();
     assert_eq!(runtime.config_revision, 4);
     assert_eq!(runtime.options.input_method, InputMethod::Vni);
-    assert!(!runtime.options.spell_check);
+    assert!(runtime.options.spell_check);
     assert!(!runtime.options.enabled);
     assert!(!runtime.vietnamese_mode);
     assert!(!settings.vietnamese_mode());
@@ -320,9 +324,9 @@ fn an_unknown_executable_folder_uses_local_app_data() {
         assert_eq!(report.location, Location::LocalAppData, "{exe_dir:?}");
         assert_eq!(report.config_path.as_deref(), Some(config.as_path()));
         assert_eq!(report.create_error, None);
-        settings.apply(Change::SpellCheck(false)).unwrap();
-        assert!(!stored(&config).input.spell_check);
         settings.apply(Change::SpellCheck(true)).unwrap();
+        assert!(stored(&config).input.spell_check);
+        settings.apply(Change::SpellCheck(false)).unwrap();
     }
 }
 
@@ -440,7 +444,7 @@ fn a_commit_refreshes_the_reported_issues() {
     };
     assert!(issues.contains(&issue("input.method", IssueReason::InvalidValue)));
     assert!(issues.len() > 1, "{issues:?}");
-    settings.apply(Change::SpellCheck(false)).unwrap();
+    settings.apply(Change::SpellCheck(true)).unwrap();
     let (_, reopened) = folders.open();
     assert_eq!(settings.status().config, reopened.status.config);
     let DocumentStatus::Loaded { issues } = &settings.status().config else {
@@ -540,7 +544,7 @@ fn without_a_usable_folder_the_settings_live_in_memory() {
     assert_eq!(report.status.config, DocumentStatus::Missing);
     assert_eq!(
         settings.runtime_snapshot().options,
-        EngineOptions::defaults_v1()
+        EngineOptions::defaults_v2()
     );
     assert_eq!(
         settings.apply(Change::VietnameseMode(false)),
@@ -557,7 +561,7 @@ fn field_issues_are_reported_by_path_without_values() {
     let folders = Folders::new();
     fs::write(
         folders.config(),
-        "version = 1\nrevision = 1\n[input]\nmethod = \"klingon\"\nspell_check = false\n",
+        "version = 1\nrevision = 1\n[input]\nmethod = \"klingon\"\nspell_check = true\n",
     )
     .unwrap();
     let (settings, report) = folders.open();
@@ -570,7 +574,7 @@ fn field_issues_are_reported_by_path_without_values() {
     );
     // The bad field took its default; the good one is kept.
     assert_eq!(settings.document().input.method, InputMethod::Telex);
-    assert!(!settings.document().input.spell_check);
+    assert!(settings.document().input.spell_check);
     assert!(!format!("{report:?}").contains("klingon"));
     assert!(!format!("{settings:?}").contains("klingon"));
 }
@@ -592,7 +596,7 @@ fn a_corrupt_file_runs_on_defaults_and_is_kept_until_recovered() {
     );
     assert_eq!(
         settings.runtime_snapshot().options,
-        EngineOptions::defaults_v1()
+        EngineOptions::defaults_v2()
     );
     assert_consumable(&settings);
 
@@ -621,8 +625,8 @@ fn a_corrupt_file_runs_on_defaults_and_is_kept_until_recovered() {
     assert!(!document.input.enabled);
     assert_eq!(settings.status().config, loaded_clean());
     assert_eq!(settings.document().revision, document.revision);
-    settings.apply(Change::SpellCheck(false)).unwrap();
-    assert!(!stored(&folders.config()).input.spell_check);
+    settings.apply(Change::SpellCheck(true)).unwrap();
+    assert!(stored(&folders.config()).input.spell_check);
     // Nothing is left to recover.
     assert_eq!(settings.recover(), Ok(Recovery::NotNeeded));
 }
@@ -653,9 +657,10 @@ fn every_tray_change_is_committed_at_once() {
     let changes = [
         Change::VietnameseMode(false),
         Change::InputMethod(InputMethod::Viqr),
-        Change::SpellCheck(false),
+        Change::SpellCheck(true),
         Change::ModernTone(true),
         Change::Macros(false),
+        Change::Charset(OutputCharset::Tcvn3),
         Change::Startup(StartupMode::Shortcut),
     ];
     for (index, change) in changes.into_iter().enumerate() {
@@ -675,16 +680,24 @@ fn every_tray_change_is_committed_at_once() {
     let document = stored(&folders.config());
     assert!(!document.input.enabled);
     assert_eq!(document.input.method, InputMethod::Viqr);
-    assert!(!document.input.spell_check);
+    assert!(document.input.spell_check);
     assert!(document.input.modern_tone);
     assert!(!document.macros.enabled);
+    assert_eq!(document.input.charset, OutputCharset::Tcvn3);
     assert_eq!(document.system.startup, StartupMode::Shortcut);
     let options = &settings.runtime_snapshot().options;
     assert!(!options.enabled);
     assert_eq!(options.input_method, InputMethod::Viqr);
-    assert!(!options.spell_check);
+    assert!(options.spell_check);
     assert!(options.modern_tone);
     assert!(!options.macros_enabled);
+    assert_eq!(options.charset, OutputCharset::Tcvn3);
+    // D54: "Mặc định" puts the charset of "Cách gõ" back to Unicode.
+    settings.apply(Change::TypingDefaults).unwrap();
+    assert_eq!(
+        stored(&folders.config()).input.charset,
+        OutputCharset::Unicode
+    );
     settings.apply(Change::Startup(StartupMode::None)).unwrap();
     assert_eq!(stored(&folders.config()).system.startup, StartupMode::None);
 }
@@ -749,7 +762,7 @@ fn typing_defaults_reset_the_typing_and_macro_switches_only() {
         folders.config(),
         "version = 1\nrevision = 1\n[input]\nenabled = false\nmethod = \"user\"\n\
          user_keymap = \"mine\"\nnormalization = \"nfd\"\nmodern_tone = true\n\
-         free_marking = false\nspell_check = false\nauto_restore_invalid = false\n\
+         free_marking = false\nspell_check = true\nauto_restore_invalid = false\n\
          context_limit = 64\n[macros]\nenabled = false\nwhen_disabled = true\n\
          auto_case = false\n[system]\nstartup = \"shortcut\"\nshow_panel_on_start = false\n\
          diagnostics = true\n[hotkeys]\ntoggle_mode = [\"Ctrl+Alt\"]\n\
@@ -804,15 +817,15 @@ fn unsaved_typing_defaults_and_single_switches_keep_their_order() {
     let cases: [(&[Change], bool, InputMethod, bool); 4] = [
         // The switch, then the defaults: reset.
         (
-            &[Change::SpellCheck(false), Change::TypingDefaults],
-            true,
+            &[Change::SpellCheck(true), Change::TypingDefaults],
+            false,
             InputMethod::Telex,
             false,
         ),
         // The defaults, then the switch: it stays.
         (
-            &[Change::TypingDefaults, Change::SpellCheck(false)],
-            false,
+            &[Change::TypingDefaults, Change::SpellCheck(true)],
+            true,
             InputMethod::Telex,
             false,
         ),
@@ -820,11 +833,11 @@ fn unsaved_typing_defaults_and_single_switches_keep_their_order() {
         (
             &[
                 Change::InputMethod(InputMethod::Viqr),
-                Change::SpellCheck(false),
+                Change::SpellCheck(true),
                 Change::TypingDefaults,
                 Change::ModernTone(true),
             ],
-            true,
+            false,
             InputMethod::Telex,
             true,
         ),
@@ -833,10 +846,10 @@ fn unsaved_typing_defaults_and_single_switches_keep_their_order() {
             &[
                 Change::TypingDefaults,
                 Change::InputMethod(InputMethod::Viqr),
-                Change::SpellCheck(false),
+                Change::SpellCheck(true),
                 Change::TypingDefaults,
             ],
-            true,
+            false,
             InputMethod::Telex,
             false,
         ),
@@ -866,11 +879,11 @@ method = \"vni\"
         assert_eq!(in_effect.spell_check, spell_check, "{changes:?}");
         assert_eq!(in_effect.method, method, "{changes:?}");
         assert_eq!(in_effect.modern_tone, modern_tone, "{changes:?}");
-        // The user fixes the file by hand (VNI, no spell check, modern tone): the reload
+        // The user fixes the file by hand (VNI, spell check on, modern tone): the reload
         // applies the unsaved changes again on it, and the retry writes them.
         fs::write(
             folders.config(),
-            "version = 1\nrevision = 1\n[input]\nmethod = \"vni\"\nspell_check = false\n\
+            "version = 1\nrevision = 1\n[input]\nmethod = \"vni\"\nspell_check = true\n\
              modern_tone = true\n",
         )
         .unwrap();
@@ -963,10 +976,10 @@ fn a_hand_edit_is_picked_up_by_the_poll() {
     assert_eq!(settings.status().config, loaded_clean());
     assert!(settings.poll().is_none());
     // A change after the edit builds on the edited document.
-    settings.apply(Change::SpellCheck(false)).unwrap();
+    settings.apply(Change::SpellCheck(true)).unwrap();
     let document = stored(&folders.config());
     assert_eq!(document.input.method, InputMethod::Viqr);
-    assert!(!document.input.spell_check);
+    assert!(document.input.spell_check);
     assert_eq!(document.revision, 2);
 }
 
@@ -1010,14 +1023,14 @@ fn a_deleted_file_brings_the_defaults_and_the_next_change_writes_it_again() {
         .unwrap();
     fs::remove_file(folders.config()).unwrap();
     let runtime = settings.poll().unwrap().runtime.unwrap();
-    assert_eq!(runtime.options, EngineOptions::defaults_v1());
+    assert_eq!(runtime.options, EngineOptions::defaults_v2());
     assert_eq!(settings.status().config, DocumentStatus::Missing);
     assert!(settings.poll().is_none());
-    settings.apply(Change::SpellCheck(false)).unwrap();
+    settings.apply(Change::SpellCheck(true)).unwrap();
     let document = stored(&folders.config());
     assert_eq!(document.revision, 1);
     assert_eq!(document.input.method, InputMethod::Telex);
-    assert!(!document.input.spell_check);
+    assert!(document.input.spell_check);
 }
 
 /// The file was edited by hand after the settings last saw it, and nothing polled in between:
@@ -1032,10 +1045,10 @@ fn a_change_over_an_unseen_hand_edit_keeps_the_edit() {
         "version = 1\nrevision = 1\n[input]\nmodern_tone = true\n",
     )
     .unwrap();
-    settings.apply(Change::SpellCheck(false)).unwrap();
+    settings.apply(Change::SpellCheck(true)).unwrap();
     let document = stored(&folders.config());
     assert!(document.input.modern_tone);
-    assert!(!document.input.spell_check);
+    assert!(document.input.spell_check);
     assert_eq!(document.revision, 2);
     assert_eq!(settings.document(), &document);
     assert!(settings.runtime_snapshot().options.modern_tone);
@@ -1519,7 +1532,7 @@ fn changes_from_the_panel_keep_the_exclusions() {
     )
     .unwrap();
     let (mut settings, _) = folders.open();
-    settings.apply(Change::SpellCheck(false)).unwrap();
+    settings.apply(Change::SpellCheck(true)).unwrap();
     settings.apply(Change::TypingDefaults).unwrap();
     settings.apply(Change::VietnameseMode(false)).unwrap();
     let document = stored(&folders.config());
@@ -1572,7 +1585,7 @@ fn unusable_excluded_names_are_reported_by_path_until_a_commit_drops_them() {
             CompatibilityConfig::defaults_v1()
         )
     );
-    settings.apply(Change::SpellCheck(false)).unwrap();
+    settings.apply(Change::SpellCheck(true)).unwrap();
     assert_eq!(settings.status().config, loaded_clean());
     assert_eq!(
         stored(&folders.config()).exclusions.apps,
@@ -1658,7 +1671,7 @@ fn a_change_that_could_not_be_saved_is_kept_and_saved_by_a_retry() {
     let (mut settings, _) = folders.open();
     assert!(!settings.has_unsaved());
     assert_eq!(
-        settings.apply(Change::SpellCheck(false)),
+        settings.apply(Change::SpellCheck(true)),
         Err(ConfigError::Corrupt)
     );
     assert!(settings.has_unsaved());
@@ -1674,14 +1687,14 @@ fn a_change_that_could_not_be_saved_is_kept_and_saved_by_a_retry() {
     let runtime = settings.poll().unwrap().runtime.unwrap();
     assert!(runtime.options.modern_tone, "the hand edit is taken");
     assert!(
-        !runtime.options.spell_check,
+        runtime.options.spell_check,
         "the unsaved change stays in effect"
     );
     assert_eq!(settings.save_unsaved(), Ok(true));
     assert!(!settings.has_unsaved());
     let document = stored(&folders.config());
     assert!(document.input.modern_tone);
-    assert!(!document.input.spell_check);
+    assert!(document.input.spell_check);
     assert_eq!(document.revision, 4);
     assert_eq!(settings.save_unsaved(), Ok(false), "nothing left to save");
 }
@@ -1916,7 +1929,7 @@ fn unsaved_exclusion_edits_are_kept_per_application_in_their_order() {
     ] {
         assert!(settings.edit_exclusions(request).is_err());
     }
-    assert!(settings.apply(Change::SpellCheck(false)).is_err());
+    assert!(settings.apply(Change::SpellCheck(true)).is_err());
     let in_effect = exes(&["msrdc.exe", "rdcman.exe", "vmconnect.exe", "b.exe"]);
     assert_eq!(settings.excluded_apps(), &in_effect[..]);
     fs::write(
@@ -1927,11 +1940,11 @@ fn unsaved_exclusion_edits_are_kept_per_application_in_their_order() {
     .unwrap();
     settings.poll().unwrap();
     assert_eq!(settings.excluded_apps(), &exes(&["putty.exe", "b.exe"])[..]);
-    assert!(!settings.runtime_snapshot().options.spell_check);
+    assert!(settings.runtime_snapshot().options.spell_check);
     assert_eq!(settings.save_unsaved(), Ok(true));
     let document = stored(&folders.config());
     assert_eq!(document.exclusions.apps, exes(&["putty.exe", "b.exe"]));
-    assert!(!document.input.spell_check);
+    assert!(document.input.spell_check);
 
     // "Mặc định" replaces the edits before it; an edit after it stays.
     fs::write(folders.config(), "[[[ damaged").unwrap();
@@ -2028,11 +2041,11 @@ fn a_change_blocked_by_another_program_is_saved_by_the_retry() {
     let folders = Folders::new();
     let (mut settings, _) = folders.open();
     let handle = lock(&folders.config());
-    assert!(settings.apply(Change::SpellCheck(false)).is_err());
+    assert!(settings.apply(Change::SpellCheck(true)).is_err());
     assert!(settings.has_unsaved());
     drop(handle);
     assert_eq!(settings.save_unsaved(), Ok(true));
-    assert!(!stored(&folders.config()).input.spell_check);
+    assert!(stored(&folders.config()).input.spell_check);
 }
 
 /// The temporary folder, where Explorer runs an executable from inside a ZIP and deletes it

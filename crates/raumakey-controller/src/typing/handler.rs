@@ -326,7 +326,7 @@ impl<P: TypingPlatform> TypingHandler<P> {
                 _ => Vec::new(),
             };
             let stroke = self.stroke(event, repeat, altgr, text, host);
-            let mut port = BlindDocument::new();
+            let mut port = BlindDocument::with_charset(self.core.config().options().charset);
             let outcome = self.core.key_down(&stroke, &mut port);
             let edit = port.edited().then(|| port.into_keys());
             self.carry_out(plan(outcome, edit, event), event, document, altgr)

@@ -378,6 +378,7 @@ fn d28_ownership_is_bounded_by_the_trigger() {
     // A word that overflows the context limit drops the token with it.
     let short = EngineOptions {
         context_limit_codepoints: EngineOptions::MIN_CONTEXT,
+        charset: Default::default(),
         ..telex()
     };
     let overflow = run(&engine, &short, "a.b.cccccccccc");

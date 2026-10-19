@@ -64,6 +64,8 @@ struct WireAppRule {
     vietnamese: Option<bool>,
     #[serde(default)]
     max_delete_before: Option<u32>,
+    #[serde(default)]
+    autocomplete_guard: Option<bool>,
 }
 
 impl WireCompatibility {
@@ -95,6 +97,7 @@ impl WireAppRule {
                 macros: self.macros,
                 vietnamese: self.vietnamese,
                 max_delete_before: self.max_delete_before,
+                autocomplete_guard: self.autocomplete_guard,
             },
         }
     }

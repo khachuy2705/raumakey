@@ -108,8 +108,16 @@ pub mod styles {
     pub const BS_MULTILINE: u32 = 0x2000;
     /// `SS_LEFT`: left-aligned text that wraps.
     pub const SS_LEFT: u32 = 0x0000;
+    /// `SS_ICON`: the control shows an icon (or a cursor) instead of text.
+    pub const SS_ICON: u32 = 0x0003;
     /// `SS_NOPREFIX`: `&` is shown as is instead of underlining the next character.
     pub const SS_NOPREFIX: u32 = 0x0080;
+    /// `SS_NOTIFY`: the control takes the mouse and notifies its parent of clicks.
+    pub const SS_NOTIFY: u32 = 0x0100;
+    /// `SS_CENTERIMAGE`: an image control keeps its size and centers its image.
+    pub const SS_CENTERIMAGE: u32 = 0x0200;
+    /// `SS_SUNKEN`: a sunken frame around the control.
+    pub const SS_SUNKEN: u32 = 0x1000;
     /// `SS_ENDELLIPSIS`: text that does not fit ends with an ellipsis.
     pub const SS_ENDELLIPSIS: u32 = 0x4000;
     /// `SS_PATHELLIPSIS`: a path that does not fit loses characters in its middle.
@@ -144,8 +152,8 @@ pub mod styles {
 use styles::{
     BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_PUSHBUTTON, CBS_AUTOHSCROLL, CBS_DROPDOWN,
     CBS_DROPDOWNLIST, DS_3DLOOK, DS_CENTER, DS_MODALFRAME, DS_SETFONT, ES_AUTOHSCROLL, LVS_REPORT,
-    LVS_SHOWSELALWAYS, LVS_SINGLESEL, SS_LEFT, WS_BORDER, WS_CAPTION, WS_CHILD, WS_GROUP, WS_POPUP,
-    WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    LVS_SHOWSELALWAYS, LVS_SINGLESEL, SS_CENTERIMAGE, SS_ICON, SS_LEFT, SS_SUNKEN, WS_BORDER,
+    WS_CAPTION, WS_CHILD, WS_GROUP, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 /// The style of every dialog: a pop-up window with a title bar, a close box, and the frame of
@@ -429,6 +437,20 @@ impl Control {
     /// with [`with_style`](Self::with_style). It may use [`STATIC_ID`].
     pub fn label(id: u16, text: &str, rect: DialogRect) -> Self {
         Self::new(Kind::Label, id, text, rect, SS_LEFT)
+    }
+
+    /// The picture of a window picker (`Static`, `SS_ICON | SS_CENTERIMAGE | SS_SUNKEN`, D55):
+    /// empty until `Dialog::enable_window_picker` gives it the cross of the pointer and makes
+    /// a press on it start a drag. Without `SS_NOTIFY` the control is transparent to the
+    /// mouse, so the dialog gets the press.
+    pub fn window_picker(id: u16, rect: DialogRect) -> Self {
+        Self::new(
+            Kind::Label,
+            id,
+            "",
+            rect,
+            SS_ICON | SS_CENTERIMAGE | SS_SUNKEN,
+        )
     }
 
     /// A drop-down list (`CBS_DROPDOWNLIST | WS_VSCROLL`): a combo box whose text is always one

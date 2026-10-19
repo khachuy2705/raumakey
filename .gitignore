@@ -9,6 +9,7 @@ target/
 *.obj
 *.user
 *.suo
+*.c
 .vs/
 
 # Bản build dùng thử trên máy (xem GUIDE.md mục 4)

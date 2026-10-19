@@ -130,6 +130,10 @@ const BRING_TO_FRONT: u32 = WM_APP_LAST - 1;
 /// Wraps the texts set with `Dialog::set_text_wrapped` again, after a change of DPI.
 #[cfg(windows)]
 const REWRAP: u32 = WM_APP_LAST - 2;
+/// Reports to the handler that the drag of the window picker in `lParam` was cancelled while
+/// the handler was busy (D55).
+#[cfg(windows)]
+const PICK_CANCELLED: u32 = WM_APP_LAST - 3;
 
 /// Notification codes that dialog handlers match on: the high word of `wParam` of a
 /// `WM_COMMAND` for the `u16` ones, `NMHDR::code` of a `WM_NOTIFY` for the `i32` ones.
@@ -155,6 +159,25 @@ pub mod notifications {
     pub const NM_DBLCLK: i32 = -3;
 }
 
+/// What the window picker of a dialog reports (D55; `Dialog::enable_window_picker`): a drag
+/// started on it; while the mouse button stays down, the process of the top-level window under
+/// the pointer, once per window (`None` over no window or over the picking dialog itself); the
+/// process where the button was released; or that the drag ended without a release (the dialog
+/// lost the mouse capture, for example to Alt+Tab).
+///
+/// A process id is a plain value: the process may have ended by the time it is used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WindowPick {
+    /// The mouse button went down on the picker.
+    Started,
+    /// The pointer moved onto another top-level window.
+    Over(Option<u32>),
+    /// The button was released over this window.
+    Dropped(Option<u32>),
+    /// The drag ended without a release.
+    Cancelled,
+}
+
 #[cfg(windows)]
 pub use win::{DetachedDialog, Dialog, DialogHandler, run_dialog, spawn_dialog};
 
@@ -170,7 +193,7 @@ mod win {
     use std::sync::{Arc, OnceLock};
 
     use raumakey_model::identity::PRODUCT_NAME;
-    use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+    use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
     use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
     use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentThreadId};
     use windows::Win32::UI::Controls::{
@@ -181,7 +204,9 @@ mod win {
         LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMTEXTW, LVNI_SELECTED,
         LVS_EX_FULLROWSELECT, NMHDR, NMLVKEYDOWN,
     };
-    use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        EnableWindow, GetFocus, ReleaseCapture, SetCapture,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
         BM_GETCHECK, BM_SETCHECK, CB_ADDSTRING, CB_GETCURSEL, CB_GETLBTEXT, CB_GETLBTEXTLEN,
         CB_RESETCONTENT, CB_SETCURSEL, DLGTEMPLATE, DialogBoxIndirectParamW, EndDialog,
@@ -204,9 +229,16 @@ mod win {
         LVN_GETDISPINFOW, LVN_ODFINDITEMW, LVSICF_NOSCROLL, NMLVDISPINFOW, NMLVFINDITEMW,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GWL_STYLE, GetWindowLongW};
+    // The window picker (D55).
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CWP_SKIPDISABLED, CWP_SKIPINVISIBLE, ChildWindowFromPointEx, GA_ROOT, GetAncestor,
+        GetWindowThreadProcessId, HCURSOR, IDC_CROSS, LoadCursorW, STM_SETICON, SetCursor,
+        WM_CAPTURECHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WindowFromPoint,
+    };
 
     use super::notifications::{BN_CLICKED, LVN_KEYDOWN};
-    use super::{BRING_TO_FRONT, DISMISS, REWRAP, is_reserved};
+    use super::{BRING_TO_FRONT, DISMISS, PICK_CANCELLED, REWRAP, WindowPick, is_reserved};
     use crate::dialog::{MessageKind, MessageResponse, message_box};
     use crate::dialog_template::styles::LVS_OWNERDATA;
     use crate::dialog_template::{IDCANCEL, TemplateBytes};
@@ -311,6 +343,13 @@ mod win {
             let _ = (dialog, message, wparam, lparam);
         }
 
+        /// The window picker `id` ([`Dialog::enable_window_picker`]) reports `pick`. Any process
+        /// of the desktop may send the dialog mouse messages: the process ids are plain values
+        /// to look up, never to trust.
+        fn window_pick(&mut self, dialog: &Dialog<'_>, id: u16, pick: WindowPick) {
+            let _ = (dialog, id, pick);
+        }
+
         /// The user asked to close the dialog (Cancel, Esc, the close box) or something sent
         /// it `WM_CLOSE`. `true` ends the dialog with `IDCANCEL`; `false` keeps it open (for
         /// example after asking about unsaved changes with [`Dialog::message_box`]).
@@ -355,6 +394,24 @@ mod win {
         /// The dialog window, for calls on this thread during the callback.
         pub fn hwnd(&self) -> HWND {
             self.hwnd
+        }
+
+        /// Makes picture control `id` (`Control::window_picker`) a window picker (D55): it shows
+        /// the cross of the pointer, and a press of the left button on it starts a drag that the
+        /// handler follows through [`DialogHandler::window_pick`]. The dialog captures the mouse
+        /// until the release, showing the cross as the pointer. Fails when there is no such
+        /// control.
+        pub fn enable_window_picker(&self, id: u16) -> WinResult<()> {
+            let control = self.item(id)?;
+            let cross = cross_cursor()?;
+            // SAFETY: a control of this thread; the cursor is a shared system cursor, which
+            // lives as long as the process.
+            unsafe { SendMessageW(control, STM_SETICON, Some(WPARAM(cross.0 as usize)), None) };
+            let mut pickers = self.state.pickers.borrow_mut();
+            if !pickers.ids.contains(&id) {
+                pickers.ids.push(id);
+            }
+            Ok(())
         }
 
         /// The control `id` (`GetDlgItem`); fails when no control has that id.
@@ -1060,6 +1117,18 @@ mod win {
         /// The texts set with [`Dialog::set_text_wrapped`], by control, as they were given:
         /// wrapped again after a change of DPI ([`rewrap`]).
         wrapped: RefCell<Vec<(u16, String)>>,
+        /// The window pickers ([`Dialog::enable_window_picker`]) and the drag in progress.
+        pickers: RefCell<Pickers>,
+    }
+
+    /// The window pickers of a dialog and the drag in progress.
+    #[derive(Default)]
+    struct Pickers {
+        /// The picture controls that start a drag.
+        ids: Vec<u16>,
+        /// The drag in progress: its picker, and the top-level window it reported last (0 for
+        /// none; `None` before the first report).
+        drag: Option<(u16, Option<isize>)>,
     }
 
     impl DialogState {
@@ -1079,6 +1148,7 @@ mod win {
                 icons: RefCell::new(None),
                 virtual_rows: RefCell::new(VirtualRows::default()),
                 wrapped: RefCell::new(Vec::new()),
+                pickers: RefCell::new(Pickers::default()),
             }
         }
 
@@ -1549,7 +1619,9 @@ mod win {
         lparam: LPARAM,
     ) -> isize {
         match message {
-            DISMISS | BRING_TO_FRONT | REWRAP if wparam.0 != state.cookie => return FALSE,
+            DISMISS | BRING_TO_FRONT | REWRAP | PICK_CANCELLED if wparam.0 != state.cookie => {
+                return FALSE;
+            }
             DISMISS => {
                 dismiss(state, hwnd);
                 return TRUE;
@@ -1567,6 +1639,33 @@ mod win {
                     state.destroyed.set(true);
                 }
                 return FALSE;
+            }
+            // A lost capture ends the drag even while the handler is busy (a message box it
+            // shows takes the capture): the cancel is reported now, or posted for later. The
+            // dialog capturing again (`lParam` is the window that takes the capture) loses
+            // nothing.
+            WM_CAPTURECHANGED if lparam.0 != hwnd.0 as isize => {
+                let Some(id) = cancel_drag(state) else {
+                    return FALSE;
+                };
+                match state.handler.try_borrow_mut() {
+                    Ok(mut handler) if !state.destroyed.get() => {
+                        let dialog = Dialog { hwnd, state };
+                        handler.window_pick(&dialog, id, WindowPick::Cancelled);
+                    }
+                    _ => {
+                        // SAFETY: posts plain values to this thread's dialog.
+                        let _ = unsafe {
+                            PostMessageW(
+                                Some(hwnd),
+                                PICK_CANCELLED,
+                                WPARAM(state.cookie),
+                                LPARAM(isize::try_from(id).unwrap_or(0)),
+                            )
+                        };
+                    }
+                }
+                return TRUE;
             }
             WM_DPICHANGED => {
                 // The low word is the new horizontal DPI (both are equal).
@@ -1621,6 +1720,38 @@ mod win {
                 close(handler.as_mut(), &dialog);
                 TRUE
             }
+            WM_LBUTTONDOWN => match start_drag(state, hwnd, lparam) {
+                Some(id) => {
+                    handler.window_pick(&dialog, id, WindowPick::Started);
+                    TRUE
+                }
+                None => FALSE,
+            },
+            WM_MOUSEMOVE => match drag_moved(state, hwnd, lparam) {
+                Some((id, Some(process))) => {
+                    handler.window_pick(&dialog, id, WindowPick::Over(process));
+                    TRUE
+                }
+                // Still over the window reported last.
+                Some((_, None)) => TRUE,
+                None => FALSE,
+            },
+            WM_LBUTTONUP => match end_drag(state, hwnd, lparam) {
+                Some((id, process)) => {
+                    handler.window_pick(&dialog, id, WindowPick::Dropped(process));
+                    TRUE
+                }
+                None => FALSE,
+            },
+            PICK_CANCELLED => {
+                let registered = u16::try_from(lparam.0)
+                    .ok()
+                    .filter(|id| state.pickers.borrow().ids.contains(id));
+                if let Some(id) = registered {
+                    handler.window_pick(&dialog, id, WindowPick::Cancelled);
+                }
+                TRUE
+            }
             WM_NOTIFY => {
                 if let Some(header) = notify_header(hwnd, lparam) {
                     let (id, code) = (low_word(header.idFrom), header.code as i32);
@@ -1642,6 +1773,123 @@ mod win {
                 _ => FALSE,
             },
         }
+    }
+
+    /// The cross of the pointer (`IDC_CROSS`), a shared system cursor.
+    fn cross_cursor() -> WinResult<HCURSOR> {
+        // SAFETY: loads a predefined system cursor; no module, no pointers.
+        unsafe { LoadCursorW(None, IDC_CROSS) }.context("LoadCursorW")
+    }
+
+    /// Shows the cross as the pointer.
+    fn show_cross() {
+        if let Ok(cross) = cross_cursor() {
+            // SAFETY: a shared system cursor.
+            let _ = unsafe { SetCursor(Some(cross)) };
+        }
+    }
+
+    /// The point of a mouse message's `lParam`: signed client coordinates.
+    fn client_point(lparam: LPARAM) -> POINT {
+        let value = lparam.0 as usize;
+        POINT {
+            x: i32::from(low_word(value) as i16),
+            y: i32::from(high_word(value) as i16),
+        }
+    }
+
+    /// Starts a drag when the press at `lparam` is on a window picker of the dialog (and no
+    /// drag goes on): the dialog captures the mouse and shows the cross. Returns the picker.
+    fn start_drag(state: &DialogState, hwnd: HWND, lparam: LPARAM) -> Option<u16> {
+        let mut pickers = state.pickers.try_borrow_mut().ok()?;
+        if pickers.drag.is_some() {
+            return None;
+        }
+        // SAFETY: a query about a window of this thread; no pointers.
+        let child = unsafe {
+            ChildWindowFromPointEx(
+                hwnd,
+                client_point(lparam),
+                CWP_SKIPINVISIBLE | CWP_SKIPDISABLED,
+            )
+        };
+        if child.is_invalid() || child == hwnd {
+            return None;
+        }
+        // SAFETY: a query about a window handle, which USER validates.
+        let id = u16::try_from(unsafe { GetDlgCtrlID(child) }).ok()?;
+        if !pickers.ids.contains(&id) {
+            return None;
+        }
+        pickers.drag = Some((id, None));
+        drop(pickers);
+        // SAFETY: a window of this thread.
+        let _ = unsafe { SetCapture(hwnd) };
+        show_cross();
+        Some(id)
+    }
+
+    /// The top-level window under the point of `lparam` (its handle value) and its process:
+    /// `(0, None)` over no window, the dialog and `None` over the dialog itself.
+    fn window_under(hwnd: HWND, lparam: LPARAM) -> (isize, Option<u32>) {
+        let mut point = client_point(lparam);
+        // SAFETY: `point` is a valid in/out pointer; the window is of this thread.
+        if !unsafe { ClientToScreen(hwnd, &mut point) }.as_bool() {
+            return (0, None);
+        }
+        // SAFETY: queries of the window manager about the point and the window it finds.
+        let root = unsafe { GetAncestor(WindowFromPoint(point), GA_ROOT) };
+        if root.is_invalid() {
+            return (0, None);
+        }
+        if root == hwnd {
+            return (root.0 as isize, None);
+        }
+        let mut process = 0_u32;
+        // SAFETY: `process` is a valid out pointer for the call.
+        unsafe { GetWindowThreadProcessId(root, Some(&mut process)) };
+        (root.0 as isize, (process != 0).then_some(process))
+    }
+
+    /// The drag in progress moved to the point of `lparam`: its picker, and the process of
+    /// the top-level window there when that window is not the one reported last (`None`:
+    /// nothing new). `None` without a drag.
+    fn drag_moved(
+        state: &DialogState,
+        hwnd: HWND,
+        lparam: LPARAM,
+    ) -> Option<(u16, Option<Option<u32>>)> {
+        let mut pickers = state.pickers.try_borrow_mut().ok()?;
+        let (id, last) = pickers.drag?;
+        show_cross();
+        let (window, process) = window_under(hwnd, lparam);
+        if last == Some(window) {
+            return Some((id, None));
+        }
+        pickers.drag = Some((id, Some(window)));
+        Some((id, Some(process)))
+    }
+
+    /// Ends the drag in progress with the release at `lparam`: its picker and the process of
+    /// the top-level window there. The drag is over before the capture is released, so the
+    /// `WM_CAPTURECHANGED` of the release cancels nothing.
+    fn end_drag(state: &DialogState, hwnd: HWND, lparam: LPARAM) -> Option<(u16, Option<u32>)> {
+        let (id, _) = state.pickers.try_borrow_mut().ok()?.drag.take()?;
+        let (_, process) = window_under(hwnd, lparam);
+        // SAFETY: no preconditions; the capture is this thread's.
+        let _ = unsafe { ReleaseCapture() };
+        Some((id, process))
+    }
+
+    /// Ends the drag in progress without a release; its picker.
+    fn cancel_drag(state: &DialogState) -> Option<u16> {
+        state
+            .pickers
+            .try_borrow_mut()
+            .ok()?
+            .drag
+            .take()
+            .map(|(id, _)| id)
     }
 
     /// The `NMHDR` that the `WM_NOTIFY` argument `lparam` points to, copied, when it names a

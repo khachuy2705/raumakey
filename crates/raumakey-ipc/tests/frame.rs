@@ -56,6 +56,7 @@ fn rich_runtime() -> RuntimeSnapshot {
             macros: None,
             vietnamese: Some(true),
             max_delete_before: Some(32),
+            autocomplete_guard: Some(true),
         },
     });
     snapshot.compatibility.probes.push(ProbeRecord {

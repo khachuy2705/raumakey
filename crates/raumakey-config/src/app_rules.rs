@@ -34,6 +34,7 @@ const ACTION_KEYS: &[&str] = &[
     "macros",
     "vietnamese",
     "max_delete_before",
+    "autocomplete_guard",
 ];
 const RULE_KEYS: &[&str] = &[
     "exe",
@@ -43,6 +44,7 @@ const RULE_KEYS: &[&str] = &[
     "macros",
     "vietnamese",
     "max_delete_before",
+    "autocomplete_guard",
 ];
 const NAMED_SET_KEYS: &[&str] = &["name", "members", ACTION_KEY];
 const PROBE_KEYS: &[&str] = &["exe", "probe_version", "tsf_range_edit"];
@@ -69,7 +71,7 @@ pub type RuleIdentity = (ExeName, Option<String>);
 ///   executable is missing or not a valid basename, or whose window class is not a string, is
 ///   set aside verbatim in [`AppRulesDocument::rule_extras`] (dropping only the window class
 ///   would widen the rule). A bad action field (`transport`, `reset_on_mouse`, `macros`,
-///   `vietnamese`, `max_delete_before`) is reported and inherits.
+///   `vietnamese`, `max_delete_before`, `autocomplete_guard`) is reported and inherits.
 /// - `[[named_set]]`: an entry without a string `name` is set aside. A bad member is dropped on
 ///   its own (`named_set[0].members[2]`); a bad action field inherits.
 /// - `[[probe]]`: a probe is one measurement, so a record whose `exe`, `probe_version`, or
@@ -125,6 +127,7 @@ fn decode_action(fields: &mut TomlFields<'_>) -> RuleAction {
         macros: fields.optional("macros", |value| boolean(&value)),
         vietnamese: fields.optional("vietnamese", |value| boolean(&value)),
         max_delete_before: fields.optional("max_delete_before", |value| integer_u32(&value)),
+        autocomplete_guard: fields.optional("autocomplete_guard", |value| boolean(&value)),
     }
 }
 
@@ -381,6 +384,8 @@ struct ActionWire<'a> {
     vietnamese: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_delete_before: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    autocomplete_guard: Option<bool>,
     #[serde(flatten)]
     extensions: Extra<'a, toml::Table>,
 }
@@ -393,6 +398,7 @@ impl<'a> ActionWire<'a> {
             macros: action.macros,
             vietnamese: action.vietnamese,
             max_delete_before: action.max_delete_before,
+            autocomplete_guard: action.autocomplete_guard,
             extensions: Extra::new(unknown, ACTION_KEYS),
         }
     }

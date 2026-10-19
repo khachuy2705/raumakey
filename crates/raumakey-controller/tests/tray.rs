@@ -18,8 +18,8 @@ use raumakey_controller::settings::{Change, DocumentStatus, Location, Recovery, 
 use raumakey_controller::tray::{
     Effect, Event, FOREGROUND, ForegroundApp, ICON_APP, IconState, InputMode, LOOP_EXIT_CODE,
     MENU_ABOUT, MENU_EXIT, MENU_MACROS, MENU_MODERN_TONE, MENU_OPEN_CONFIG, MENU_PANEL,
-    MENU_SPELL_CHECK, MENU_STARTUP, MENU_TELEX, MENU_VIETNAMESE_MODE, MENU_VIQR, MENU_VNI,
-    POLL_INTERVAL_MS, POLL_TIMER, RegisteredMessages, Reply, SHOW_PANEL_COMPONENT, START,
+    MENU_SIMPLE_TELEX, MENU_SPELL_CHECK, MENU_STARTUP, MENU_TELEX, MENU_VIETNAMESE_MODE, MENU_VIQR,
+    MENU_VNI, POLL_INTERVAL_MS, POLL_TIMER, RegisteredMessages, Reply, SHOW_PANEL_COMPONENT, START,
     TOOLTIP_ENGLISH, TRAY_CALLBACK, TRAY_ICON_ID, Tray, TrayCommand, TrayStart, WAKE, coalesce,
     with_change,
 };
@@ -29,7 +29,7 @@ use raumakey_controller::worker::{
 };
 use raumakey_ipc::message::RuntimeSnapshot;
 use raumakey_model::host::ExeName;
-use raumakey_model::options::InputMethod;
+use raumakey_model::options::{InputMethod, OutputCharset};
 use raumakey_model::policy::{AppRule, RuleAction};
 use raumakey_resources::{ICON_ENGLISH, ICON_VIETNAMESE};
 use raumakey_windows::error::{E_ACCESSDENIED, WinError};
@@ -302,6 +302,11 @@ fn the_tooltip_names_the_mode_and_the_input_method() {
             InputMethod::Viqr,
             "Raumakey: đang gõ tiếng Việt (VIQR)",
         ),
+        (
+            Vietnamese,
+            InputMethod::SimpleTelex,
+            "Raumakey: đang gõ tiếng Việt (Telex đơn giản)",
+        ),
         (English, InputMethod::Telex, "Raumakey: đang gõ tiếng Anh"),
         (English, InputMethod::Vni, "Raumakey: đang gõ tiếng Anh"),
     ];
@@ -315,6 +320,7 @@ fn the_tooltip_names_the_mode_and_the_input_method() {
     assert!(user.starts_with("Raumakey: đang gõ tiếng Việt ("), "{user}");
     for method in [
         InputMethod::Telex,
+        InputMethod::SimpleTelex,
         InputMethod::Vni,
         InputMethod::Viqr,
         InputMethod::UserDefined,
@@ -353,6 +359,7 @@ fn the_menu_has_the_labels_of_d42_in_order_after_the_panel() {
             Some("Gõ tiếng Việt (Ctrl+Shift)"),
             None,
             Some("Telex"),
+            Some("Telex đơn giản"),
             Some("VNI"),
             Some("VIQR"),
             None,
@@ -370,6 +377,7 @@ fn the_menu_has_the_labels_of_d42_in_order_after_the_panel() {
     assert_eq!(MENU_PANEL, "Bảng cấu hình\u{2026}");
     assert_eq!(MENU_VIETNAMESE_MODE, "Gõ tiếng Việt (Ctrl+Shift)");
     assert_eq!([MENU_TELEX, MENU_VNI, MENU_VIQR], ["Telex", "VNI", "VIQR"]);
+    assert_eq!(MENU_SIMPLE_TELEX, "Telex đơn giản");
     assert_eq!(MENU_SPELL_CHECK, "Kiểm tra chính tả");
     assert_eq!(MENU_MODERN_TONE, "Đặt dấu kiểu mới (oà, uý)");
     assert_eq!(MENU_MACROS, "Gõ tắt (macro)");
@@ -411,6 +419,7 @@ fn command_ids_are_distinct_non_zero_and_round_trip() {
             (TrayCommand::Panel, 12),
             (TrayCommand::VietnameseMode, 1),
             (TrayCommand::Telex, 2),
+            (TrayCommand::SimpleTelex, 13),
             (TrayCommand::Vni, 3),
             (TrayCommand::Viqr, 4),
             (TrayCommand::SpellCheck, 5),
@@ -439,6 +448,7 @@ fn the_checks_follow_the_settings_in_effect() {
             (TrayCommand::Panel.id(), false),
             (TrayCommand::VietnameseMode.id(), true),
             (TrayCommand::Telex.id(), true),
+            (TrayCommand::SimpleTelex.id(), false),
             (TrayCommand::Vni.id(), false),
             (TrayCommand::Viqr.id(), false),
             (TrayCommand::SpellCheck.id(), true),
@@ -463,6 +473,7 @@ fn the_checks_follow_the_settings_in_effect() {
             (TrayCommand::Panel.id(), false),
             (TrayCommand::VietnameseMode.id(), false),
             (TrayCommand::Telex.id(), false),
+            (TrayCommand::SimpleTelex.id(), false),
             (TrayCommand::Vni.id(), false),
             (TrayCommand::Viqr.id(), true),
             (TrayCommand::SpellCheck.id(), false),
@@ -1783,6 +1794,58 @@ fn choosing_an_input_method_hands_the_hook_a_snapshot_with_the_current_mode() {
     );
     // The method in effect again: nothing to do.
     assert_eq!(choose(&mut tray, TrayCommand::Viqr), []);
+    // D53: Simple Telex.
+    let mut simple = expected_after(&tray, InputMethod::SimpleTelex);
+    let effects = choose(&mut tray, TrayCommand::SimpleTelex);
+    simple.config_revision = tray.runtime().config_revision;
+    assert_eq!(
+        effects,
+        [
+            Effect::UpdateIcon(icon(English, InputMethod::SimpleTelex)),
+            hook_runtime(simple.clone()),
+            worker(
+                4,
+                WorkerCommand::Apply(Change::InputMethod(InputMethod::SimpleTelex))
+            ),
+        ]
+    );
+    assert!(checked(&tray, TrayCommand::SimpleTelex));
+    assert!(!checked(&tray, TrayCommand::Viqr));
+}
+
+/// The runtime snapshot of `tray` with `method` in effect.
+fn expected_after(tray: &Tray, method: InputMethod) -> RuntimeSnapshot {
+    let mut expected = tray.runtime().clone();
+    expected.options.input_method = method;
+    expected
+}
+
+/// D54: the charset of the panel reaches the hook and the file like any switch.
+#[test]
+fn the_charset_reaches_the_hook_and_the_worker() {
+    let mut tray = with_panel(start(Vietnamese));
+    let mut expected = tray.runtime().clone();
+    expected.options.charset = OutputCharset::Tcvn3;
+    let effects = panel_request(&mut tray, set(Change::Charset(OutputCharset::Tcvn3)));
+    assert_eq!(
+        effects,
+        [
+            hook_runtime(expected.clone()),
+            worker(
+                1,
+                WorkerCommand::Apply(Change::Charset(OutputCharset::Tcvn3))
+            ),
+            refresh(tray.panel_state()),
+        ]
+    );
+    assert_eq!(*tray.runtime(), expected);
+    assert_eq!(tray.panel_state().charset, OutputCharset::Tcvn3);
+    assert_eq!(
+        with_change(&expected, Change::TypingDefaults)
+            .options
+            .charset,
+        OutputCharset::Unicode
+    );
 }
 
 #[test]
@@ -2819,21 +2882,25 @@ fn running_with_panel_at_start(start: TrayStart) -> Tray {
 fn typing_defaults_reach_the_icon_the_hook_and_the_worker() {
     let mut settings = start(English);
     settings.runtime.options.input_method = InputMethod::Viqr;
-    settings.runtime.options.spell_check = false;
+    settings.runtime.options.spell_check = true;
     settings.runtime.options.modern_tone = true;
     settings.runtime.options.macros_when_disabled = true;
+    settings.runtime.options.charset = OutputCharset::VniWindows;
     let mut tray = with_panel(settings);
     let effects = panel_request(&mut tray, set(Change::TypingDefaults));
+    // The product defaults are version 2 (D51): no spell checking.
+    let mut expected = runtime(English);
+    expected.options.spell_check = false;
     assert_eq!(
         effects,
         [
             Effect::UpdateIcon(icon(English, InputMethod::Telex)),
-            hook_runtime(runtime(English)),
+            hook_runtime(expected.clone()),
             worker(1, WorkerCommand::Apply(Change::TypingDefaults)),
             refresh(tray.panel_state()),
         ]
     );
-    assert_eq!(*tray.runtime(), runtime(English));
+    assert_eq!(*tray.runtime(), expected);
 }
 
 /// The start with Windows goes through the shortcut only (`PanelRequest::Startup`): a
@@ -3078,6 +3145,17 @@ fn exit_closes_the_panel_and_nothing_follows() {
             WorkerCommand::Apply(Change::VietnameseMode(false))
         )]
     );
+}
+
+/// D50: "Đóng" of the panel exits Raumakey exactly as "Thoát" of the menu does (the panel,
+/// the editors, and the icon go, what is unsaved is saved); a second one does nothing.
+#[test]
+fn d50_close_on_the_panel_exits_like_the_menu() {
+    let mut tray = with_panel(start(Vietnamese));
+    assert_eq!(panel_request(&mut tray, PanelRequest::Exit), exit_effects());
+    assert_eq!(panel_request(&mut tray, PanelRequest::Exit), []);
+    assert_eq!(tray.on_event(Event::PanelClosed(1)), []);
+    assert_eq!(choose(&mut tray, TrayCommand::Exit), []);
 }
 
 /// Panel events coalesce like any event but the hotkey: they keep their order.

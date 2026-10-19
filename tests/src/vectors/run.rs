@@ -9,7 +9,7 @@ use raumakey_engine::script::{self, KeyToken, ScriptOutcome, ScriptRunError, Scr
 use raumakey_engine::{EngineState, VietnameseEngine};
 use raumakey_model::error::ResetReason;
 use raumakey_model::host::HostContext;
-use raumakey_model::options::{DEFAULTS_VERSION, EngineOptions};
+use raumakey_model::options::EngineOptions;
 use raumakey_model::policy::SecureFieldMode;
 use raumakey_model::transaction::{EditTransaction, TextSimulator};
 use raumakey_model::utf16;
@@ -35,17 +35,23 @@ pub enum Status {
 /// matrix pass criteria.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct ConfigRevision {
-    /// Version of the engine defaults the options start from (`DEFAULTS_VERSION`, plan D4).
+    /// Version of the engine defaults the options start from: always 1
+    /// ([`VECTOR_DEFAULTS_VERSION`]; plan D4), whatever the product defaults are (D51).
     pub defaults_version: u32,
     /// Revision of the `raumakey.toml` store the options were read from. `None` in-process: the
     /// options are defaults v1 plus the vector's overrides, and no store is read.
     pub store_revision: Option<u64>,
 }
 
+/// The defaults every vector's options start from: [`EngineOptions::defaults_v1`]. The
+/// matrix states its preconditions against them, so a change of the product defaults (D51)
+/// does not change a vector.
+pub const VECTOR_DEFAULTS_VERSION: u32 = 1;
+
 impl ConfigRevision {
     /// Defaults v1 and no store: every in-process run.
     pub const IN_PROCESS: Self = Self {
-        defaults_version: DEFAULTS_VERSION,
+        defaults_version: VECTOR_DEFAULTS_VERSION,
         store_revision: None,
     };
 }

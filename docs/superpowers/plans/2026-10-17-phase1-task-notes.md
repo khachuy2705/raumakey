@@ -889,3 +889,131 @@ người phụ trách công khai `normalize_excluded_app` để hộp thoại đ
   `programs`, 2 test `dialog_box`, 2 test thoát, 9 test hộp thoại (focus `HWND(0x0)`, lựa chọn -1,
   Delete không gửi gì, `tool` thêm thành `tool`, thiếu cảnh báo…); sáu lần chạy đột biến
   (`PICKED`, `init`, `browse()`, `TrayLink::reached`, `reuse`, chuyển focus) đều fail.
+
+## Gợi ý tự hoàn thành (D49)
+
+Ngày 2026-10-19, chủ dự án báo: trên thanh địa chỉ của Chrome, gõ `aa` ra "aâ"; EVKey không bị lỗi
+này. Nguyên nhân: Chrome bôi đen phần gợi ý sau con trỏ, nên Backspace đầu tiên của lần sửa mù chỉ
+xoá phần gợi ý. Chủ dự án mở thêm `docs/reference/evkey_reconstruction/` trong AGENTS.md; người phụ
+trách chỉ đọc các báo cáo dạng văn xuôi (không đọc mã dịch ngược trong `artifacts/`). Các báo cáo
+không mô tả cơ chế của EVKey; chúng chỉ ghi nhận các bảng ứng dụng trình duyệt và Excel. Cơ chế là
+thiết kế riêng (thiết kế §23, kế hoạch D49, task A1).
+
+### A1
+
+- Thiết kế: ký tự giữ chỗ U+202F trước các Backspace, cộng một Backspace, chỉ khi lần sửa có xoá;
+  bật bằng chính sách (`autocomplete_guard`), mặc định cho các trình duyệt và Excel qua named set
+  `autocomplete`. Không bật cho mọi ứng dụng vì AutoCorrect của Word và các ô đã đầy độ dài.
+- Đỏ, theo từng lớp:
+  - model: lỗi biên dịch E0560/E0609 khi chưa có trường; sau khi thêm trường, 2 test fail vì chưa có
+    named set `autocomplete`;
+  - policy: lỗi biên dịch E0063, rồi 5 test `resolve` fail khi `resolve` còn trả `false`;
+  - config: 2 test `app_rules_document` fail khi `decode_action` chưa đọc khoá (cả vòng ghi/đọc lại
+    bộ mặc định);
+  - IPC: 2 test `frame` fail khi wire form bỏ qua khoá;
+  - session: `d49_an_edit_request_carries_the_autocomplete_guard_of_its_host` fail (`[false]` thay vì
+    `[true]`) khi `checked_request` chưa đặt cờ;
+  - controller: 4 test `typing::autocomplete` fail khi `BlindDocument` chưa dùng cờ; bộ mô phỏng tái
+    hiện đúng "aâ" của chủ dự án;
+  - `README.txt` của gói: test fail vì thiếu mục "Thanh địa chỉ trình duyệt và Excel".
+- Hai test `raumakey-migrate` (`commit`) fail sau khi bộ mặc định có thêm named set: chúng ghi cứng
+  số lượng và vị trí các named set mặc định; kỳ vọng được cập nhật, mã import không đổi.
+- Lần chạy CI đầu fail ở `cargo fmt --check`; đã chạy `cargo fmt`.
+- Review độc lập (một agent): phần cài đặt đúng.
+  1. Nêu rủi ro clean-room vì AGENTS.md mở thêm `evkey_reconstruction/`. Chủ dự án tự sửa AGENTS.md
+     trong phiên này; `.gitignore` (`*.c`) và thư mục tham chiếu là thay đổi của chủ dự án, không
+     nằm trong commit của task. Thiết kế §23.1 ghi thêm lý do độc lập cho danh sách mặc định.
+  2. Cho rằng Backspace thật chỉ xoá gợi ý và làm engine lệch. Không đúng: Backspace trong từ là
+     một lần sửa của engine (semantic Backspace), nên đã được bảo vệ. Hai test mới khẳng định điều
+     này (`d49_a_backspace_inside_a_word_…`, `d49_a_backspace_without_a_word_…`); chúng pass ngay vì
+     không cần mã mới.
+  3. Enter sau macro chấp nhận gợi ý: cùng hành vi như khi tự gõ, ghi vào tài liệu.
+  4. Lần gửi lỗi một phần có thể để lại ký tự giữ chỗ: ghi vào tài liệu.
+  5. Thiếu cảnh báo về `raumakey-app-rules.toml` ở đoạn loại trừ theo lớp cửa sổ của `GUIDE.md`:
+     đã thêm.
+  6. Test: từ thứ hai của test gõ không chạm tới gợi ý (đã thay); test model thiếu `waterfox.exe`,
+     `whale.exe` (đã thêm, kèm số thành viên); fuzz smoke thiếu khoá `autocomplete_guard` (đã thêm).
+- Thử đột biến sau khi sửa: tắt guard trong `BlindDocument` làm 6 trong 9 test `typing::autocomplete`
+  fail.
+
+## Nút Thu nhỏ và Đóng của bảng cấu hình (D50)
+
+Ngày 2026-10-19, chủ dự án gửi ảnh bảng cấu hình và yêu cầu: nút Đóng thoát hẳn Raumakey; thêm nút
+Thu nhỏ, đóng bảng nhưng vẫn chạy ở khay (thiết kế §22.9, kế hoạch D50, task S9).
+
+### S9
+
+- Quyết định: "Thu nhỏ" nhận vai trò của nút Đóng cũ (`IDCANCEL`, nút mặc định), nên Enter, Esc và
+  nút X trên thanh tiêu đề không thoát bộ gõ; "Đóng" là nút thường (id 144) gửi
+  `PanelRequest::Exit`, và tray thoát đúng như "Thoát" của menu, không hỏi lại.
+- Đỏ: lỗi biên dịch E0432/E0599 khi chưa có `ID_EXIT`, `ID_MINIMIZE`, `PanelRequest::Exit`; sau khi
+  thêm định danh chưa có hành vi, 6 test fail lúc chạy (4 test `panel`: template, nhóm phím mũi
+  tên, nút mặc định, yêu cầu; 1 test `tray`: thoát; 1 test `desktop`: bảng thật không gửi `Exit`).
+  Sau khi cài đặt, test đo chữ của bảng thật fail vì đếm 19 control thay vì 18 (nút mới; không chữ
+  nào bị cắt); con số được cập nhật. `README.txt`: test fail vì thiếu "Bấm Thu nhỏ".
+- Smoke test exe thật: lần chạy đầu của script không thấy bảng vì PowerShell đổi `$null` thành chuỗi
+  rỗng khi gọi `FindWindowW` (lỗi của script, không phải của Raumakey); sửa bằng
+  `[NullString]::Value`. Kết quả ở kế hoạch §17.2.
+- Không có review độc lập riêng cho S9.
+
+## Chính tả, Telex đơn giản, bảng mã, dò tên chương trình (D51–D55)
+
+Ngày 2026-10-19, chủ dự án gửi năm yêu cầu: mặc định tắt kiểm tra chính tả; một nút dò tên exe
+giống AU3Info cho hộp thoại loại trừ; lựa chọn bảng mã như EVKey; sửa cách bỏ dấu khi gõ tiếng Anh
+(`EVKey` thành "ÊVKy"); thêm Telex đơn giản. Người phụ trách hỏi lại bốn điểm (cách xử lý từ tiếng
+Anh, danh sách bảng mã, định nghĩa Telex đơn giản, cách dùng công cụ dò); chủ dự án chọn các phương
+án đề xuất. Khảo sát trước khi làm: khi tắt kiểm tra chính tả, `EVKey` ra "ÊVKy", `Windows` ra
+"indows" (mất chữ W), `Google` không được khôi phục.
+
+### B1–B5
+
+- B1: đỏ E0599 (`defaults_v2` chưa có). Sau khi đổi mặc định, 20 test fail vì dùng
+  `SpellCheck(false)` hay một lần sửa tay `spell_check = false` làm "một thay đổi", hoặc so với
+  `defaults_v1`: đảo cực tính trong test của settings và worker, so với v2; bộ chạy vector ghi
+  `defaults_version = 1` (hằng `VECTOR_DEFAULTS_VERSION`), vì các vector dùng v1.
+- B2: đỏ `EVKey` → "ÊVKy" và `after` → "ảte" (test cũ khẳng định hành vi không khôi phục khi tắt
+  kiểm tra chính tả; đổi theo D52). Hai ca trong test viết trước bị sửa vì là bản chất của Telex,
+  không phải lỗi cấu trúc: `Express`/`Excel` biến đổi lúc gõ dở ở cả hai chế độ (kiểm tra ở dấu
+  cách); `Kroong` không nhận dấu vì engine chỉ tìm nguyên âm sau phụ âm đầu đã biết (nới ra thì
+  `green` thành "grên"). Không đưa `k` vào phụ âm cuối (đổi lấy `book` đúng).
+- B3: đỏ E0599, rồi `d53_…` fail lúc chạy khi engine chưa có cờ; hai test của bảng fail vì view cắt
+  cứng 3 kiểu gõ (`METHODS.get(..3)`), sửa thành lấy từ bảng.
+- B4: đỏ E0432/E0609 (model), rồi 4 test `typing::charset` fail khi `with_charset` chưa mã hoá; test
+  giao diện fail E0599/E0609. Test đo chữ trên bảng thật đếm thêm nhãn "Bảng mã:".
+- B5: test lớp Windows viết trước nhưng biên dịch cùng mã, nên không có lần chạy đỏ riêng; hai thử
+  đột biến (bỏ kiểm tra id của picker, bỏ nhánh `WM_MOUSEMOVE`) đều làm test fail. Test của hộp
+  thoại loại trừ đỏ E0432/E0407. Test chạy chung fail chập chờn: mọi hộp thoại của các test song
+  song bị dời về cùng (-32000, -32000), nên `WindowFromPoint` chạm vào hộp thoại khác; sửa bằng vị
+  trí riêng cho mỗi test bộ dò. Smoke test: script đầu dùng sai mã ký tự của tiêu đề hộp thoại.
+- `README.txt`: test fail vì thiếu "Telex đơn giản"; phần bảng mã và bộ dò được viết cùng lúc với
+  điều kiện của test (CI đang chạy), rồi thử đột biến xác nhận test bắt được thiếu sót.
+- Review độc lập (một agent; so khoảng 150 từ tiếng Việt với HEAD, Telex và VNI, các tuỳ chọn:
+  không lệch):
+  1. CP 1258 gõ sai: bộ chuyển mã viết byte thành ký tự Windows-1252 ("ế" → "êì"), mà không font
+     nào hiện lại chúng. Sửa: hàm `raumakey_converter::typed_text` gõ CP 1258 bằng ký tự của trang
+     mã 1258 (`ê` + U+0301). Test controller trước đó so với chính bộ mã hoá nên không bắt được;
+     thêm kỳ vọng viết sẵn cho TCVN3, CP 1258, NFD (đỏ: "tiêìng viêòt"). Hai kỳ vọng tôi viết sai
+     (`việ` thay vì `viê`; thứ tự dấu NFD) được sửa theo thứ tự chuẩn.
+  2. D52 không xét vần: khi tắt kiểm tra chính tả, `were users text mouse sweet awesome Win swim`
+     bị biến đổi và không được khôi phục, trái với câu trong §24.2. Sửa: ở cuối từ, khi tắt kiểm
+     tra chính tả, từ đã biến đổi phải có vần của danh sách âm tiết sau phụ âm đầu (có `gi`, `qu`)
+     và dấu thanh hợp phụ âm cuối (`syllable::has_complete_rhyme`); cổng lúc gõ giữ nguyên để không
+     phá D34. Đỏ: `were{SPACE}` → "ửê ". Hai kỳ vọng sai trong test mới (`xoong` gõ bằng `xooong`;
+     `wew` khi bật chính tả) được sửa.
+  3. `wiw` → "iw" (có từ trước D52): hoàn tác "ư" đứng riêng không ở cuối từ giờ trả lại phím đã
+     gõ ra nó (`Letter::from_w` lưu phím). Đỏ: "iw".
+  4. `ddi2` được khôi phục khi tắt chính tả: ghi vào thiết kế và `GUIDE.md`.
+  5. Phím có chữ ngoài ASCII đi qua ở dạng Unicode khi bảng mã không phải Unicode: ghi là giới
+     hạn đã biết.
+  6. Mất quyền giữ chuột lúc handler bận (hộp thông báo) không huỷ việc kéo. Sửa: huỷ trước bước
+     kiểm tra handler bận, báo `Cancelled` ngay hoặc qua thông điệp riêng `PICK_CANCELLED` (có
+     cookie). Đỏ: test có handler nhả chuột khi bắt đầu kéo nhận `Over`, `Dropped`.
+     CI sau bản sửa này bắt được một hồi quy: ở lần kéo thứ hai, hộp thoại gọi `SetCapture` khi
+     còn giữ chuột và Windows báo `WM_CAPTURECHANGED` cho chính nó, khiến lần kéo mới bị huỷ (test
+     của hộp thoại loại trừ, khi chạy chung). Sửa: bỏ qua `WM_CAPTURECHANGED` có `lParam` là chính
+     hộp thoại; test lớp Windows thêm lần kéo thứ hai sau một lần huỷ (đỏ trước khi sửa).
+  7. Thiếu phủ test: `props.rs`, fuzz smoke (`simple-telex`, khoá `charset`), `config_concurrency`,
+     ví dụ `type --method simple-telex`: đã thêm.
+  8. Clean-room: AGENTS.md mở thêm `docs/reference/evkey_reconstruction/`. Chủ dự án tự sửa
+     AGENTS.md trong phiên này; thay đổi đó, `.gitignore` và thư mục tham chiếu không thuộc task.
+

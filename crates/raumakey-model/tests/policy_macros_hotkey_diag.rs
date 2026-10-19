@@ -32,7 +32,10 @@ fn compatibility_defaults_v1_keep_named_sets_separate() {
     assert_eq!(c.secure_field_mode, SecureFieldMode::Bypass);
     assert_eq!(c.default_max_delete_before, 64);
     let names: Vec<&str> = c.named_sets.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, ["chromium-family", "terminals", "games"]);
+    assert_eq!(
+        names,
+        ["chromium-family", "terminals", "games", "autocomplete"]
+    );
     let chromium = &c.named_sets[0];
     assert!(
         chromium
@@ -52,6 +55,56 @@ fn compatibility_defaults_v1_keep_named_sets_separate() {
     assert!(c.rules.is_empty());
     assert!(c.probes.is_empty());
     assert_eq!(PROBE_VERSION, 1);
+}
+
+/// D49: the browsers and Excel complete text inline, so their blind edits are guarded; the
+/// guard is its own named set and nothing else changes for its members.
+#[test]
+fn compatibility_defaults_v1_guard_inline_completion_in_browsers_and_excel() {
+    let c = CompatibilityConfig::defaults_v1();
+    let autocomplete = c
+        .named_sets
+        .iter()
+        .find(|s| s.name == "autocomplete")
+        .expect("the D49 set");
+    assert_eq!(
+        autocomplete.action,
+        RuleAction {
+            autocomplete_guard: Some(true),
+            ..RuleAction::default()
+        }
+    );
+    for name in [
+        "chrome.exe",
+        "msedge.exe",
+        "firefox.exe",
+        "brave.exe",
+        "opera.exe",
+        "vivaldi.exe",
+        "chromium.exe",
+        "browser.exe",
+        "waterfox.exe",
+        "whale.exe",
+        "excel.exe",
+    ] {
+        assert!(
+            autocomplete.members.contains(&ExeName::new(name).unwrap()),
+            "{name}"
+        );
+    }
+    assert_eq!(autocomplete.members.len(), 11);
+    for name in ["winword.exe", "notepad.exe", "slack.exe"] {
+        assert!(
+            !autocomplete.members.contains(&ExeName::new(name).unwrap()),
+            "{name}"
+        );
+    }
+    assert!(!HostPolicy::default_tsf().autocomplete_guard);
+    for set in &c.named_sets {
+        if set.name != "autocomplete" {
+            assert_eq!(set.action.autocomplete_guard, None, "{}", set.name);
+        }
+    }
 }
 
 #[test]

@@ -48,6 +48,7 @@ pub use clipboard::{ClipboardOutcome, ClipboardPort, ClipboardText, convert_clip
 pub use codec::{
     ByteConversion, Conversion, MAX_INPUT_BYTES, convert, convert_bytes, convert_with_report,
     decode, decode_bytes, encode, encode_bytes, encode_bytes_with_report, encode_with_report,
+    typed_text,
 };
 pub use error::{ClipboardError, ConvertError};
 pub use file::{FileOutcome, convert_file};

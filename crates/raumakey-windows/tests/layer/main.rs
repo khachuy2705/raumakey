@@ -68,6 +68,8 @@ mod dialog_box_choices;
 #[cfg(windows)]
 mod dialog_box_editor;
 #[cfg(windows)]
+mod dialog_box_picker;
+#[cfg(windows)]
 mod file_replace;
 #[cfg(windows)]
 mod known_folder;

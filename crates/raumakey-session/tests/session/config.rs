@@ -417,6 +417,37 @@ fn a_rule_that_forbids_macros_keeps_the_trigger() {
     assert_eq!(doc.text(), "ko ");
 }
 
+/// D49: every edit request says whether its host's policy guards blind edits against an
+/// inline completion: the browsers and Excel by default, any application by a rule. The edit
+/// itself is the same either way.
+#[test]
+fn d49_an_edit_request_carries_the_autocomplete_guard_of_its_host() {
+    let mut core = ServiceCore::new();
+    let mut plain = FakeDocument::new(1);
+    plain.type_text(&mut core, "aa");
+    assert_eq!(plain.edits, [edit(1, "â")]);
+    assert_eq!(plain.guards, [false]);
+
+    let mut chrome = host(2);
+    chrome.executable = ExeName::new("chrome.exe").expect("valid name");
+    let mut browser = FakeDocument::with_host(chrome);
+    browser.type_text(&mut core, "aa");
+    assert_eq!(browser.edits, [edit(1, "â")]);
+    assert_eq!(browser.guards, [true]);
+
+    core.apply_runtime_snapshot(&snapshot(1, |s| {
+        s.compatibility.rules.push(notepad_rule(RuleAction {
+            autocomplete_guard: Some(true),
+            ..RuleAction::default()
+        }));
+    }))
+    .expect("valid snapshot");
+    let mut guarded = FakeDocument::new(3);
+    guarded.type_text(&mut core, "aas");
+    assert_eq!(guarded.edits, [edit(1, "â"), edit(1, "ấ")]);
+    assert_eq!(guarded.guards, [true, true]);
+}
+
 #[test]
 fn a_deletion_beyond_the_host_bound_is_never_applied() {
     let mut core = ServiceCore::new();

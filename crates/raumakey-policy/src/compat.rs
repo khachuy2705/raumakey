@@ -21,7 +21,7 @@ use crate::{PolicyError, ProbeCache};
 ///
 /// 1. **Base defaults:** TSF, `default_reset_on_mouse`, replay permitted,
 ///    `default_max_delete_before`, macros and Vietnamese allowed, the configured secure-field
-///    mode.
+///    mode, no autocomplete guard (D49).
 /// 2. **Overrides,** most specific first, where the first source that sets a field decides it
 ///    and later sources only fill fields that are still unset: app rules for the executable
 ///    whose `window_class` equals the host's (case-insensitive), then app rules for the
@@ -133,6 +133,7 @@ impl CompatibilityPolicy {
             macro_allowed: overrides.macros.unwrap_or(true),
             secure_field_mode: config.secure_field_mode,
             vietnamese_allowed: overrides.vietnamese.unwrap_or(true),
+            autocomplete_guard: overrides.autocomplete_guard.unwrap_or(false),
         };
         if overrides.transport.is_none() && !self.tsf_range_edit_works(host) {
             policy.transport = Transport::SyntheticKey;
@@ -204,5 +205,6 @@ fn fill_unset(mut merged: RuleAction, from: &RuleAction) -> RuleAction {
     merged.macros = merged.macros.or(from.macros);
     merged.vietnamese = merged.vietnamese.or(from.vietnamese);
     merged.max_delete_before = merged.max_delete_before.or(from.max_delete_before);
+    merged.autocomplete_guard = merged.autocomplete_guard.or(from.autocomplete_guard);
     merged
 }

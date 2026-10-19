@@ -9,6 +9,8 @@
 
 mod support;
 
+mod autocomplete;
+mod charset;
 mod exclusions;
 mod failures;
 mod gates;

@@ -11,7 +11,8 @@
 //!      (the document), the key's text with the foreground thread's layout
 //!   -> KeyStroke -> ServiceCore (role KeyboardHook) -> VietnameseEngine -> EditTransaction
 //!   -> BlindDocument: Backspace x characters to delete, then the text as KEYEVENTF_UNICODE
-//!      keys, all tagged RAUMAKEY_INJECTED_TAG
+//!      keys, all tagged RAUMAKEY_INJECTED_TAG, both in the charset of the options (D54; a
+//!      host that completes text inline gets a placeholder first and one more Backspace, D49)
 //!   -> SendInput from inside the callback, then the hook blocks the key they replace
 //! ```
 //!
@@ -76,7 +77,8 @@
 //! blocked: part of what replaces it is on its way, and the key would arrive ahead of it.
 //! Either way the text is not what the engine believes, so the word of the document ends
 //! (reported to the core as a change it did not make, `SelectionChange::Other`), and nothing
-//! is sent again. An edit that does not fit the input builders is refused by the
+//! is sent again. A partial send of a guarded edit may leave the placeholder of D49 (an
+//! invisible narrow no-break space) in the text. An edit that does not fit the input builders is refused by the
 //! [`BlindDocument`], and the core lets the key through.
 //!
 //! # Key state
@@ -183,11 +185,28 @@
 //! Nothing here logs. `Debug` of every type shows counts, flags, and revisions, never keys,
 //! text, words, or macro text.
 //!
+//! # Inline completion
+//!
+//! A browser's address bar and Excel select the suggested rest of the text after the caret,
+//! and a Backspace removes only that selection: without help, `aa` shows `aâ`. In a host
+//! whose policy sets the autocomplete guard (D49; by default the `autocomplete` named set:
+//! the browsers and Excel), the [`BlindDocument`] starts every edit that deletes with
+//! [`AUTOCOMPLETE_PLACEHOLDER`], which replaces such a selection, and sends one more
+//! Backspace for it. Everywhere else edits are sent as before.
+//!
+//! A Backspace inside a word is an edit of the engine (it restores the state before), so it
+//! is guarded too: it deletes the last letter and a completion together, where the
+//! application alone would first remove only the completion. A Backspace with no word in
+//! progress passes untouched. Enter or Tab after a word, typed or replayed after a macro,
+//! accepts a completion of the inserted text as it would after typing by hand.
+//!
 //! # Known limits
 //!
-//! - Edits are blind: an application that completes text by itself (a browser's address
-//!   bar, Excel) or changes the text between keys can make the Backspaces delete the wrong
-//!   characters.
+//! - Edits are blind: an application that changes the text between keys, or completes text
+//!   inline without the autocomplete guard of its policy (D49), can make the Backspaces
+//!   delete the wrong characters.
+//! - With the guard, a field whose length limit is reached does not take the placeholder, and
+//!   its Backspace then deletes one real character.
 //! - Another input method that runs at the same time (UniKey) transforms the same keys;
 //!   keys injected by other programs are typed like physical ones.
 //! - The Chinese, Japanese, and Korean input methods get every key untouched: no Vietnamese
@@ -269,7 +288,15 @@
 //!     the test prints the number of restarts. Also check that idle periods, the lock screen,
 //!     and typing in an elevated window cause no restart, or only one harmless restart.
 //! 20. **Browsers and Office:** type in Edge or Chrome (a page text area and the address
-//!     bar), Word, and Excel; record where Backspaces go wrong.
+//!     bar), Word, and Excel; record where Backspaces go wrong. Inline completion (D49): in the
+//!     address bar of Chrome, Edge, and Firefox, type `a` while the browser suggests an
+//!     address that starts with `a` (the rest selected), then `a`: `â`, never `aâ`; type
+//!     `vieetj nam` and `tieengs vieetj` there: `việt nam`, `tiếng việt`, with no stray space.
+//!     In Excel, under a cell holding `an toàn`, type `aan`: `ân`. In Google Docs (guarded,
+//!     as every page of a guarded browser), type `tooi ddi hojc.` at the start of a sentence:
+//!     `Tôi đi học.` or `tôi đi học.`, never a doubled or missing letter. In Word (not
+//!     guarded), type a paragraph: nothing changes by AutoCorrect that would not without
+//!     Raumakey.
 //! 21. **Stop:** stop the hook (end of the test, or Exit in the tray): typing is plain again
 //!     at once, nothing is stuck down.
 
@@ -282,7 +309,7 @@ mod mailbox;
 mod platform;
 mod tracker;
 
-pub use blind::BlindDocument;
+pub use blind::{AUTOCOMPLETE_PLACEHOLDER, BlindDocument};
 pub use handler::{IDLE_RESYNC_MS, ModeObserver, TypingHandler, UNKNOWN_EXECUTABLE};
 pub use health::{HOOK_SILENCE_LIMIT_MS, hook_lost};
 #[cfg(windows)]

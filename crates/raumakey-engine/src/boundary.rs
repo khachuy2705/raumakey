@@ -184,17 +184,23 @@ fn word_macro(request: &Request<'_>, boundary: Boundary) -> Option<Replacement> 
     })
 }
 
-/// The raw keys of an invalid transformed word, when auto-restore applies.
+/// The raw keys of an invalid transformed word, when auto-restore applies: with spell
+/// checking, a word that is no complete syllable; without it, a word that does not end as one
+/// apart from its onset (D52, [`crate::word::Word::has_complete_rhyme`]).
 fn restore(request: &Request<'_>) -> Option<Replacement> {
     let options = request.options;
     let prior = request.prior;
     let word = &prior.word;
+    let invalid = if options.spell_check {
+        !word.is_complete_syllable()
+    } else {
+        !word.has_complete_rhyme()
+    };
     let applies = options.enabled
-        && options.spell_check
         && options.auto_restore_invalid
         && prior.tracking == Tracking::Vietnamese
         && word.transformed()
-        && !word.is_complete_syllable();
+        && invalid;
     applies.then(|| Replacement {
         text: word.raw_text(),
         delete: word_units(prior),

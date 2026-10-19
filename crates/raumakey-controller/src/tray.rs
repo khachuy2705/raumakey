@@ -198,7 +198,9 @@
 //! "Danh sách gõ tắt…" opens the macro list editor of the data folder, or brings the open one
 //! to the front ([`Effect::OpenMacroList`]), when there is a folder, and "Ứng dụng loại trừ…"
 //! opens the exclusions dialog, or brings the open one to the front
-//! ([`Effect::OpenExclusions`]), also without a folder.
+//! ([`Effect::OpenExclusions`]), also without a folder. "Đóng" ([`PanelRequest::Exit`], D50)
+//! exits exactly as "Thoát" of the menu does; "Thu nhỏ", Esc, and the close box close the panel
+//! by themselves, which the tray learns from [`Event::PanelClosed`].
 //!
 //! # Exclusions dialog (D48)
 //!
@@ -323,6 +325,8 @@ pub const DOUBLE_CLICK_GRACE_MS: u32 = 2_000;
 pub const TOOLTIP_ENGLISH: &str = "Raumakey: đang gõ tiếng Anh";
 /// Tooltip in Vietnamese mode with Telex.
 pub const TOOLTIP_TELEX: &str = "Raumakey: đang gõ tiếng Việt (Telex)";
+/// Tooltip in Vietnamese mode with Simple Telex (D53).
+pub const TOOLTIP_SIMPLE_TELEX: &str = "Raumakey: đang gõ tiếng Việt (Telex đơn giản)";
 /// Tooltip in Vietnamese mode with VNI.
 pub const TOOLTIP_VNI: &str = "Raumakey: đang gõ tiếng Việt (VNI)";
 /// Tooltip in Vietnamese mode with VIQR.
@@ -342,6 +346,8 @@ pub const MENU_PANEL: &str = "Bảng cấu hình\u{2026}";
 pub const MENU_VIETNAMESE_MODE: &str = "Gõ tiếng Việt (Ctrl+Shift)";
 /// The input method Telex.
 pub const MENU_TELEX: &str = "Telex";
+/// The input method Simple Telex (D53).
+pub const MENU_SIMPLE_TELEX: &str = "Telex đơn giản";
 /// The input method VNI.
 pub const MENU_VNI: &str = "VNI";
 /// The input method VIQR.
@@ -462,6 +468,7 @@ impl IconState {
         Cow::Borrowed(match (self.mode, self.method) {
             (InputMode::English, _) => TOOLTIP_ENGLISH,
             (InputMode::Vietnamese, InputMethod::Telex) => TOOLTIP_TELEX,
+            (InputMode::Vietnamese, InputMethod::SimpleTelex) => TOOLTIP_SIMPLE_TELEX,
             (InputMode::Vietnamese, InputMethod::Vni) => TOOLTIP_VNI,
             (InputMode::Vietnamese, InputMethod::Viqr) => TOOLTIP_VIQR,
             (InputMode::Vietnamese, InputMethod::UserDefined) => TOOLTIP_USER_DEFINED,
@@ -543,6 +550,8 @@ pub enum TrayCommand {
     VietnameseMode,
     /// Telex.
     Telex,
+    /// Simple Telex (D53).
+    SimpleTelex,
     /// VNI.
     Vni,
     /// VIQR.
@@ -565,10 +574,11 @@ pub enum TrayCommand {
 
 impl TrayCommand {
     /// Every command, in menu order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Panel,
         Self::VietnameseMode,
         Self::Telex,
+        Self::SimpleTelex,
         Self::Vni,
         Self::Viqr,
         Self::SpellCheck,
@@ -581,12 +591,14 @@ impl TrayCommand {
     ];
 
     /// The menu command id (never 0, which a menu returns for "nothing chosen"). The commands
-    /// of D42 keep their numbers; [`TrayCommand::Panel`] came later.
+    /// of D42 keep their numbers; [`TrayCommand::Panel`] and [`TrayCommand::SimpleTelex`] came
+    /// later.
     pub const fn id(self) -> u16 {
         match self {
             Self::Panel => 12,
             Self::VietnameseMode => 1,
             Self::Telex => 2,
+            Self::SimpleTelex => 13,
             Self::Vni => 3,
             Self::Viqr => 4,
             Self::SpellCheck => 5,
@@ -610,6 +622,7 @@ impl TrayCommand {
             Self::Panel => MENU_PANEL,
             Self::VietnameseMode => MENU_VIETNAMESE_MODE,
             Self::Telex => MENU_TELEX,
+            Self::SimpleTelex => MENU_SIMPLE_TELEX,
             Self::Vni => MENU_VNI,
             Self::Viqr => MENU_VIQR,
             Self::SpellCheck => MENU_SPELL_CHECK,
@@ -631,7 +644,7 @@ impl TrayCommand {
 /// document (only its revision differs, which the commit sets): the mode in both
 /// `vietnamese_mode` and `options.enabled`, a user-defined method without its key map on the
 /// default method, "Mặc định" ([`Change::TypingDefaults`]) on the default method and switches
-/// of [`EngineOptions::defaults_v1`] (the mode, the key map id, the normalization, and the
+/// of [`EngineOptions::defaults_v2`] (the mode, the key map id, the normalization, and the
 /// context limit stay), and the startup mode and the panel at start, which the hook does not
 /// see, changing nothing. The edits of the exclusions dialog are no [`Change`] and are not
 /// worked out here: the runtime snapshot with their rules comes with the worker's answer
@@ -653,7 +666,7 @@ pub fn with_change(runtime: &RuntimeSnapshot, change: Change) -> RuntimeSnapshot
             options.input_method = if usable {
                 method
             } else {
-                EngineOptions::defaults_v1().input_method
+                EngineOptions::defaults_v2().input_method
             };
         }
         Change::SpellCheck(on) => options.spell_check = on,
@@ -663,9 +676,11 @@ pub fn with_change(runtime: &RuntimeSnapshot, change: Change) -> RuntimeSnapshot
         Change::Macros(on) => options.macros_enabled = on,
         Change::MacrosWhenEnglish(on) => options.macros_when_disabled = on,
         Change::MacroAutoCase(on) => options.auto_case_macro = on,
+        Change::Charset(charset) => options.charset = charset,
         Change::TypingDefaults => {
-            let defaults = EngineOptions::defaults_v1();
+            let defaults = EngineOptions::defaults_v2();
             options.input_method = defaults.input_method;
+            options.charset = defaults.charset;
             options.modern_tone = defaults.modern_tone;
             options.free_marking = defaults.free_marking;
             options.spell_check = defaults.spell_check;
@@ -1152,6 +1167,7 @@ impl Tray {
             TrayCommand::VietnameseMode.item(self.runtime.vietnamese_mode),
             MenuItem::Separator,
             TrayCommand::Telex.item(method == InputMethod::Telex),
+            TrayCommand::SimpleTelex.item(method == InputMethod::SimpleTelex),
             TrayCommand::Vni.item(method == InputMethod::Vni),
             TrayCommand::Viqr.item(method == InputMethod::Viqr),
             MenuItem::Separator,
@@ -1271,6 +1287,7 @@ impl Tray {
             TrayCommand::Panel => self.open_panel(),
             TrayCommand::VietnameseMode => self.set_mode(self.mode().toggled()),
             TrayCommand::Telex => self.choose_method(InputMethod::Telex),
+            TrayCommand::SimpleTelex => self.choose_method(InputMethod::SimpleTelex),
             TrayCommand::Vni => self.choose_method(InputMethod::Vni),
             TrayCommand::Viqr => self.choose_method(InputMethod::Viqr),
             TrayCommand::SpellCheck => self.change(Change::SpellCheck(!options.spell_check)),
@@ -1406,6 +1423,7 @@ impl Tray {
                 | Change::Macros(_)
                 | Change::MacrosWhenEnglish(_)
                 | Change::MacroAutoCase(_)
+                | Change::Charset(_)
                 | Change::TypingDefaults => self.change(change),
             },
             PanelRequest::Startup(on) => match (self.startup, on) {
@@ -1426,6 +1444,7 @@ impl Tray {
                 .into_iter()
                 .collect(),
             PanelRequest::Exclusions => self.open_exclusions(),
+            PanelRequest::Exit => self.exit(),
         }
     }
 

@@ -194,6 +194,8 @@ pub struct FakeDocument {
     pub failures: Vec<EditError>,
     /// `Debug` output of every edit request received.
     pub request_debug: Vec<String>,
+    /// Whether each edit request received asked for the autocomplete guard (D49).
+    pub guards: Vec<bool>,
 }
 
 impl FakeDocument {
@@ -214,6 +216,7 @@ impl FakeDocument {
             attempts: 0,
             failures: Vec::new(),
             request_debug: Vec::new(),
+            guards: Vec::new(),
         }
     }
 
@@ -387,6 +390,7 @@ impl DocumentPort for FakeDocument {
     fn replace_before_caret(&mut self, request: &EditRequest<'_>) -> Result<(), EditError> {
         self.attempts += 1;
         self.request_debug.push(format!("{request:?}"));
+        self.guards.push(request.autocomplete_guard());
         assert_eq!(
             request.expected().len(),
             request.delete_before() as usize,

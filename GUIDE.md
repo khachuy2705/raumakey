@@ -210,10 +210,11 @@ Ctrl+Shift, chọn trong menu hay sửa tệp bằng tay, các ô trong bảng �
 | Nhóm | Mục | Tác dụng | Khoá trong `raumakey.toml` |
 |---|---|---|---|
 | | Gõ tiếng Việt | Bật hoặc tắt tiếng Việt, như Ctrl+Shift | `[input] enabled` |
-| Cách gõ | Kiểu gõ | Telex, VNI hoặc VIQR. "Kiểu gõ riêng" chỉ có khi tệp cấu hình định nghĩa một bảng phím riêng | `[input] method` |
+| Cách gõ | Kiểu gõ | Telex, Telex đơn giản, VNI hoặc VIQR. Telex đơn giản giống Telex nhưng `w` chỉ có tác dụng sau a, o, u (`w` đứng riêng không thành "ư"), nên gõ tiếng Anh có chữ w dễ hơn. "Kiểu gõ riêng" chỉ có khi tệp cấu hình định nghĩa một bảng phím riêng | `[input] method` |
+| Cách gõ | Bảng mã | Unicode (mặc định), TCVN3 (ABC), VNI Windows, Unicode tổ hợp, Windows CP 1258. Chọn TCVN3 hay VNI Windows khi soạn văn bản dùng font `.Vn` hay font VNI | `[input] charset` |
 | Cách gõ | Đặt dấu kiểu mới (oà, uý) | Đặt dấu thanh theo kiểu mới thay cho kiểu cũ (òa, úy) | `[input] modern_tone` |
 | Cách gõ | Cho gõ dấu sau phụ âm cuối (toans → toán) | Gõ dấu ở cuối từ, sau cả phụ âm cuối | `[input] free_marking` |
-| Cách gõ | Kiểm tra chính tả | Chỉ bỏ dấu khi từ đúng chính tả tiếng Việt | `[input] spell_check` |
+| Cách gõ | Kiểm tra chính tả | Mặc định tắt. Khi bật, chỉ bỏ dấu khi từ đúng chính tả tiếng Việt. Khi tắt, Raumakey vẫn không bỏ dấu khi phím dấu phải với ngược qua những phụ âm không thể đứng cuối âm tiết (`EVKey` giữ nguyên), và ở dấu cách trả về đúng các phím đã gõ cho từ không có vần tiếng Việt (`Google`, `Windows`, `were`, `text`). Lúc đang gõ dở, từ tiếng Anh có thể tạm hiện dấu (`Ưindows`) | `[input] spell_check` |
 | Cách gõ | Giữ nguyên phím đã gõ khi từ không phải tiếng Việt | Ví dụ gõ `after` rồi dấu cách thì được "after", không thành chữ có dấu | `[input] auto_restore_invalid` |
 | Gõ tắt | Bật gõ tắt | Bật hoặc tắt các mục gõ tắt | `[macros] enabled` |
 | Gõ tắt | Gõ tắt cả khi đang gõ tiếng Anh | Gõ tắt vẫn chạy ở chế độ **E** | `[macros] when_disabled` |
@@ -228,7 +229,11 @@ Các nút ở cuối bảng:
 - **Mở file cấu hình**: mở `raumakey.toml` bằng Notepad.
 - **Mặc định**: hỏi lại, rồi đặt các mục của nhóm "Cách gõ" và "Gõ tắt" về mặc định. Chế độ V/E,
   "Khởi động cùng Windows", "Mở bảng này khi Raumakey chạy" và danh sách gõ tắt không đổi.
-- **Đóng** (hoặc Enter, Esc): đóng bảng. Raumakey vẫn chạy ở khay hệ thống.
+- **Thu nhỏ** (hoặc Enter, Esc, nút X trên thanh tiêu đề): đóng bảng. Raumakey vẫn chạy ở khay hệ
+  thống; mở lại bảng bằng cách nháy đúp vào biểu tượng.
+- **Đóng**: thoát Raumakey, như mục **Thoát** của menu khay. Biểu tượng biến mất và bàn phím gõ
+  bình thường ngay; mọi thay đổi đã được lưu. Nếu "Danh sách gõ tắt…" đang mở, hộp thoại đó đóng
+  mà không lưu, như khi chọn **Thoát**.
 
 Phím tắt bật/tắt, dạng Unicode (`normalization`) và bảng phím riêng chỉ sửa được trong tệp cấu hình
 (mục 5.4). Bảng chỉ hiển thị phím tắt đang dùng.
@@ -239,7 +244,7 @@ Menu khay có các mục sau:
 |---|---|
 | Bảng cấu hình… | Mở bảng cấu hình, hoặc đưa bảng đang mở lên trước |
 | Gõ tiếng Việt (Ctrl+Shift) | Bật hoặc tắt tiếng Việt |
-| Telex, VNI, VIQR | Chọn kiểu gõ |
+| Telex, Telex đơn giản, VNI, VIQR | Chọn kiểu gõ |
 | Kiểm tra chính tả | Chỉ bỏ dấu khi từ đúng chính tả tiếng Việt |
 | Đặt dấu kiểu mới (oà, uý) | Đặt dấu thanh theo kiểu mới thay cho kiểu cũ (òa, úy) |
 | Gõ tắt (macro) | Bật hoặc tắt macro trong `raumakey-macros.toml` |
@@ -285,10 +290,11 @@ Bảng cấu hình chỉnh được mọi khoá dưới đây. Nếu muốn, b�
 ```toml
 [input]
 enabled = true                # đang gõ tiếng Việt
-method = "telex"              # "telex", "vni" hoặc "viqr"
+method = "telex"              # "telex", "simple-telex", "vni" hoặc "viqr"
+charset = "unicode"           # "unicode", "tcvn3", "vni-windows", "unicode-nfd" hoặc "cp1258"
 modern_tone = false           # đặt dấu kiểu mới (oà, uý)
 free_marking = true           # cho gõ dấu sau phụ âm cuối
-spell_check = true            # kiểm tra chính tả
+spell_check = false           # kiểm tra chính tả (mặc định tắt)
 auto_restore_invalid = true   # giữ nguyên phím đã gõ khi từ không phải tiếng Việt
 
 [macros]
@@ -310,7 +316,9 @@ apps = ["mstsc.exe", "msrdc.exe", "rdcman.exe", "vmconnect.exe"]
 
 - Danh sách có hai cột: **Tệp chương trình** và **Mô tả** (tên mà chương trình tự ghi, khi
   Raumakey tìm thấy nó đang chạy).
-- Thêm một ứng dụng theo một trong ba cách, rồi bấm **Thêm**:
+- Thêm một ứng dụng theo một trong bốn cách, rồi bấm **Thêm**:
+  - kéo hình tâm ngắm (cạnh nút **Thêm**) thả vào cửa sổ của ứng dụng đó: trong lúc kéo, ô
+    **Ứng dụng:** hiện tên tệp exe của cửa sổ dưới con trỏ; thả chuột thì tên ở lại trong ô;
   - gõ hoặc dán tên vào ô **Ứng dụng:**, ví dụ `notepad` hay cả đường dẫn;
   - mở danh sách của ô đó và chọn một ứng dụng đang có cửa sổ (bấm **Làm mới** nếu vừa mở ứng
     dụng);
@@ -344,7 +352,52 @@ vẫn đổi chế độ chung; khi bạn chuyển sang ứng dụng khác, bi�
 - Sau khi bạn lưu tệp, thay đổi có hiệu lực trong vòng khoảng 2 giây. Một mục không phải tên tệp
   hợp lệ bị bỏ qua và được báo một lần.
 - Muốn loại trừ chi tiết hơn (chỉ một lớp cửa sổ của một ứng dụng), dùng `[[rule]]` với
-  `window_class` trong `raumakey-app-rules.toml` (kế hoạch §5).
+  `window_class` trong `raumakey-app-rules.toml` (kế hoạch §5). Khi tệp này có mặt, các named set
+  mặc định không còn được dùng; hãy chép cả named set `autocomplete` vào tệp (xem đoạn "Gợi ý tự
+  hoàn thành" ngay dưới), nếu không các trình duyệt sẽ lại gõ `aa` ra "aâ".
+
+**Gợi ý tự hoàn thành (thanh địa chỉ, Excel).** Khi bạn gõ trên thanh địa chỉ, trình duyệt tự điền
+phần còn lại của một địa chỉ từng mở và bôi đen phần đó; ô của Excel cũng vậy. Raumakey sửa chữ
+bằng Backspace, mà Backspace khi có phần bôi đen chỉ xoá phần bôi đen, nên `aa` có thể ra "aâ".
+Trong các ứng dụng dưới đây, mỗi lần sửa chữ Raumakey gõ thêm một khoảng trắng hẹp (U+202F) trước
+Backspace: ký tự này thay thế phần gợi ý, rồi bị xoá ngay cùng chữ cần sửa (thiết kế §23, D49).
+
+- Danh sách mặc định: `chrome.exe`, `msedge.exe`, `firefox.exe`, `brave.exe`, `opera.exe`,
+  `vivaldi.exe`, `chromium.exe`, `browser.exe` (Cốc Cốc), `waterfox.exe`, `whale.exe` và
+  `excel.exe`.
+- Word không có trong danh sách, vì AutoCorrect của Word có thể coi ký tự này là dấu cách.
+- Backspace khi đang gõ dở một từ xoá chữ cuối cùng và phần gợi ý cùng lúc; khi tự gõ, trình duyệt
+  cần hai lần Backspace (lần đầu chỉ xoá gợi ý). Enter sau một từ vẫn chấp nhận gợi ý như khi không
+  có Raumakey.
+- Muốn bật cho ứng dụng khác (hoặc tắt cho một ứng dụng của danh sách), tạo
+  `raumakey-app-rules.toml` cạnh `raumakey.toml`. Tệp này thay **toàn bộ** dữ liệu tương thích
+  mặc định, nên hãy chép cả named set `autocomplete` vào để giữ các trình duyệt:
+
+```toml
+version = 1
+
+# Bật cho một ứng dụng khác
+[[rule]]
+exe = "winword.exe"
+autocomplete_guard = true
+
+# Tắt cho một ứng dụng của danh sách
+[[rule]]
+exe = "excel.exe"
+autocomplete_guard = false
+
+# Danh sách mặc định
+[[named_set]]
+name = "autocomplete"
+members = ["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe",
+           "chromium.exe", "browser.exe", "waterfox.exe", "whale.exe", "excel.exe"]
+action = { autocomplete_guard = true }
+```
+
+- Thay đổi trong tệp có hiệu lực sau khoảng 2 giây. Một giá trị không phải `true`/`false` được báo
+  và bị bỏ qua.
+- Giới hạn: trong một ô đã đầy theo giới hạn độ dài (ví dụ ô nhập có giới hạn ký tự trên trang
+  web), ô không nhận thêm ký tự, nên sửa chữ ở ký tự cuối cùng có thể mất một ký tự.
 
 Một số khoá chỉ sửa được trong tệp: `[input] normalization`, `context_limit`, `user_keymap` cùng
 `[[keymaps]]`, bảng `[hotkeys]` (phím tắt bật/tắt), `[system] diagnostics` và `[conversion]`. Tên
@@ -444,6 +497,19 @@ như mô tả và báo lại.
 | 32 | Trong hộp thoại, gõ `notepad`, bấm **Thêm**; mở Notepad và gõ `tieengs` | Dòng `notepad.exe` xuất hiện; `raumakey.toml` có `notepad.exe`; trong Notepad biểu tượng là **E** và ra nguyên văn "tieengs" |
 | 33 | Chọn một ứng dụng đang mở trong danh sách của ô **Ứng dụng:**, rồi **Thêm**; sau đó **Duyệt…**, chọn một tệp `.exe`, **Thêm** | Cả hai ứng dụng được thêm |
 | 34 | Chọn dòng `notepad.exe`, bấm **Xoá**; rồi bấm **Mặc định**, chọn **Yes** | Notepad gõ lại được "tiếng"; danh sách về đúng bốn ứng dụng mặc định |
+| 35 | Trên thanh địa chỉ của Chrome, gõ `a` khi Chrome đang gợi ý một địa chỉ bắt đầu bằng "a" (phần còn lại bị bôi đen), rồi gõ thêm `a`. Làm lại với Edge, Firefox và Cốc Cốc | Thanh địa chỉ bắt đầu bằng "â" (có thể kèm gợi ý mới), không phải "aâ" |
+| 36 | Trên thanh địa chỉ, gõ `vieetj nam`, xoá đi, rồi gõ `tieengs vieetj` | "việt nam", "tiếng việt"; không thừa hay thiếu chữ, không có khoảng trắng lạ |
+| 37 | Trong Excel, dưới một ô có "an toàn", gõ `aan` vào ô mới cùng cột | "ân", không phải "aân" |
+| 38 | Gõ một đoạn tiếng Việt trong ô nhập của trang web (ô bình luận, Google Docs, Google Trang tính) và trong Word; trong Google Docs, gõ `tooi ddi hojc.` ở đầu một câu mới | Gõ đúng như trong Notepad ("Tôi đi học." nếu Docs tự viết hoa đầu câu); Word không tự sửa chữ khác thường |
+| 39 | Mở bảng cấu hình, bấm **Thu nhỏ**; mở lại, nhấn Esc; mở lại, bấm nút X trên thanh tiêu đề | Mỗi lần bảng đóng, biểu tượng V/E vẫn ở khay và gõ `tieengs` trong Notepad vẫn ra "tiếng" |
+| 40 | Đổi một tuỳ chọn trong bảng, rồi bấm **Đóng** | Bảng và biểu tượng biến mất, không còn tiến trình `raumakey.exe` (Task Manager); gõ `tieengs` ra nguyên văn; chạy lại thì tuỳ chọn vừa đổi vẫn còn |
+| 41 | Với kiểm tra chính tả tắt (mặc định), gõ `EVKey Windows Google were text tieengs vieetj` rồi dấu cách | "EVKey Windows Google were text tiếng việt "; trong lúc gõ dở không bao giờ thấy "ÊVKy" hay mất chữ W |
+| 42 | Chọn **Telex đơn giản**, gõ `w`, `word`, `tuwowngf`, `nguwowif` | "w", "word", "tường", "người"; biểu tượng ghi "Telex đơn giản" trong tooltip |
+| 43 | Chọn bảng mã **TCVN3 (ABC)**, mở WordPad hay Word, chọn font `.VnTime`, gõ `tieengs vieetj` | Hiện "tiếng việt" bằng font `.VnTime`; Backspace khi đang gõ dở sửa đúng chữ |
+| 44 | Chọn bảng mã **VNI Windows**, chọn font `VNI-Times`, gõ `tieengs vieetj`; đổi lại **Unicode** giữa chừng một từ rồi gõ tiếp | Hiện "tiếng việt"; sau khi đổi bảng mã, chữ đã gõ không bị xoá sai |
+| 45 | Trong "Ứng dụng loại trừ…", gõ `abc` vào ô **Ứng dụng:**, kéo hình tâm ngắm qua Notepad rồi qua chính hộp thoại, thả lên Notepad | Con trỏ thành dấu thập; trên Notepad ô hiện `notepad.exe`, trên hộp thoại ô hiện lại `abc`; sau khi thả ô giữ `notepad.exe`, nút **Thêm** bật; bấm **Thêm** thì `notepad.exe` vào danh sách |
+| 46 | Kéo hình tâm ngắm rồi nhấn Alt+Tab trước khi thả; lần khác thả lên màn hình nền; lần khác thả lên một cửa sổ chạy quyền quản trị | Alt+Tab: ô **Ứng dụng:** trở lại như trước khi kéo. Màn hình nền: ô hiện `explorer.exe`. Cửa sổ quyền quản trị: ghi lại tên hiện ra, hoặc ô trở lại như trước nếu Windows không cho đọc |
+| 47 | Chọn bảng mã **Windows CP 1258**, gõ `tieengs vieetj` trong Notepad, rồi Backspace khi đang gõ dở một từ | Hiện "tiếng việt" (chữ cái kèm dấu tổ hợp); Backspace xoá đúng chữ, không để lại dấu thừa |
 
 ### 5.7 Dòng lệnh
 
@@ -473,11 +539,19 @@ Raumakey không ghi gì vào registry.
 
 - Chưa ai thử bộ gõ trong ứng dụng thật. Mục 5.6 là danh sách cần kiểm tra.
 - Hook không đọc được văn bản của ứng dụng, nên sửa chữ bằng Backspace rồi gõ lại, giống UniKey.
-  Ứng dụng có tự hoàn thành (thanh địa chỉ trình duyệt, Excel) có thể làm lệch chữ.
+  Gợi ý tự hoàn thành của trình duyệt và Excel đã được xử lý (mục 5.4); một ứng dụng tự hoàn thành
+  khác vẫn có thể làm lệch chữ cho tới khi bạn thêm nó vào `raumakey-app-rules.toml`.
 - Ô mật khẩu chỉ được nhận ra khi là ô Edit kiểu cũ của Windows; ô mật khẩu trên trình duyệt được
   xử lý như ô thường.
 - Khi đang dùng bộ gõ tiếng Trung, Nhật hoặc Hàn của Windows, Raumakey để mọi phím đi thẳng.
 - Nếu Windows gỡ hook (ví dụ khi máy quá tải), Raumakey tự cài lại trong vòng khoảng 2 giây.
+- Khi tắt kiểm tra chính tả, `k` không được coi là phụ âm cuối, nên "Đắk Lắk" bị trả về các phím
+  đã gõ ở dấu cách nếu bật "Giữ nguyên phím đã gõ"; từ có phụ âm đầu lạ (`Krông`) không nhận dấu.
+- Bảng mã TCVN3 không có chữ hoa có dấu thanh: chữ đó được gõ thành chữ thường. Bảng mã chưa có
+  trong menu khay và chưa có phím tắt riêng. Khi bảng mã không phải Unicode, một phím mà layout bàn
+  phím gõ ra chữ ngoài ASCII (ví dụ `é`) giữa một từ có thể làm lần sửa sau xoá lệch một ký tự.
+- Khi tắt kiểm tra chính tả, một từ đã có dấu mà chứa chữ số hay ký tự lạ được trả về các phím đã
+  gõ ở dấu cách (`ddi2` → "ddi2").
 - Bảng cấu hình chưa có phím tắt bật/tắt, dạng Unicode (NFC/NFD) hay bảng phím riêng; các khoá
   này phải sửa trong `raumakey.toml` (mục 5.4). Phím tắt kiểu Alt+Z cần thêm việc ở hook, vì Alt
   vẫn tới ứng dụng và làm cửa sổ mở menu.
@@ -497,6 +571,7 @@ phần còn lại của dự án.
 |---|---|
 | Không thấy biểu tượng V/E | Mở mũi tên ^ ở khay hệ thống; trong **Settings > Personalization > Taskbar > Other system tray icons** bật Raumakey để luôn hiện. |
 | Gõ ra chữ bị lặp hoặc lộn xộn | Một bộ gõ khác (UniKey, EVKey, bàn phím tiếng Việt của Windows) đang chạy cùng; tắt nó đi. |
+| Gõ `aa` ra "aâ" trong một ô có gợi ý tự hoàn thành | Ứng dụng đó tự điền và bôi đen phần còn lại của chữ, nhưng không có trong danh sách mặc định; thêm nó bằng `autocomplete_guard = true` trong `raumakey-app-rules.toml` (mục 5.4). |
 | Ctrl+Shift chuyển bàn phím Windows thay vì đổi V/E | Windows đang dùng Ctrl+Shift để đổi layout. Đổi ở **Settings > Time & language > Typing > Advanced keyboard settings > Input language hot keys**. |
 | Không gõ được tiếng Việt trong một ứng dụng chạy quyền quản trị | Chạy `raumakey.exe` bằng **Run as administrator**. |
 | Cấu hình không được lưu cạnh exe | Thư mục không ghi được, hoặc nằm trong Program Files, thư mục Windows hay thư mục tạm; xem đường dẫn ở phần cuối của bảng cấu hình hoặc trong mục **Giới thiệu** (thường là `%LOCALAPPDATA%\Raumakey`). Muốn giữ cấu hình cạnh exe thì chép exe sang một thư mục bình thường, ví dụ `D:\Tools\Raumakey`. |
@@ -509,8 +584,10 @@ phần còn lại của dự án.
 
 - `README.md`: giới thiệu dự án.
 - `docs/superpowers/specs/2026-10-16-raumakey-design.md`: thiết kế; §21 mô tả bản portable, §22
-  mô tả bảng cấu hình và danh sách gõ tắt.
+  mô tả bảng cấu hình và danh sách gõ tắt, §23 mô tả cách xử lý gợi ý tự hoàn thành, §24 mô tả
+  kiểm tra cấu trúc, Telex đơn giản, bảng mã và công cụ dò tên chương trình.
 - `docs/superpowers/plans/2026-10-16-raumakey-implementation.md`: kế hoạch triển khai. §14 ghi
-  trạng thái, §15 ghi các quyết định, §16 ghi bản portable, §17 ghi bảng cấu hình.
+  trạng thái, §15 ghi các quyết định, §16 ghi bản portable, §17 ghi bảng cấu hình, §18 ghi việc xử
+  lý gợi ý tự hoàn thành, §19 ghi các yêu cầu D51–D55.
 - `docs/reference/evkey_compatibility_test_matrix.md`: ma trận kiểm thử tương thích.
 - `THIRD_PARTY.md`: nguồn gốc mã và giấy phép bên thứ ba.

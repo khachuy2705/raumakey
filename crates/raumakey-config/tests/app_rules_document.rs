@@ -56,6 +56,7 @@ fn plan_example_compatibility() -> CompatibilityConfig {
                 macros: Some(true),
                 vietnamese: Some(false),
                 max_delete_before: Some(64),
+                autocomplete_guard: None,
             },
         }],
         named_sets: vec![NamedSet {
@@ -339,6 +340,69 @@ tsf_range_edit = false
     for kept in ["code.exe", "Chrome_WidgetWin_1", "legacy.exe"] {
         assert!(encoded.contains(kept), "{kept} missing from\n{encoded}");
     }
+}
+
+/// D49: `autocomplete_guard` is an action field of a rule and of a named set: it is read,
+/// written back, and a bad value is reported and inherits like any other action field.
+#[test]
+fn d49_the_autocomplete_guard_is_an_action_field() {
+    let text = r#"version = 1
+[[rule]]
+exe = "winword.exe"
+autocomplete_guard = true
+[[rule]]
+exe = "chrome.exe"
+window_class = "Chrome_WidgetWin_1"
+autocomplete_guard = false
+[[named_set]]
+name = "autocomplete"
+members = ["excel.exe"]
+action = { autocomplete_guard = true }
+"#;
+    let loaded = AppRulesDocument::decode(text).unwrap();
+    assert!(loaded.issues.is_empty(), "{:?}", loaded.issues);
+    let c = &loaded.document.compatibility;
+    let guard = |on| RuleAction {
+        autocomplete_guard: Some(on),
+        ..RuleAction::default()
+    };
+    assert_eq!(c.rules[0].action, guard(true));
+    assert_eq!(c.rules[1].action, guard(false));
+    assert_eq!(c.named_sets[0].action, guard(true));
+    let encoded = loaded.document.encode().unwrap();
+    assert!(encoded.contains("autocomplete_guard = true"), "{encoded}");
+    assert!(encoded.contains("autocomplete_guard = false"), "{encoded}");
+    let back = AppRulesDocument::decode(&encoded).unwrap();
+    assert!(back.issues.is_empty(), "{:?}", back.issues);
+    assert_eq!(back.document, loaded.document);
+
+    let bad = r#"version = 1
+[[rule]]
+exe = "chrome.exe"
+autocomplete_guard = "yes"
+macros = false
+[[named_set]]
+name = "autocomplete"
+members = ["excel.exe"]
+action = { autocomplete_guard = 1 }
+"#;
+    let loaded = AppRulesDocument::decode(bad).unwrap();
+    assert_eq!(
+        codes(&loaded.issues),
+        pairs(&[
+            ("rule[0].autocomplete_guard", "invalid-type"),
+            ("named_set[0].action.autocomplete_guard", "invalid-type"),
+        ])
+    );
+    let c = &loaded.document.compatibility;
+    assert_eq!(
+        c.rules[0].action,
+        RuleAction {
+            macros: Some(false),
+            ..RuleAction::default()
+        }
+    );
+    assert_eq!(c.named_sets[0].action, RuleAction::default());
 }
 
 /// Unknown keys inside `[[rule]]`, `[[named_set]]` (and its `action`), and `[[probe]]` survive

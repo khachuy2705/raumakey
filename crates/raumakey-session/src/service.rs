@@ -939,7 +939,7 @@ fn is_fresh(engine: &VietnameseEngine, state: &EngineState) -> bool {
 }
 
 /// Validates `transaction` against the owned text and the host policy and builds the edit
-/// request (`None` when there is nothing to edit).
+/// request (`None` when there is nothing to edit), with the policy's autocomplete guard.
 fn checked_request<'a>(
     transaction: &'a EditTransaction,
     owned: &'a [u16],
@@ -961,5 +961,8 @@ fn checked_request<'a>(
         return Ok(None);
     }
     let expected = owned.get(start..).ok_or(Rejected)?;
-    Ok(Some(EditRequest::new(expected, &transaction.insert_utf16)))
+    Ok(Some(
+        EditRequest::new(expected, &transaction.insert_utf16)
+            .with_autocomplete_guard(policy.autocomplete_guard),
+    ))
 }

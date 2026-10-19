@@ -1,11 +1,15 @@
 # Thiết kế viết lại Raumakey bằng Rust
 
-**Ngày:** 2026-10-16 (cập nhật lần cuối 2026-10-18: bổ sung trạng thái triển khai thành §20;
-chuyển sang bản portable một file ở §21; bảng cấu hình và danh sách gõ tắt ở §22)
+**Ngày:** 2026-10-16 (cập nhật lần cuối 2026-10-19: bổ sung trạng thái triển khai thành §20;
+chuyển sang bản portable một file ở §21; bảng cấu hình và danh sách gõ tắt ở §22; nút Thu nhỏ và Đóng
+ở §22.9; gợi ý tự hoàn thành của ứng dụng ở §23; kiểm tra cấu trúc, Telex đơn giản, bảng mã và công
+cụ dò tên chương trình ở §24)
 
 **Trạng thái:** Đã được duyệt; đang triển khai (xem §20). §21 thay thế các phần nói về TIP TSF,
 installer và thư mục dữ liệu; khi có mâu thuẫn, §21 thắng. §22 bổ sung bảng cấu hình cho §21 và
-thắng §21 ở những chỗ hai mục khác nhau.
+thắng §21 ở những chỗ hai mục khác nhau. §22.9 (D50) đổi nút cuối bảng cấu hình. §23 sửa cách
+hook sửa chữ trong các ứng dụng tự hoàn thành chữ và thắng §21.2 ở chỗ đó. §24 (D51–D55) thắng các
+mục trước ở những chỗ nó sửa.
 
 **Sản phẩm:** Raumakey
 
@@ -506,7 +510,7 @@ Kế hoạch ghi lại các quyết định D1, D2, D4–D7, D9, D13, D17–D21,
 | D6 | Tag cho input được chèn `0x524B5931` ("RKY1") | §5.3 | Xong phần thư viện |
 | D7 | Shift+Space commit từ mà không thay đổi | §7 | Xong |
 | D9 | Thư mục dữ liệu gốc portable `<exe_dir>/data/`, chỉ khi có tệp đánh dấu `raumakey.portable` | §8 | Xong phần thư viện, chưa được nối vào |
-| D13 | Các named set mặc định: chromium-family, terminals, games | §5.3 | Xong |
+| D13 | Các named set mặc định: chromium-family, terminals, games (D49 thêm autocomplete, §23) | §5.3 | Xong |
 | D17, D21 | Các mục đăng ký TSF, view registry, category, xác minh | §12 | Có mã trong `raumakey-windows`; thiếu văn bản quyết định |
 | D18 | Thiết lập chỉ được nhập qua `FIELD_MAP`, vốn được phát hành ở dạng rỗng | §2, §9 | Xong |
 | D19 | Các bảng mã của converter | §7 | Xong |
@@ -633,7 +637,8 @@ phím vật lý
 - D39 thay thế D26: hook giờ là transport gõ, không chỉ đọc phím tắt.
 - Rủi ro đã biết:
   - Ứng dụng có tự hoàn thành (thanh địa chỉ trình duyệt, Excel) có thể làm lệch các phím
-    Backspace.
+    Backspace. Từ D49 (§23), hook chặn lỗi này trong các trình duyệt và Excel; ứng dụng tự hoàn
+    thành khác vẫn bị, cho tới khi được thêm bằng một quy tắc.
   - Phần mềm diệt virus hoặc chống gian lận có thể cảnh báo một hook bàn phím toàn cục.
   - Hai bộ gõ cùng chạy (UniKey và Raumakey) sẽ biến đổi cùng một phím.
 
@@ -743,6 +748,7 @@ quyết định D43–D45, kế hoạch §17 ghi task và trạng thái.
 [x] Gõ tiếng Việt          Bật/tắt nhanh: Ctrl+Shift hoặc nhấp biểu tượng V/E
 +- Cách gõ -------------------------+  +- Gõ tắt ----------------------------+
 | Kiểu gõ: [Telex             v]    |  | [x] Bật gõ tắt                      |
+| Bảng mã: [Unicode           v]    |  |                     (từ D54)        |
 | [ ] Đặt dấu kiểu mới (oà, uý)     |  | [ ] Gõ tắt cả khi đang gõ tiếng Anh |
 | [x] Cho gõ dấu sau phụ âm cuối    |  | [x] Viết hoa theo cách gõ           |
 |     (toans -> toán)               |  |     (Ko -> Không, KO -> KHÔNG)      |
@@ -756,7 +762,7 @@ quyết định D43–D45, kế hoạch §17 ghi task và trạng thái.
 Mọi thay đổi có hiệu lực và được lưu ngay.
 Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml
 (cạnh raumakey.exe)
-[Mở file cấu hình]  [Mặc định]                                          [Đóng]
+[Mở file cấu hình]  [Mặc định]                             [Thu nhỏ]  [Đóng]   (từ D50)
 ```
 
   Đường dẫn nằm trong một nhãn riêng, rút gọn ở giữa khi quá dài, nên tên `raumakey.toml` luôn
@@ -768,10 +774,11 @@ Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml
 | Mục trong bảng | Khoá |
 |---|---|
 | Gõ tiếng Việt | `[input] enabled` (cũng là Ctrl+Shift và click biểu tượng) |
-| Kiểu gõ | `[input] method`: Telex, VNI, VIQR; mục "Kiểu gõ riêng" chỉ hiện khi tệp cấu hình có key map dùng được cho `user_keymap` |
+| Kiểu gõ | `[input] method`: Telex, Telex đơn giản (D53), VNI, VIQR; mục "Kiểu gõ riêng" chỉ hiện khi tệp cấu hình có key map dùng được cho `user_keymap` |
+| Bảng mã | `[input] charset` (D54): Unicode, TCVN3 (ABC), VNI Windows, Unicode tổ hợp, Windows CP 1258 |
 | Đặt dấu kiểu mới (oà, uý) | `[input] modern_tone` |
 | Cho gõ dấu sau phụ âm cuối | `[input] free_marking` |
-| Kiểm tra chính tả | `[input] spell_check` |
+| Kiểm tra chính tả | `[input] spell_check` (mặc định tắt từ D51) |
 | Giữ nguyên phím đã gõ khi từ không phải tiếng Việt | `[input] auto_restore_invalid` |
 | Bật gõ tắt | `[macros] enabled` |
 | Gõ tắt cả khi đang gõ tiếng Anh | `[macros] when_disabled` |
@@ -963,6 +970,7 @@ apps = ["mstsc.exe", "msrdc.exe", "rdcman.exe", "vmconnect.exe"]
     rộng gõ tắt; mọi thay đổi có hiệu lực và được lưu ngay;
   - danh sách hai cột, **Tệp chương trình** và **Mô tả**. Mô tả là `FileDescription` của chương
     trình khi tìm thấy nó đang chạy; với bốn ứng dụng mặc định, Raumakey có sẵn tên sản phẩm;
+  - từ D55 (§24.5), hình tâm ngắm cạnh nút **Thêm**: kéo nó thả vào một cửa sổ để lấy tên tệp exe;
   - ô **Ứng dụng:** dạng combo nhập được: gõ hoặc dán tên, đường dẫn, hoặc chọn một ứng dụng đang
     có cửa sổ (nút **Làm mới** đọc lại danh sách này); nút **Duyệt…** mở hộp thoại chọn tệp
     `.exe`;
@@ -981,3 +989,228 @@ apps = ["mstsc.exe", "msrdc.exe", "rdcman.exe", "vmconnect.exe"]
 - Hộp thoại chạy trên luồng riêng như bảng cấu hình; mỗi lúc chỉ có một; thoát Raumakey đóng nó.
   Một thay đổi bấm ngay trước khi thoát, còn nằm trong hàng đợi của tray, vẫn được gửi tới worker
   và được lưu trước khi worker kết thúc, như lần đổi chế độ cuối cùng bằng phím tắt.
+
+### 22.9 Nút "Thu nhỏ" và "Đóng" của bảng cấu hình (D50, 2026-10-19)
+
+- Chủ dự án yêu cầu: nút **Đóng** thoát hẳn Raumakey; thêm nút **Thu nhỏ**, đóng bảng nhưng
+  Raumakey vẫn chạy ở khay hệ thống. Trước D50, nút Đóng chỉ đóng bảng.
+- Hàng nút cuối bảng: `[Mở file cấu hình] [Mặc định] … [Thu nhỏ] [Đóng]`.
+- **Thu nhỏ** làm đúng việc của nút Đóng cũ: nó là nút Cancel (`IDCANCEL`) và là nút mặc định, nên
+  Enter, Esc và nút X trên thanh tiêu đề cũng thu nhỏ. Bảng đóng, tray biết qua `PanelClosed`, biểu
+  tượng V/E và việc gõ không đổi.
+- **Đóng** là một nút thường (id 144). Nó gửi yêu cầu `PanelRequest::Exit` tới tray, và tray thoát
+  đúng như mục "Thoát" của menu (§21.5, thứ tự thoát của tray): dừng hook, đóng thông báo, bảng, danh
+  sách gõ tắt (không lưu, như D44) và hộp thoại loại trừ, gửi nốt hàng đợi cho worker, lưu, xoá biểu
+  tượng, kết thúc vòng lặp. Không hỏi lại.
+- Lý do Enter, Esc và nút X không thoát: một phím bấm nhầm không được làm tắt bộ gõ. Chỉ một cú bấm
+  có chủ đích vào **Đóng** mới thoát.
+- Nút thu nhỏ trên thanh tiêu đề (`WS_MINIMIZEBOX`) vẫn thu nhỏ bảng xuống thanh tác vụ như trước.
+- Kiểm thử: id, nhãn, thứ tự tab, nhóm phím mũi tên và nút mặc định của template; yêu cầu `Exit`;
+  tray thoát như menu; bảng thật gửi `Exit` khi bấm Đóng và đóng khi bấm Thu nhỏ; chữ của sáu nút
+  không bị cắt. Danh sách kiểm tra thủ công: `GUIDE.md` §5.6, mục 39–40.
+
+## 23. Gợi ý tự hoàn thành của ứng dụng (thay đổi thiết kế ngày 2026-10-19)
+
+### 23.1 Vấn đề
+
+Chủ dự án báo: trong thanh địa chỉ của Chrome, gõ `aa` ra "aâ" thay vì "â". EVKey không bị lỗi
+này. Nguyên nhân nằm ở cách sửa mù của hook (§21.2):
+
+1. Người dùng gõ `a`. Chrome tự gợi ý phần còn lại từ lịch sử duyệt web, chèn sau con trỏ và bôi
+   đen phần đó: `a[mazon.com]`.
+2. Người dùng gõ `a` lần nữa. Engine muốn thay "a" bằng "â", nên hook chặn phím rồi gửi một
+   Backspace và ký tự "â".
+3. Khi có vùng chọn, Backspace chỉ xoá vùng chọn. Phần gợi ý mất, chữ "a" vẫn còn, rồi "â" được gõ
+   vào sau nó: "aâ".
+
+Excel (AutoComplete trong ô), Google Trang tính và thanh địa chỉ của các trình duyệt khác làm y như
+vậy; đó là lý do chọn các trình duyệt và Excel làm danh sách mặc định. TIP TSF (§5.2) không bị, vì
+nó đọc được vùng chọn; nhưng TIP không được phát hành (D38). Bản dựng lại EVKey (thư mục tham chiếu
+cục bộ `docs/reference/evkey_reconstruction/`, được AGENTS.md cho phép từ 2026-10-19,
+`research/evkey64_exe.md` §11) cũng ghi nhận EVKey có các bảng ứng dụng dựng sẵn riêng cho nhóm
+trình duyệt và một bảng thêm `excel.exe`. Nghĩa chính xác của từng bảng không được chứng minh, nên
+quan sát này chỉ củng cố việc chọn danh sách; cơ chế là thiết kế riêng của Raumakey.
+
+### 23.2 Cách sửa (D49)
+
+- Trong một host mà chính sách bật `autocomplete_guard`, một lần sửa có xoá chữ được gửi thành:
+  ký tự giữ chỗ U+202F (NARROW NO-BREAK SPACE), rồi một Backspace cho mỗi ký tự cần xoá **cộng một**,
+  rồi chữ mới. Ví dụ `aa` trong Chrome: U+202F, Backspace, Backspace, "â".
+- Ký tự giữ chỗ được gõ như mọi ký tự khác, nên nó thay thế phần gợi ý đang bôi đen. Backspace thêm
+  vào xoá chính nó, rồi các Backspace còn lại xoá đúng chữ mà engine sở hữu. Khi không có gợi ý nào,
+  ký tự giữ chỗ được gõ rồi xoá ngay; kết quả vẫn đúng.
+- Chọn U+202F vì nó là khoảng trắng: trình duyệt không tự gợi ý cho một chuỗi kết thúc bằng khoảng
+  trắng, và không có địa chỉ hay giá trị ô nào bắt đầu bằng phần chữ đang gõ kèm ký tự này. Một ký
+  tự vô hình không phải khoảng trắng (như U+200B) có thể bị trình duyệt bỏ qua khi so gợi ý, làm gợi
+  ý hiện lại và nuốt mất Backspace.
+- Lần sửa không xoá chữ nào (chỉ chèn, ví dụ `w` thành "ư") không cần ký tự giữ chỗ: chữ gõ vào tự
+  thay thế vùng chọn.
+- Backspace khi đang gõ dở một từ là một lần sửa của engine (khôi phục trạng thái trước), nên cũng
+  được bảo vệ: nó xoá chữ cuối và phần gợi ý cùng lúc, và engine vẫn khớp với văn bản. Khi tự gõ,
+  ứng dụng cần hai lần Backspace (lần đầu chỉ xoá gợi ý). Backspace khi không có từ đang gõ đi thẳng
+  tới ứng dụng.
+- Enter hay Tab sau một từ, kể cả Enter được gửi lại sau một macro, chấp nhận gợi ý của phần chữ vừa
+  chèn, như khi người dùng tự gõ chữ đó.
+- Khi `SendInput` chỉ gửi được một phần của một lần sửa có bảo vệ, ký tự giữ chỗ có thể còn lại
+  trong văn bản; từ đang gõ kết thúc như mọi lần gửi lỗi khác (§21.2).
+- Backspace của ký tự giữ chỗ cũng tính vào giới hạn `MAX_BACKSPACES` của bộ dựng input. Một lần sửa
+  vượt giới hạn bị từ chối như trước (lõi cho phím đi qua và kết thúc từ).
+
+### 23.3 Chính sách và cấu hình
+
+- `HostPolicy` có trường `autocomplete_guard`, mặc định tắt; `RuleAction` có trường cùng tên để ghi
+  đè. Thứ tự phân giải giữ nguyên (§5.3, kế hoạch §6): quy tắc có `window_class`, quy tắc chỉ theo
+  exe, rồi các named set theo thứ tự khai báo.
+- Bộ mặc định (D13) có thêm named set thứ tư, `autocomplete`, với hành động
+  `autocomplete_guard = true` và các thành viên: `chrome.exe`, `msedge.exe`, `firefox.exe`,
+  `brave.exe`, `opera.exe`, `vivaldi.exe`, `chromium.exe`, `browser.exe` (Cốc Cốc), `waterfox.exe`,
+  `whale.exe`, `excel.exe`. Named set riêng nên không đổi hành động của `chromium-family`.
+- Lõi phiên đặt cờ vào `EditRequest` (`with_autocomplete_guard`) theo chính sách của host. Chỉ
+  `BlindDocument` của hook dùng cờ này; TIP bỏ qua nó.
+- Người dùng bật hoặc tắt cho từng ứng dụng bằng `raumakey-app-rules.toml`, ví dụ
+  `[[rule]] exe = "winword.exe"` với `autocomplete_guard = true`. Tệp đó thay toàn bộ dữ liệu
+  tương thích mặc định, nên muốn giữ các trình duyệt thì chép cả named set `autocomplete` vào tệp
+  (`GUIDE.md` §5.4). Bảng cấu hình chưa có mục cho việc này.
+- Snapshot IPC và `raumakey-app-rules.toml` mang trường mới; giá trị sai kiểu được báo theo đường
+  dẫn schema (`rule[0].autocomplete_guard`) và kế thừa giá trị mặc định.
+
+### 23.4 Vì sao không bật cho mọi ứng dụng
+
+- Word và Outlook chạy AutoCorrect khi gặp khoảng trắng. Một ký tự giữ chỗ là khoảng trắng có thể
+  làm AutoCorrect sửa phần chữ đang gõ dở, và Backspace ngay sau AutoCorrect có thể hoàn tác thay
+  vì xoá ký tự. Khi đó số Backspace không còn khớp.
+- Một ô có giới hạn độ dài đang đầy không nhận ký tự giữ chỗ, nên Backspace thêm vào xoá mất một ký
+  tự thật. Trong các host của danh sách, đây là giới hạn đã biết: gõ chữ có dấu ở đúng ký tự cuối
+  cùng của một ô đã đầy (ví dụ ô nhập trên trang web có `maxlength`) có thể mất một ký tự.
+- Mỗi lần sửa có thêm hai phím, và ứng dụng thấy một ký tự xuất hiện rồi biến mất (ví dụ một ô tìm
+  kiếm chạy tìm kiếm tức thì).
+- Hook không phân biệt được thanh địa chỉ với nội dung trang (Firefox vẽ cả hai trong một cửa sổ),
+  nên trong trình duyệt của danh sách, mọi ô nhập trên trang cũng được bảo vệ. Nhờ vậy ô có gợi ý của
+  Google Trang tính cũng gõ đúng. Một trang tự thay chữ khi gặp khoảng trắng (ví dụ Google Docs viết
+  hoa đầu câu) vẫn gõ đúng khi chữ thay thế dài bằng chữ cũ; một phép thay đổi độ dài, nếu có, sẽ làm
+  lệch chữ. Đây là điều cần kiểm tra bằng tay (`GUIDE.md` §5.6, mục 38).
+
+### 23.5 Kiểm thử
+
+- Test không phụ thuộc host: phân giải chính sách (mặc định, quy tắc bật và tắt, ô bảo mật
+  `Restricted`), đọc và ghi `raumakey-app-rules.toml`, wire form của snapshot IPC, cờ của
+  `EditRequest` trong lõi phiên, và các phím mà `BlindDocument` gửi.
+- Bộ mô phỏng của test gõ phím có một cửa sổ tự hoàn thành: sau mỗi ký tự gõ vào, nó bôi đen phần
+  còn lại của gợi ý đầu tiên khớp; Backspace chỉ xoá vùng chọn khi có. Ở một ứng dụng ngoài danh
+  sách, test tái hiện đúng lỗi "aâ"; trong `chrome.exe`, `msedge.exe`, `firefox.exe`, `browser.exe`
+  và `excel.exe`, `aa` ra "â", `vieetj` ra "việt".
+- Hành vi trong Chrome, Edge, Firefox và Excel thật phải được kiểm tra bằng tay (`GUIDE.md` §5.6,
+  mục 35–38; danh sách kiểm tra của module `typing`, mục 20). Test tự động thành công không phải bằng
+  chứng về hành vi khi chạy thật.
+
+## 24. Các yêu cầu ngày 2026-10-19: chính tả, Telex đơn giản, bảng mã, dò tên chương trình
+
+Chủ dự án gửi năm yêu cầu cùng lúc. Ở các điểm còn mở, chủ dự án chọn phương án đề xuất: kiểm tra
+cấu trúc kèm khôi phục, 5 bảng mã phổ biến, Telex đơn giản là Telex bỏ phím tắt, và công cụ dò
+kéo thả điền vào ô. Kế hoạch §15 ghi các quyết định D51–D55, kế hoạch §19 ghi task và trạng thái.
+
+### 24.1 Mặc định tắt kiểm tra chính tả (D51)
+
+- `EngineOptions::defaults_v2()` là `defaults_v1()` với `spell_check = false`; `DEFAULTS_VERSION`
+  thành 2. Mọi giá trị mặc định của sản phẩm dùng phiên bản 2: `raumakey.toml` của lần chạy đầu,
+  nút "Mặc định" của bảng cấu hình, cấu hình dự phòng khi tệp không đọc được.
+- `defaults_v1()` vẫn còn: các vector của ma trận tương thích nêu điều kiện của chúng theo phiên bản
+  1, nên bộ chạy vector luôn ghi `defaults_version = 1`. `EngineOptions::default()` và lõi phiên
+  trước snapshot đầu tiên (`RuntimeSnapshot::defaults_v1`) cũng vẫn là phiên bản 1; hook luôn nhận
+  snapshot của `Settings`, dựng từ `raumakey.toml`, trước phím đầu tiên.
+- Tệp `raumakey.toml` đã có giữ nguyên giá trị người dùng đã ghi.
+
+### 24.2 Kiểm tra cấu trúc âm tiết (D52)
+
+- Vấn đề: khi tắt kiểm tra chính tả, engine không chặn biến đổi nào. Gõ `EVKey` ra "ÊVKy" (phím `e`
+  thứ hai với ngược qua `VK` để đặt dấu mũ cho `E`), `Windows` ra "indows" (phím `w` thứ hai gỡ chữ
+  "ư" đứng riêng ở đầu từ, làm mất chữ W), `Google` ra "Gôgle" và không được khôi phục.
+- Kiểm tra cấu trúc luôn chạy, có hay không có kiểm tra chính tả. Một từ đạt cấu trúc khi chỉ gồm
+  chữ cái tiếng Việt (không có `f j w z`, không có ký tự khác), theo thứ tự: các phụ âm, rồi nhiều
+  nhất một nhóm nguyên âm, rồi một phụ âm cuối `c ch m n ng nh p t` hoặc không có.
+- Một phím chỉ biến đổi từ (dấu thanh, dấu mũ, móc, trăng, đ) khi từ trước và sau phím đó đều đạt
+  cấu trúc; không thì phím được gõ như chữ thường. Khi bật kiểm tra chính tả, từ còn phải là phần đầu
+  của một âm tiết tiếng Việt như trước.
+- Khôi phục ở cuối từ (`auto_restore_invalid`): khi bật kiểm tra chính tả, từ đã biến đổi mà không
+  phải âm tiết hoàn chỉnh được trả về các phím đã gõ, như trước. Khi tắt, từ đã biến đổi được trả
+  về trừ khi nó đạt cấu trúc và, sau phụ âm đầu (các phụ âm đầu từ, hoặc `gi`, `qu` trước nguyên
+  âm), là một vần của danh sách âm tiết với dấu thanh hợp phụ âm cuối (`c ch p t` chỉ đi với sắc,
+  nặng): `Gôgle` → `Google`, `ửê` → `were`, `úe` → `users`, `tẽt` → `text`, `Ưin` → `Win`. Phụ âm
+  đầu và sự kết hợp của nó với vần vẫn chỉ do kiểm tra chính tả xét (`kà` được giữ).
+- Lúc đang gõ, cổng biến đổi vẫn chỉ là kiểm tra cấu trúc, không xét nhóm nguyên âm, để giữ D34
+  (dấu mũ trên nguyên âm `a e o` ngoài cùng bên phải của một cụm bất kỳ khi tắt kiểm tra chính tả).
+- Sau dấu cách, kết quả với các từ tiếng Anh thường gặp giống nhau dù bật hay tắt kiểm tra chính tả
+  (`were users text mouse sweet awesome Win swim EVKey Windows Google` đều về nguyên văn; `this`,
+  `there` thành "thí", "thể" ở cả hai chế độ vì đó là chữ tiếng Việt). Trong lúc gõ dở, từ có thể
+  khác nhau giữa hai chế độ và các phím dấu của Telex vẫn biến đổi từ (`Express` hiện "Êps",
+  `Windows` hiện "Ưindows"), vì đó là cách Telex hoạt động.
+- Hoàn tác chữ "ư" đứng riêng (Telex `w`) bằng một `w` sau đó: nếu "ư" là chữ cuối, nó bị bỏ như
+  trước (`ww` → "w"); nếu không, phím đã gõ ra nó được trả lại (`wiw` → "wiw"), không làm mất chữ
+  như trước đây ("iw").
+- Giới hạn:
+  - Phụ âm đầu không được kiểm tra trong cấu trúc, nhưng engine chỉ tìm nguyên âm sau một phụ âm
+    đầu tiếng Việt đã biết, nên từ có phụ âm đầu lạ (`Krông`, `green`, `street`) không nhận dấu,
+    như trước D52.
+  - `k` không phải phụ âm cuối: "Đắk Lắk" gõ dấu trước `k` vẫn hiện đúng, nhưng bị trả về các phím
+    đã gõ ở dấu cách khi bật "Giữ nguyên phím đã gõ". Đổi lại, "book" về đúng "book" thay vì
+    "bôk".
+  - Một từ có ký tự không phải chữ cái tiếng Việt (chữ số, `f j w z`) không đạt cấu trúc, nên khi
+    tắt kiểm tra chính tả nó được khôi phục ở dấu cách nếu đã biến đổi (`ddi2` → "ddi2").
+
+### 24.3 Telex đơn giản (D53)
+
+- Kiểu gõ mới `InputMethod::SimpleTelex` (`method = "simple-telex"` trong `raumakey.toml`), tên
+  hiện "Telex đơn giản" trong bảng cấu hình, menu khay và tooltip.
+- Giống Telex, trừ một điểm: `w` không có nguyên âm trước nó để thêm móc hay trăng thì được gõ là
+  `w`, không thành "ư". `aw` → ă, `ow` → ơ, `uw` → ư, `uow` → ươ vẫn như Telex. Bảng phím Telex của
+  Raumakey vốn không có `[ ] { }`.
+- Engine dùng bảng phím Telex, kèm cờ `standalone_horn` của `Ctx` (tắt với Telex đơn giản).
+- Menu khay có thêm mục "Telex đơn giản" (id 13), ngay sau Telex; các mục cũ giữ id.
+
+### 24.4 Bảng mã (D54)
+
+- `[input] charset` trong `raumakey.toml`, ô "Bảng mã:" trong nhóm "Cách gõ" của bảng cấu hình (ngay
+  dưới "Kiểu gõ:"). Các bảng mã (tên trong tệp, như của `raumakey-converter`): Unicode (`unicode`,
+  mặc định), TCVN3 (ABC) (`tcvn3`), VNI Windows (`vni-windows`), Unicode tổ hợp (`unicode-nfd`),
+  Windows CP 1258 (`cp1258`). "Mặc định" của bảng đặt lại về Unicode.
+- Bảng mã là trường `charset` của `EngineOptions` (kiểu `OutputCharset` trong `raumakey-model`,
+  `#[serde(default)]` nên snapshot cũ vẫn đọc được). Engine bỏ qua nó và vẫn làm việc bằng Unicode.
+- `BlindDocument` của hook mã hoá cả phần cần xoá lẫn phần chèn bằng `raumakey_converter::encode`:
+  số Backspace là số ký tự của phần cần xoá sau khi mã hoá (VNI Windows viết "ê" bằng hai ký tự, nên
+  cần hai Backspace). Mỗi ký tự được mã hoá riêng, nên phần bị xoá luôn đúng là phần cuối của văn bản
+  trên màn hình.
+- TCVN3 và VNI Windows được gõ bằng các ký tự Windows-1252 của byte của chúng, như chúng nằm trong
+  văn bản; font `.Vn` hay font VNI hiện chúng thành chữ tiếng Việt. Windows CP 1258 được gõ bằng
+  các ký tự của chính trang mã 1258 (`raumakey_converter::typed_text`): chữ dựng sẵn nếu trang mã có,
+  không thì chữ cái kèm dấu thanh tổ hợp (`ế` = `ê` + U+0301), một ký tự cho mỗi byte. Ứng dụng
+  Unicode hiện đúng chữ tiếng Việt; ứng dụng ANSI chạy trang mã 1258 nhận đúng các byte.
+- Đổi bảng mã giữa chừng một từ thì từ kết thúc (cấu hình đổi), nên phần đã gõ ở bảng mã cũ không bị
+  xoá sai.
+- Giới hạn: TCVN3 không có chữ hoa có dấu thanh, nên chữ đó được gõ thành chữ thường (lossy, như bộ
+  chuyển mã); Unicode tổ hợp và CP 1258 xoá mỗi dấu tổ hợp bằng một Backspace, có ứng dụng xoá cả
+  cụm (đã biết, D20); một phím mà layout bàn phím gõ ra ký tự ngoài ASCII (ví dụ `é` của layout
+  Pháp) đi tới ứng dụng ở dạng Unicode, nên lần sửa sau trong cùng từ có thể đếm lệch Backspace khi
+  bảng mã không phải Unicode. Bảng mã chưa có trong menu khay và chưa có phím tắt riêng.
+
+### 24.5 Công cụ dò tên chương trình (D55)
+
+- Chủ dự án muốn một nút để dễ lấy tên exe cần loại trừ, giống công cụ AutoIt Window Info (AU3Info)
+  mà EVKey có. Thiết kế của Raumakey: một hình tâm ngắm (con trỏ chữ thập của hệ thống trong một ô có
+  viền lõm) cạnh nút **Thêm** của hộp thoại "Ứng dụng loại trừ", kèm dòng "Kéo hình này vào cửa sổ để
+  lấy tên chương trình".
+- Nhấn chuột trái trên hình rồi kéo: hộp thoại giữ chuột (`SetCapture`) và hiện con trỏ chữ thập.
+  Khi con trỏ sang một cửa sổ cấp cao nhất khác, ô **Ứng dụng:** hiện tên tệp exe của chương trình
+  có cửa sổ đó. Trên chính hộp thoại, trên cửa sổ của Raumakey, trên chỗ không có cửa sổ, hay trên
+  một tiến trình mà Windows không cho đọc tên (ví dụ tiến trình được bảo vệ của hệ thống), ô hiện
+  lại chữ đã có trước khi kéo.
+- Thả chuột: tên exe ở lại trong ô, nút **Thêm** bật và có focus ở ô, nhưng chưa có gì được thêm;
+  người dùng bấm **Thêm** (hoặc Enter). Mất quyền giữ chuột (Alt+Tab) thì việc kéo bị huỷ và ô trở
+  lại như trước.
+- `raumakey-windows`: control `Control::window_picker` (`SS_ICON | SS_CENTERIMAGE | SS_SUNKEN`, không
+  có `SS_NOTIFY` để hộp thoại nhận cú nhấn), `Dialog::enable_window_picker`, sự kiện `WindowPick`
+  (`Started`, `Over`, `Dropped`, `Cancelled`) qua `DialogHandler::window_pick`. Hộp thoại tìm cửa sổ
+  gốc dưới con trỏ (`WindowFromPoint`, `GetAncestor(GA_ROOT)`) và báo process id của nó, mỗi cửa sổ
+  một lần; controller đọc tên exe (`process_image_basename`).
+- Kiểm thử: test lớp Windows và test của hộp thoại gửi thông điệp chuột giả với toạ độ do test chọn,
+  tới hộp thoại và một cửa sổ đích đều nằm ngoài màn hình, nên con trỏ thật không di chuyển. Kéo thật
+  bằng chuột cần kiểm tra bằng tay (`GUIDE.md` §5.6).

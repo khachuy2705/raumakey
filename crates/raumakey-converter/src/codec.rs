@@ -3,6 +3,7 @@
 use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
 
 use crate::charset::Charset;
+use crate::codepage::cp1258_to_char;
 use crate::error::ConvertError;
 use crate::legacy::{ByteSink, Legacy, TextSink, byte_units, text_units};
 use crate::ncr::{self, Radix};
@@ -28,6 +29,21 @@ pub struct Conversion {
 pub fn decode(text: &str, from: Charset) -> Result<String, ConvertError> {
     check_size(text.len())?;
     Ok(decode_text(text, from))
+}
+
+/// What a keyboard types for Unicode `text` in `charset` (D54): the characters an application
+/// holds for it. A Windows-1258 application holds the characters of its code page, so each
+/// byte of [`encode_bytes`] becomes the character Windows-1258 gives it: a precomposed letter
+/// where the code page has one, else the letter followed by a combining tone mark (`tiếng` is
+/// `tiê` + U+0301 + `ng`), one character per byte. Every other charset is typed as [`encode`]
+/// writes it: the fonts made for TCVN3 and VNI Windows show the Windows-1252 characters of
+/// their bytes as Vietnamese letters.
+pub fn typed_text(text: &str, charset: Charset) -> Result<String, ConvertError> {
+    if charset != Charset::Cp1258 {
+        return encode(text, charset);
+    }
+    let bytes = encode_bytes(text, Charset::Cp1258)?;
+    Ok(bytes.into_iter().map(cp1258_to_char).collect())
 }
 
 /// Encodes Unicode `text` in `to`. See [`encode_with_report`] for loss reporting.

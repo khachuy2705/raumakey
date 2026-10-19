@@ -251,12 +251,13 @@ fn a_full_import_commits_the_documents_and_records_completion() {
     let rules = stores.app_rules.load().unwrap().document;
     assert_eq!(rules.revision, 2);
     let sets = &rules.compatibility.named_sets;
-    assert_eq!(sets.len(), 5);
-    assert_eq!(sets[3].name, "evkey-import-2");
-    assert_eq!(sets[3].members, names(&["kept.exe"]));
-    assert_eq!(sets[3].action.reset_on_mouse, Some(true));
+    // The four D13 sets (D49 added `autocomplete`), the seeded set, then the imported one.
+    assert_eq!(sets.len(), 6);
+    assert_eq!(sets[4].name, "evkey-import-2");
+    assert_eq!(sets[4].members, names(&["kept.exe"]));
+    assert_eq!(sets[4].action.reset_on_mouse, Some(true));
     assert_eq!(
-        sets[4],
+        sets[5],
         NamedSet {
             name: "evkey-import-1".to_owned(),
             members: names(&["chat.exe", "mail.exe"]),
@@ -323,6 +324,7 @@ fn an_import_into_an_empty_data_root_creates_the_documents() {
             "chromium-family",
             "terminals",
             "games",
+            "autocomplete",
             "evkey-import-1",
             "evkey-import-2"
         ]

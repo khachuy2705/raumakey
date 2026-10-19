@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use raumakey_model::host::ExeName;
 use raumakey_model::hotkey::{Hotkey, HotkeyConfig};
 use raumakey_model::keymap::{KEYMAP_SCHEMA_VERSION, KeyAction, KeyBinding, KeyMap};
-use raumakey_model::options::{EngineOptions, InputMethod, Normalization};
+use raumakey_model::options::{EngineOptions, InputMethod, Normalization, OutputCharset};
 
 use crate::document::{
     FieldIssue, IssueReason, Loaded, MAX_TOML_REVISION, StoreDocument, encode_toml, ensure_current,
@@ -40,6 +40,7 @@ const INPUT_KEYS: &[&str] = &[
     "spell_check",
     "auto_restore_invalid",
     "context_limit",
+    "charset",
 ];
 const MACRO_KEYS: &[&str] = &["enabled", "when_disabled", "auto_case"];
 const HOTKEY_KEYS: &[&str] = &["toggle_mode", "hard_reset"];
@@ -140,13 +141,15 @@ pub struct InputSection {
     /// Engine context limit in code points
     /// ([`EngineOptions::MIN_CONTEXT`]..=[`EngineOptions::MAX_CONTEXT`]).
     pub context_limit: u32,
+    /// The charset the keyboard hook types in (D54).
+    pub charset: OutputCharset,
     /// Unknown keys of `[input]`, re-emitted on save.
     pub extensions: toml::Table,
 }
 
 impl Default for InputSection {
     fn default() -> Self {
-        let options = EngineOptions::defaults_v1();
+        let options = EngineOptions::defaults_v2();
         Self {
             enabled: options.enabled,
             method: options.input_method,
@@ -157,6 +160,7 @@ impl Default for InputSection {
             spell_check: options.spell_check,
             auto_restore_invalid: options.auto_restore_invalid,
             context_limit: options.context_limit_codepoints,
+            charset: options.charset,
             extensions: toml::Table::new(),
         }
     }
@@ -177,7 +181,7 @@ pub struct MacroSection {
 
 impl Default for MacroSection {
     fn default() -> Self {
-        let options = EngineOptions::defaults_v1();
+        let options = EngineOptions::defaults_v2();
         Self {
             enabled: options.macros_enabled,
             when_disabled: options.macros_when_disabled,
@@ -350,7 +354,7 @@ pub struct ConfigDocument {
 }
 
 impl ConfigDocument {
-    /// Schema v1 defaults: [`EngineOptions::defaults_v1`], [`HotkeyConfig::default`], and
+    /// Schema v1 defaults: [`EngineOptions::defaults_v2`] (D51), [`HotkeyConfig::default`], and
     /// [`ExclusionsSection::DEFAULT_APPS`].
     pub fn defaults() -> Self {
         Self {
@@ -374,7 +378,7 @@ impl ConfigDocument {
     /// [`InputMethod::UserDefined`] needs the key map that `input.user_keymap` names among
     /// [`ConfigDocument::keymaps`]. While there is none (the id is absent, or names a key map
     /// that is missing or was set aside), the options carry the default method of
-    /// [`EngineOptions::defaults_v1`] instead, so the engine never rejects them. The document
+    /// [`EngineOptions::defaults_v2`] instead, so the engine never rejects them. The document
     /// keeps `method = "user"`: a commit writes it back, the problem is reported on
     /// `input.user_keymap` on every load, and the user method takes effect again as soon as
     /// the key map can be used (matrix #45: a valid field is never reset because of another
@@ -386,7 +390,7 @@ impl ConfigDocument {
     pub fn engine_options(&self) -> EngineOptions {
         let input_method =
             if self.input.method == InputMethod::UserDefined && !self.has_user_keymap() {
-                EngineOptions::defaults_v1().input_method
+                EngineOptions::defaults_v2().input_method
             } else {
                 self.input.method
             };
@@ -403,6 +407,7 @@ impl ConfigDocument {
             auto_case_macro: self.macros.auto_case,
             user_keymap_id: self.input.user_keymap.clone(),
             context_limit_codepoints: self.input.context_limit,
+            charset: self.input.charset,
         }
     }
 
@@ -452,6 +457,7 @@ impl ConfigDocument {
         self.input.auto_restore_invalid = options.auto_restore_invalid;
         self.input.user_keymap.clone_from(&options.user_keymap_id);
         self.input.context_limit = options.context_limit_codepoints;
+        self.input.charset = options.charset;
         self.macros.enabled = options.macros_enabled;
         self.macros.when_disabled = options.macros_when_disabled;
         self.macros.auto_case = options.auto_case_macro;
@@ -491,6 +497,7 @@ fn decode_input(root: &mut TomlFields<'_>) -> InputSection {
             defaults.context_limit,
             EngineOptions::MIN_CONTEXT..=EngineOptions::MAX_CONTEXT,
         ),
+        charset: f.keyword("charset", defaults.charset),
         extensions: f.into_rest(),
     }
 }
@@ -823,6 +830,7 @@ impl StoreDocument for ConfigDocument {
                 spell_check: self.input.spell_check,
                 auto_restore_invalid: self.input.auto_restore_invalid,
                 context_limit: self.input.context_limit,
+                charset: self.input.charset,
                 extensions: Extra::new(Some(&self.input.extensions), INPUT_KEYS),
             },
             macros: MacrosWire {
@@ -962,6 +970,7 @@ struct InputWire<'a> {
     spell_check: bool,
     auto_restore_invalid: bool,
     context_limit: u32,
+    charset: OutputCharset,
     #[serde(flatten)]
     extensions: Extra<'a, toml::Table>,
 }

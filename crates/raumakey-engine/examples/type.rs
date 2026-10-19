@@ -1,7 +1,7 @@
 //! Types a key script through the Raumakey engine and prints every transaction.
 //!
 //! ```text
-//! cargo run -q -p raumakey-engine --example type -- [--method telex|vni|viqr] [--modern]
+//! cargo run -q -p raumakey-engine --example type -- [--method telex|simple-telex|vni|viqr] [--modern]
 //!     [--nfd|--preserve] [--no-spell] [--no-restore] [--no-free] [--off] [--macros-when-off]
 //!     [--no-autocase] [--context N] [--macro TRIGGER=REPLACEMENT ...] "<script>"
 //! ```
@@ -24,7 +24,7 @@ use raumakey_engine::script::{KeyToken, format_transaction, parse_keys, quote, r
 use raumakey_model::macros::{Boundary, CaseMode, MacroExpansion, MacroId, MacroLookup};
 use raumakey_model::options::{EngineOptions, InputMethod, Normalization};
 
-const USAGE: &str = "usage: type [--method telex|vni|viqr] [--modern] [--nfd|--preserve] \
+const USAGE: &str = "usage: type [--method telex|simple-telex|vni|viqr] [--modern] [--nfd|--preserve] \
 [--no-spell] [--no-restore] [--no-free] [--off] [--macros-when-off] [--no-autocase] \
 [--context N] [--macro TRIGGER=REPLACEMENT ...] \"<script>\"";
 
@@ -105,6 +105,7 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
                 index += 1;
                 options.input_method = match value.to_ascii_lowercase().as_str() {
                     "telex" => InputMethod::Telex,
+                    "simple-telex" => InputMethod::SimpleTelex,
                     "vni" => InputMethod::Vni,
                     "viqr" => InputMethod::Viqr,
                     _ => return Err(format!("unknown method {value:?}")),

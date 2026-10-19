@@ -143,7 +143,7 @@ use raumakey_ipc::message::{
 };
 use raumakey_macro::{EntryIssue, MacroStore};
 use raumakey_model::host::ExeName;
-use raumakey_model::options::InputMethod;
+use raumakey_model::options::{EngineOptions, InputMethod, OutputCharset};
 use raumakey_model::policy::{AppRule, CompatibilityConfig, RuleAction};
 
 use crate::exclusions::ExclusionsRequest;
@@ -254,12 +254,14 @@ pub enum Change {
     MacrosWhenEnglish(bool),
     /// Macro replacements that follow the case of the typed trigger (`[macros] auto_case`).
     MacroAutoCase(bool),
+    /// The charset the hook types in (`[input] charset`, D54).
+    Charset(OutputCharset),
     /// How Raumakey starts with Windows (`[system] startup`). Only the choice is stored; the
     /// caller creates or removes the shortcut (`crate::startup`).
     Startup(StartupMode),
     /// The settings panel opens when the controller starts (`[system] show_panel_on_start`).
     ShowPanelOnStart(bool),
-    /// "Mặc định" of the panel: the input method, `modern_tone`, `free_marking`,
+    /// "Mặc định" of the panel: the input method, the charset, `modern_tone`, `free_marking`,
     /// `spell_check`, `auto_restore_invalid`, and the three switches of `[macros]` take the
     /// schema defaults ([`ConfigDocument::defaults`]). Nothing else changes: not the mode,
     /// the key map of a user method, the normalization, the context limit, the hotkeys, or
@@ -281,6 +283,7 @@ impl Change {
             Self::Macros(on) => macros.enabled == on,
             Self::MacrosWhenEnglish(on) => macros.when_disabled == on,
             Self::MacroAutoCase(on) => macros.auto_case == on,
+            Self::Charset(charset) => input.charset == charset,
             Self::Startup(mode) => document.system.startup == mode,
             Self::ShowPanelOnStart(on) => document.system.show_panel_on_start == on,
             Self::TypingDefaults => {
@@ -303,6 +306,7 @@ impl Change {
             Self::Macros(on) => macros.enabled = on,
             Self::MacrosWhenEnglish(on) => macros.when_disabled = on,
             Self::MacroAutoCase(on) => macros.auto_case = on,
+            Self::Charset(charset) => input.charset = charset,
             Self::Startup(mode) => document.system.startup = mode,
             Self::ShowPanelOnStart(on) => document.system.show_panel_on_start = on,
             Self::TypingDefaults => {
@@ -312,6 +316,7 @@ impl Change {
                     ..
                 } = ConfigDocument::defaults();
                 input.method = defaults.method;
+                input.charset = defaults.charset;
                 input.modern_tone = defaults.modern_tone;
                 input.free_marking = defaults.free_marking;
                 input.spell_check = defaults.spell_check;
@@ -1224,7 +1229,10 @@ fn build_runtime(config: &ConfigDocument, compatibility: &CompatibilityConfig) -
         // The engine reads only the key map of a user-defined method.
         let selected = match options.input_method {
             InputMethod::UserDefined => options.user_keymap_id.as_deref(),
-            InputMethod::Telex | InputMethod::Vni | InputMethod::Viqr => None,
+            InputMethod::Telex
+            | InputMethod::SimpleTelex
+            | InputMethod::Vni
+            | InputMethod::Viqr => None,
         };
         keymaps.retain(|map| Some(map.id.as_str()) == selected);
         config_issues.push(out_of_range("keymaps"));
@@ -1282,9 +1290,11 @@ fn build_runtime(config: &ConfigDocument, compatibility: &CompatibilityConfig) -
     }
 }
 
-/// [`RuntimeSnapshot::defaults_v1`] with the revision and the live mode of `config`.
+/// [`RuntimeSnapshot::defaults_v1`] with the product options ([`EngineOptions::defaults_v2`],
+/// D51), the revision, and the live mode of `config`.
 fn defaults_with_mode(config: &ConfigDocument) -> RuntimeSnapshot {
     let mut snapshot = RuntimeSnapshot::defaults_v1();
+    snapshot.options = EngineOptions::defaults_v2();
     snapshot.config_revision = config.revision;
     snapshot.options.enabled = config.input.enabled;
     snapshot.vietnamese_mode = config.input.enabled;

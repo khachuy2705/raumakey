@@ -25,6 +25,7 @@
 //! [x] Gõ tiếng Việt          Bật/tắt nhanh: Ctrl+Shift hoặc nhấp biểu tượng V/E
 //! +- Cách gõ ---------------+  +- Gõ tắt ---------------------------+
 //! | Kiểu gõ: [Telex      v] |  | [x] Bật gõ tắt                     |
+//! | Bảng mã: [Unicode    v] |  |                                    |
 //! | [ ] Đặt dấu kiểu mới    |  | [ ] Gõ tắt cả khi đang gõ tiếng Anh|
 //! | [x] Cho gõ dấu sau ...  |  | [x] Viết hoa theo cách gõ ...      |
 //! | [x] Kiểm tra chính tả   |  | [Danh sách gõ tắt…]                |
@@ -37,11 +38,13 @@
 //! Mọi thay đổi có hiệu lực và được lưu ngay.
 //! Tệp cấu hình: D:\Tools\Raumakey\raumakey.toml
 //! (cạnh raumakey.exe)
-//! [Mở file cấu hình]  [Mặc định]                               [Đóng]
+//! [Mở file cấu hình]  [Mặc định]                     [Thu nhỏ]  [Đóng]
 //! ```
 //!
-//! The three long check boxes take two lines (`BS_MULTILINE`). "Đóng" is `IDCANCEL` and the
-//! default button, so Enter, Esc, and the close box all close the panel. The hint and the two
+//! The three long check boxes take two lines (`BS_MULTILINE`). "Thu nhỏ" is `IDCANCEL` and the
+//! default button, so Enter, Esc, and the close box all close the panel, and Raumakey goes on
+//! in the notification area. "Đóng" exits Raumakey ([`PanelRequest::Exit`], D50), as "Thoát"
+//! of the menu does; it is an ordinary button, so that no key exits by accident. The hint and the two
 //! lines of the footer are labels that the glue fills from [`PanelState::hint`],
 //! [`PanelState::config_file`], and [`PanelState::config_location`]. The path stands alone on
 //! its line, which shortens a long path in its middle (`SS_PATHELLIPSIS` keeps what follows
@@ -73,7 +76,7 @@ use std::path::{Path, PathBuf};
 use raumakey_config::StartupMode;
 use raumakey_ipc::message::RuntimeSnapshot;
 use raumakey_model::identity::PRODUCT_NAME;
-use raumakey_model::options::InputMethod;
+use raumakey_model::options::{InputMethod, OutputCharset};
 use raumakey_windows::dialog_box::notifications::{BN_CLICKED, CBN_SELCHANGE};
 use raumakey_windows::dialog_template::{
     Control, DialogRect, DialogTemplate, IDCANCEL, STATIC_ID, styles,
@@ -92,6 +95,8 @@ pub const ID_HINT: u16 = 101;
 pub const ID_METHOD: u16 = 110;
 /// "Đặt dấu kiểu mới (oà, uý)" (check box).
 pub const ID_MODERN_TONE: u16 = 111;
+/// "Bảng mã:": the charset the hook types in (drop-down list, D54).
+pub const ID_CHARSET: u16 = 115;
 /// "Cho gõ dấu sau phụ âm cuối (toans → toán)" (check box).
 pub const ID_FREE_MARKING: u16 = 112;
 /// "Kiểm tra chính tả" (check box).
@@ -120,8 +125,11 @@ pub const ID_OPEN_CONFIG: u16 = 141;
 pub const ID_DEFAULTS: u16 = 142;
 /// Where `raumakey.toml` lives, and why for `%LOCALAPPDATA%` (label, two lines).
 pub const ID_CONFIG_LOCATION: u16 = 143;
-/// "Đóng": the Cancel button, which the dialog box answers by closing.
-pub const ID_CLOSE: u16 = IDCANCEL;
+/// "Thu nhỏ": the Cancel button, which the dialog box answers by closing; Raumakey goes on in
+/// the notification area (D50).
+pub const ID_MINIMIZE: u16 = IDCANCEL;
+/// "Đóng": exits Raumakey (button, D50).
+pub const ID_EXIT: u16 = 144;
 
 /// The check boxes whose labels take two lines, and their labels: the template has them as
 /// they are, and the glue sets them again wrapped at spaces ([`PanelView::wrapped`]).
@@ -156,11 +164,21 @@ pub const CHECK_BOXES: [u16; 10] = [
 
 /// The items of the method list in order, with their method; the last one ("own input
 /// method") only when it is listed ([`PanelState::user_defined_listed`]).
-const METHODS: [(InputMethod, &str); 4] = [
+const METHODS: [(InputMethod, &str); 5] = [
     (InputMethod::Telex, "Telex"),
+    (InputMethod::SimpleTelex, "Telex đơn giản"),
     (InputMethod::Vni, "VNI"),
     (InputMethod::Viqr, "VIQR"),
     (InputMethod::UserDefined, "Kiểu gõ riêng"),
+];
+
+/// The items of the charset list in order, with their charset (D54).
+pub const CHARSETS: [(OutputCharset, &str); 5] = [
+    (OutputCharset::Unicode, "Unicode"),
+    (OutputCharset::Tcvn3, "TCVN3 (ABC)"),
+    (OutputCharset::VniWindows, "VNI Windows"),
+    (OutputCharset::UnicodeNfd, "Unicode tổ hợp"),
+    (OutputCharset::Cp1258, "Windows CP 1258"),
 ];
 
 /// The question of "Mặc định" ("Reset the items of the groups … to their defaults? The
@@ -199,6 +217,8 @@ pub struct PanelState {
     /// "Kiểu gõ riêng" is listed: a user method can take effect, because it is in effect or
     /// the snapshot carries the key map that `[input] user_keymap` names.
     pub user_defined_listed: bool,
+    /// `[input] charset` (D54).
+    pub charset: OutputCharset,
     /// `[input] modern_tone`.
     pub modern_tone: bool,
     /// `[input] free_marking`.
@@ -246,6 +266,7 @@ impl PanelState {
             vietnamese: runtime.vietnamese_mode,
             method: options.input_method,
             user_defined_listed: options.input_method == InputMethod::UserDefined || usable_keymap,
+            charset: options.charset,
             modern_tone: options.modern_tone,
             free_marking: options.free_marking,
             spell_check: options.spell_check,
@@ -298,7 +319,8 @@ impl PanelState {
 
     /// What every control shows for this state.
     pub fn view(&self) -> PanelView {
-        let listed = if self.user_defined_listed { 4 } else { 3 };
+        // Every method but the last ("Kiểu gõ riêng"), which is listed only when usable.
+        let listed = METHODS.len() - usize::from(!self.user_defined_listed);
         let methods = METHODS.get(..listed).unwrap_or(&METHODS);
         let can_save = self.can_save();
         PanelView {
@@ -310,6 +332,10 @@ impl PanelState {
             method: methods
                 .iter()
                 .position(|(method, _)| *method == self.method),
+            charsets: CHARSETS.iter().map(|(_, name)| *name).collect(),
+            charset: CHARSETS
+                .iter()
+                .position(|(charset, _)| *charset == self.charset),
             texts: vec![(ID_HINT, self.hint()), (ID_CONFIG_FILE, self.config_file())],
             wrapped: TWO_LINE_CHECK_BOXES
                 .iter()
@@ -348,6 +374,10 @@ pub struct PanelView {
     pub methods: Vec<&'static str>,
     /// The selected item of the method list.
     pub method: Option<usize>,
+    /// The items of the charset list ([`ID_CHARSET`]), in order.
+    pub charsets: Vec<&'static str>,
+    /// The selected item of the charset list.
+    pub charset: Option<usize>,
     /// Each label of one line filled from the state ([`ID_HINT`], [`ID_CONFIG_FILE`]) and its
     /// text.
     pub texts: Vec<(u16, String)>,
@@ -376,6 +406,8 @@ pub enum PanelRequest {
     /// "Ứng dụng loại trừ…": open the exclusions dialog (D48), also when nothing can be saved
     /// (its edits then take effect until Raumakey exits).
     Exclusions,
+    /// "Đóng": exit Raumakey, as "Thoát" of the menu does (D50).
+    Exit,
 }
 
 /// The kind of value a control holds, which the glue reads after the user changed it.
@@ -383,7 +415,7 @@ pub enum PanelRequest {
 pub enum ValueKind {
     /// A check box: whether it is checked (it toggles itself when clicked).
     Check,
-    /// The method list: its selected item.
+    /// A drop-down list (the method or the charset): its selected item.
     Choice,
 }
 
@@ -400,7 +432,7 @@ pub enum ControlValue {
 pub fn value_kind(id: u16) -> Option<ValueKind> {
     if CHECK_BOXES.contains(&id) {
         Some(ValueKind::Check)
-    } else if id == ID_METHOD {
+    } else if id == ID_METHOD || id == ID_CHARSET {
         Some(ValueKind::Choice)
     } else {
         None
@@ -410,15 +442,22 @@ pub fn value_kind(id: u16) -> Option<ValueKind> {
 /// The request of the user's action on control `id`: notification `code` (`WM_COMMAND`) with
 /// the control's new `value` (read as [`value_kind`] says; `None` for the others). A click
 /// on a check box asks for its new state, a new selection in the method list for its method,
-/// and the buttons for their action. Every other notification, "Đóng" (the dialog box closes
-/// the panel itself), labels, and unknown ids ask nothing.
+/// and the buttons for their action. Every other notification, "Thu nhỏ" (the dialog box
+/// closes the panel itself), labels, and unknown ids ask nothing.
 pub fn request(id: u16, code: u16, value: Option<ControlValue>) -> Option<PanelRequest> {
     use PanelRequest::Change as Set;
     match (id, code) {
         (ID_OPEN_CONFIG, BN_CLICKED) => Some(PanelRequest::OpenConfig),
         (ID_MACRO_LIST, BN_CLICKED) => Some(PanelRequest::MacroList),
         (ID_EXCLUSIONS, BN_CLICKED) => Some(PanelRequest::Exclusions),
+        (ID_EXIT, BN_CLICKED) => Some(PanelRequest::Exit),
         (ID_DEFAULTS, BN_CLICKED) => Some(Set(Change::TypingDefaults)),
+        (ID_CHARSET, CBN_SELCHANGE) => match value {
+            Some(ControlValue::Selected(Some(index))) => CHARSETS
+                .get(index)
+                .map(|(charset, _)| Set(Change::Charset(*charset))),
+            _ => None,
+        },
         (ID_METHOD, CBN_SELCHANGE) => match value {
             Some(ControlValue::Selected(Some(index))) => METHODS
                 .get(index)
@@ -492,25 +531,27 @@ pub fn panel_template() -> DialogTemplate {
         .with_control(Control::group_box(
             STATIC_ID,
             "Cách gõ",
-            rect(7, 22, 158, 104),
+            rect(7, 22, 158, 119),
         ))
         .with_control(Control::label(STATIC_ID, "Kiểu gõ:", rect(14, 37, 34, 8)))
         .with_control(Control::drop_down_list(ID_METHOD, rect(50, 35, 108, 12)).group())
+        .with_control(Control::label(STATIC_ID, "Bảng mã:", rect(14, 52, 34, 8)).group())
+        .with_control(Control::drop_down_list(ID_CHARSET, rect(50, 50, 108, 12)).group())
         .with_control(
             Control::check_box(
                 ID_MODERN_TONE,
                 "Đặt dấu kiểu mới (oà,\u{a0}uý)",
-                rect(14, 52, 144, 10),
+                rect(14, 67, 144, 10),
             )
             .group(),
         )
-        .with_control(two_line_check_box(ID_FREE_MARKING, rect(14, 65, 144, 18)))
+        .with_control(two_line_check_box(ID_FREE_MARKING, rect(14, 80, 144, 18)))
         .with_control(Control::check_box(
             ID_SPELL_CHECK,
             "Kiểm tra chính tả",
-            rect(14, 86, 144, 10),
+            rect(14, 101, 144, 10),
         ))
-        .with_control(two_line_check_box(ID_AUTO_RESTORE, rect(14, 99, 144, 18)))
+        .with_control(two_line_check_box(ID_AUTO_RESTORE, rect(14, 114, 144, 18)))
         .with_control(Control::group_box(STATIC_ID, "Gõ tắt", rect(169, 22, 154, 84)).group())
         .with_control(Control::check_box(ID_MACROS, "Bật gõ tắt", rect(176, 35, 140, 10)).group())
         .with_control(Control::check_box(
@@ -568,7 +609,12 @@ pub fn panel_template() -> DialogTemplate {
             rect(87, 217, 56, 14),
         ))
         .with_control(Control::default_push_button(
-            ID_CLOSE,
+            ID_MINIMIZE,
+            "Thu nhỏ",
+            rect(207, 217, 56, 14),
+        ))
+        .with_control(Control::push_button(
+            ID_EXIT,
             "Đóng",
             rect(267, 217, 56, 14),
         ))

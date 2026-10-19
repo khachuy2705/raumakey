@@ -2,13 +2,29 @@ use raumakey_model::keymap::{
     BaseVowel, KEYMAP_SCHEMA_VERSION, KeyAction, KeyBinding, KeyMap, KeyMapError, Tone,
 };
 use raumakey_model::options::{
-    DEFAULTS_VERSION, EngineOptions, InputMethod, Normalization, OptionsError,
+    DEFAULTS_VERSION, EngineOptions, InputMethod, Normalization, OptionsError, OutputCharset,
 };
+
+/// D51: the product defaults are version 2: spell checking is off (the structure check of the
+/// engine still keeps English words such as `EVKey` untouched); everything else is version 1.
+#[test]
+fn defaults_v2_turn_spell_checking_off_and_keep_the_rest_of_v1() {
+    assert_eq!(DEFAULTS_VERSION, 2);
+    let v2 = EngineOptions::defaults_v2();
+    assert!(!v2.spell_check);
+    assert_eq!(
+        v2,
+        EngineOptions {
+            spell_check: false,
+            ..EngineOptions::defaults_v1()
+        }
+    );
+    assert!(v2.validate().is_ok());
+}
 
 #[test]
 fn defaults_v1_are_versioned_product_decisions() {
     let o = EngineOptions::defaults_v1();
-    assert_eq!(DEFAULTS_VERSION, 1);
     assert!(o.enabled);
     assert_eq!(o.input_method, InputMethod::Telex);
     assert_eq!(o.normalization, Normalization::Nfc);
@@ -40,6 +56,39 @@ fn options_validation() {
     assert!(o.validate().is_ok());
 }
 
+/// D54: the charset the hook types in, with the converter's names; Unicode by default, also
+/// for options written before the field existed.
+#[test]
+fn the_output_charset_has_stable_names_and_defaults_to_unicode() {
+    let names: Vec<String> = OutputCharset::ALL
+        .iter()
+        .map(|charset| serde_json::to_string(charset).unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "\"unicode\"",
+            "\"tcvn3\"",
+            "\"vni-windows\"",
+            "\"unicode-nfd\"",
+            "\"cp1258\""
+        ]
+    );
+    for charset in OutputCharset::ALL {
+        assert_eq!(
+            charset.name(),
+            serde_json::to_string(&charset).unwrap().trim_matches('"')
+        );
+    }
+    assert_eq!(OutputCharset::default(), OutputCharset::Unicode);
+    assert_eq!(EngineOptions::defaults_v1().charset, OutputCharset::Unicode);
+    assert_eq!(EngineOptions::defaults_v2().charset, OutputCharset::Unicode);
+    let mut json = serde_json::to_value(EngineOptions::defaults_v2()).unwrap();
+    json.as_object_mut().unwrap().remove("charset");
+    let old: EngineOptions = serde_json::from_value(json).unwrap();
+    assert_eq!(old, EngineOptions::defaults_v2());
+}
+
 #[test]
 fn option_enums_use_stable_names() {
     assert_eq!(
@@ -47,6 +96,15 @@ fn option_enums_use_stable_names() {
         "\"user\""
     );
     assert_eq!(serde_json::to_string(&InputMethod::Vni).unwrap(), "\"vni\"");
+    // D53: Simple Telex.
+    assert_eq!(
+        serde_json::to_string(&InputMethod::SimpleTelex).unwrap(),
+        "\"simple-telex\""
+    );
+    assert_eq!(
+        serde_json::from_str::<InputMethod>("\"simple-telex\"").unwrap(),
+        InputMethod::SimpleTelex
+    );
     assert_eq!(
         serde_json::to_string(&Normalization::Preserve).unwrap(),
         "\"preserve\""

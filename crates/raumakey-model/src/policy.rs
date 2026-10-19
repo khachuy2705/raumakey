@@ -46,6 +46,10 @@ pub struct HostPolicy {
     pub secure_field_mode: SecureFieldMode,
     /// Vietnamese transformation allowed in this host.
     pub vietnamese_allowed: bool,
+    /// The host may complete text inline, selecting the suggested rest after the caret (a
+    /// browser's address bar, Excel), so a blind edit types a placeholder that replaces such
+    /// a selection before its Backspaces, and deletes it with one more (D49).
+    pub autocomplete_guard: bool,
 }
 
 impl HostPolicy {
@@ -59,6 +63,7 @@ impl HostPolicy {
             macro_allowed: true,
             secure_field_mode: SecureFieldMode::Bypass,
             vietnamese_allowed: true,
+            autocomplete_guard: false,
         }
     }
 }
@@ -81,6 +86,9 @@ pub struct RuleAction {
     /// Deletion bound override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_delete_before: Option<u32>,
+    /// Autocomplete guard override (D49).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autocomplete_guard: Option<bool>,
 }
 
 /// A rule for one executable, optionally narrowed to a window class.
@@ -172,7 +180,7 @@ fn exe_list(names: &[&str]) -> Vec<ExeName> {
 }
 
 impl CompatibilityConfig {
-    /// Raumakey default compatibility data (plan D13).
+    /// Raumakey default compatibility data (plan D13, with the `autocomplete` set of D49).
     pub fn defaults_v1() -> Self {
         let mouse_reset = RuleAction {
             reset_on_mouse: Some(true),
@@ -214,6 +222,27 @@ impl CompatibilityConfig {
                     name: "games".to_owned(),
                     members: Vec::new(),
                     action: RuleAction::default(),
+                },
+                // The hosts that complete text inline: the browsers' address bars, Excel.
+                NamedSet {
+                    name: "autocomplete".to_owned(),
+                    members: exe_list(&[
+                        "chrome.exe",
+                        "msedge.exe",
+                        "firefox.exe",
+                        "brave.exe",
+                        "opera.exe",
+                        "vivaldi.exe",
+                        "chromium.exe",
+                        "browser.exe",
+                        "waterfox.exe",
+                        "whale.exe",
+                        "excel.exe",
+                    ]),
+                    action: RuleAction {
+                        autocomplete_guard: Some(true),
+                        ..RuleAction::default()
+                    },
                 },
             ],
             probes: Vec::new(),

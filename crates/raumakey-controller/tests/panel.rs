@@ -8,18 +8,18 @@ use std::path::{Path, PathBuf};
 use raumakey_config::StartupMode;
 use raumakey_controller::install::PRODUCT_VERSION;
 use raumakey_controller::panel::{
-    CHECK_BOXES, ControlValue, DEFAULTS_QUESTION, ID_AUTO_RESTORE, ID_CLOSE, ID_CONFIG_FILE,
-    ID_CONFIG_LOCATION, ID_DEFAULTS, ID_EXCLUSIONS, ID_FREE_MARKING, ID_HINT, ID_MACRO_AUTO_CASE,
-    ID_MACRO_LIST, ID_MACROS, ID_MACROS_WHEN_ENGLISH, ID_METHOD, ID_MODERN_TONE, ID_OPEN_CONFIG,
-    ID_SHOW_ON_START, ID_SPELL_CHECK, ID_STARTUP, ID_VIETNAMESE, OFF_SCREEN, PANEL_REFRESH,
-    PanelRequest, PanelState, PanelView, ValueKind, confirmation, off_screen_panel_template,
-    panel_template, request, value_kind,
+    CHARSETS, CHECK_BOXES, ControlValue, DEFAULTS_QUESTION, ID_AUTO_RESTORE, ID_CHARSET,
+    ID_CONFIG_FILE, ID_CONFIG_LOCATION, ID_DEFAULTS, ID_EXCLUSIONS, ID_EXIT, ID_FREE_MARKING,
+    ID_HINT, ID_MACRO_AUTO_CASE, ID_MACRO_LIST, ID_MACROS, ID_MACROS_WHEN_ENGLISH, ID_METHOD,
+    ID_MINIMIZE, ID_MODERN_TONE, ID_OPEN_CONFIG, ID_SHOW_ON_START, ID_SPELL_CHECK, ID_STARTUP,
+    ID_VIETNAMESE, OFF_SCREEN, PANEL_REFRESH, PanelRequest, PanelState, PanelView, ValueKind,
+    confirmation, off_screen_panel_template, panel_template, request, value_kind,
 };
 use raumakey_controller::settings::{Change, Location};
 use raumakey_ipc::message::RuntimeSnapshot;
 use raumakey_model::hotkey::Hotkey;
 use raumakey_model::keymap::{KeyAction, KeyBinding, KeyMap, Tone};
-use raumakey_model::options::InputMethod;
+use raumakey_model::options::{InputMethod, OutputCharset};
 use raumakey_windows::dialog_box::is_reserved;
 use raumakey_windows::dialog_box::notifications::{BN_CLICKED, CBN_SELCHANGE, EN_CHANGE};
 use raumakey_windows::dialog_template::{
@@ -80,6 +80,7 @@ fn the_state_is_built_from_the_settings_in_effect() {
             vietnamese: true,
             method: InputMethod::Telex,
             user_defined_listed: false,
+            charset: OutputCharset::Unicode,
             modern_tone: false,
             free_marking: true,
             spell_check: true,
@@ -286,8 +287,16 @@ fn the_view_sets_every_control_from_the_state() {
                 (ID_STARTUP, false),
                 (ID_SHOW_ON_START, true),
             ],
-            methods: vec!["Telex", "VNI", "VIQR"],
+            methods: vec!["Telex", "Telex đơn giản", "VNI", "VIQR"],
             method: Some(0),
+            charsets: vec![
+                "Unicode",
+                "TCVN3 (ABC)",
+                "VNI Windows",
+                "Unicode tổ hợp",
+                "Windows CP 1258"
+            ],
+            charset: Some(0),
             texts: vec![
                 (
                     ID_HINT,
@@ -393,29 +402,33 @@ fn each_check_box_follows_its_own_value() {
     assert!(elevated.view().checks.contains(&(ID_STARTUP, true)));
 }
 
-/// The drop-down list holds Telex, VNI, VIQR, and "Kiểu gõ riêng" only when it is listed;
-/// the method in effect is selected.
+/// The drop-down list holds Telex, Telex đơn giản (D53), VNI, VIQR, and "Kiểu gõ riêng" only
+/// when it is listed; the method in effect is selected.
 #[test]
 fn the_method_list_and_its_selection_follow_the_state() {
     for (method, index) in [
         (InputMethod::Telex, 0),
-        (InputMethod::Vni, 1),
-        (InputMethod::Viqr, 2),
+        (InputMethod::SimpleTelex, 1),
+        (InputMethod::Vni, 2),
+        (InputMethod::Viqr, 3),
     ] {
         let mut state = state();
         state.method = method;
         let view = state.view();
-        assert_eq!(view.methods, ["Telex", "VNI", "VIQR"]);
+        assert_eq!(view.methods, ["Telex", "Telex đơn giản", "VNI", "VIQR"]);
         assert_eq!(view.method, Some(index), "{method:?}");
         state.user_defined_listed = true;
         let view = state.view();
-        assert_eq!(view.methods, ["Telex", "VNI", "VIQR", "Kiểu gõ riêng"]);
+        assert_eq!(
+            view.methods,
+            ["Telex", "Telex đơn giản", "VNI", "VIQR", "Kiểu gõ riêng"]
+        );
         assert_eq!(view.method, Some(index), "{method:?}");
     }
     let mut user = state();
     user.method = InputMethod::UserDefined;
     user.user_defined_listed = true;
-    assert_eq!(user.view().method, Some(3));
+    assert_eq!(user.view().method, Some(4));
     // Never the case for a state built from a snapshot: nothing is selected then.
     user.user_defined_listed = false;
     assert_eq!(user.view().method, None);
@@ -455,6 +468,7 @@ fn check_boxes_and_the_method_list_hold_values() {
         assert_eq!(value_kind(id), Some(ValueKind::Check), "{id}");
     }
     assert_eq!(value_kind(ID_METHOD), Some(ValueKind::Choice));
+    assert_eq!(value_kind(ID_CHARSET), Some(ValueKind::Choice));
     for id in [
         ID_HINT,
         ID_MACRO_LIST,
@@ -463,7 +477,8 @@ fn check_boxes_and_the_method_list_hold_values() {
         ID_CONFIG_LOCATION,
         ID_OPEN_CONFIG,
         ID_DEFAULTS,
-        ID_CLOSE,
+        ID_MINIMIZE,
+        ID_EXIT,
         IDOK,
         STATIC_ID,
         0,
@@ -482,8 +497,15 @@ fn expected_request(id: u16, code: u16, value: Option<ControlValue>) -> Option<P
         (ID_MACRO_LIST, BN_CLICKED, _) => Some(PanelRequest::MacroList),
         (ID_EXCLUSIONS, BN_CLICKED, _) => Some(PanelRequest::Exclusions),
         (ID_DEFAULTS, BN_CLICKED, _) => Some(C(Change::TypingDefaults)),
+        (ID_EXIT, BN_CLICKED, _) => Some(PanelRequest::Exit),
+        (ID_CHARSET, CBN_SELCHANGE, Some(ControlValue::Selected(Some(index)))) => {
+            OutputCharset::ALL
+                .get(index)
+                .map(|charset| C(Change::Charset(*charset)))
+        }
         (ID_METHOD, CBN_SELCHANGE, Some(ControlValue::Selected(Some(index)))) => [
             InputMethod::Telex,
+            InputMethod::SimpleTelex,
             InputMethod::Vni,
             InputMethod::Viqr,
             InputMethod::UserDefined,
@@ -508,14 +530,15 @@ fn expected_request(id: u16, code: u16, value: Option<ControlValue>) -> Option<P
 }
 
 /// Every control, notification, and value: the actions above make their request, everything
-/// else (focus notifications, other codes, the Close button, which closes the panel, labels,
-/// unknown ids) makes none.
+/// else (focus notifications, other codes, "Thu nhỏ", which closes the panel, labels, unknown
+/// ids) makes none.
 #[test]
 fn every_action_on_every_control_makes_its_request_or_none() {
     let ids = [
         ID_VIETNAMESE,
         ID_HINT,
         ID_METHOD,
+        ID_CHARSET,
         ID_MODERN_TONE,
         ID_FREE_MARKING,
         ID_SPELL_CHECK,
@@ -531,7 +554,8 @@ fn every_action_on_every_control_makes_its_request_or_none() {
         ID_CONFIG_LOCATION,
         ID_OPEN_CONFIG,
         ID_DEFAULTS,
-        ID_CLOSE,
+        ID_MINIMIZE,
+        ID_EXIT,
         IDOK,
         STATIC_ID,
         0,
@@ -557,8 +581,8 @@ fn every_action_on_every_control_makes_its_request_or_none() {
             }
         }
     }
-    // 10 check boxes × 2 values, 4 methods, 4 buttons × every value.
-    assert_eq!(made, 20 + 4 + 4 * values.len());
+    // 10 check boxes × 2 values, 5 methods, 5 charsets, 5 buttons × every value.
+    assert_eq!(made, 20 + 5 + 5 + 5 * values.len());
 }
 
 /// Clicks as the handler reads them: the new state of the box, the new selection.
@@ -582,13 +606,15 @@ fn clicks_ask_for_the_new_value() {
             CBN_SELCHANGE,
             Some(ControlValue::Selected(Some(1)))
         ),
-        Some(PanelRequest::Change(Change::InputMethod(InputMethod::Vni)))
+        Some(PanelRequest::Change(Change::InputMethod(
+            InputMethod::SimpleTelex
+        )))
     );
     assert_eq!(
         request(
             ID_METHOD,
             CBN_SELCHANGE,
-            Some(ControlValue::Selected(Some(3)))
+            Some(ControlValue::Selected(Some(4)))
         ),
         Some(PanelRequest::Change(Change::InputMethod(
             InputMethod::UserDefined
@@ -615,6 +641,7 @@ fn only_the_defaults_ask_first() {
         PanelRequest::OpenConfig,
         PanelRequest::MacroList,
         PanelRequest::Exclusions,
+        PanelRequest::Exit,
     ] {
         assert_eq!(confirmation(other), None, "{other:?}");
     }
@@ -643,6 +670,13 @@ fn expected_controls() -> Vec<(u16, ControlClass, &'static str, u32)> {
         (STATIC_ID, Static, "Kiểu gõ:", 0),
         (
             ID_METHOD,
+            ComboBox,
+            "",
+            styles::CBS_DROPDOWNLIST | styles::WS_TABSTOP | WS_GROUP,
+        ),
+        (STATIC_ID, Static, "Bảng mã:", WS_GROUP),
+        (
+            ID_CHARSET,
             ComboBox,
             "",
             styles::CBS_DROPDOWNLIST | styles::WS_TABSTOP | WS_GROUP,
@@ -723,9 +757,10 @@ fn expected_controls() -> Vec<(u16, ControlClass, &'static str, u32)> {
         (
             IDCANCEL,
             Button,
-            "Đóng",
+            "Thu nhỏ",
             styles::BS_DEFPUSHBUTTON | styles::WS_TABSTOP,
         ),
+        (ID_EXIT, Button, "Đóng", push),
     ]
 }
 
@@ -836,6 +871,7 @@ fn arrow_keys_stay_within_each_group_of_check_boxes() {
         [
             vec![ID_VIETNAMESE],
             vec![ID_METHOD],
+            vec![ID_CHARSET],
             vec![
                 ID_MODERN_TONE,
                 ID_FREE_MARKING,
@@ -846,7 +882,7 @@ fn arrow_keys_stay_within_each_group_of_check_boxes() {
             vec![ID_MACRO_LIST],
             vec![ID_STARTUP, ID_SHOW_ON_START],
             vec![ID_EXCLUSIONS],
-            vec![ID_OPEN_CONFIG, ID_DEFAULTS, ID_CLOSE],
+            vec![ID_OPEN_CONFIG, ID_DEFAULTS, ID_MINIMIZE, ID_EXIT],
         ]
     );
     for group in groups(&template) {
@@ -858,10 +894,12 @@ fn arrow_keys_stay_within_each_group_of_check_boxes() {
     }
 }
 
-/// "Đóng" is the Cancel button and the only default button: Enter, Esc, and the close box all
-/// close the panel (there is no OK: every change is saved at once).
+/// D50: "Thu nhỏ" is the Cancel button and the only default button: Enter, Esc, and the close
+/// box all close the panel and leave Raumakey in the notification area (there is no OK: every
+/// change is saved at once). "Đóng" is an ordinary button that exits Raumakey, so no key
+/// exits by accident.
 #[test]
-fn close_is_the_default_cancel_button() {
+fn minimize_is_the_default_cancel_button_and_close_exits() {
     let template = panel_template();
     let defaults: Vec<u16> = template
         .controls()
@@ -873,7 +911,11 @@ fn close_is_the_default_cancel_button() {
         .map(Control::id)
         .collect();
     assert_eq!(defaults, [IDCANCEL]);
-    assert_eq!(ID_CLOSE, IDCANCEL);
+    assert_eq!(ID_MINIMIZE, IDCANCEL);
+    assert!(![IDCANCEL, IDOK].contains(&ID_EXIT));
+    assert_eq!(request(ID_EXIT, BN_CLICKED, None), Some(PanelRequest::Exit));
+    assert_eq!(request(ID_MINIMIZE, BN_CLICKED, None), None);
+    assert_eq!(confirmation(PanelRequest::Exit), None, "exits at once");
     assert!(
         !template
             .controls()
@@ -966,6 +1008,7 @@ fn the_layout_keeps_every_control_inside_its_group_without_overlap() {
             "Cách gõ",
             &[
                 ID_METHOD,
+                ID_CHARSET,
                 ID_MODERN_TONE,
                 ID_FREE_MARKING,
                 ID_SPELL_CHECK,
@@ -1075,6 +1118,12 @@ fn the_labels_fit_their_controls() {
     assert!(estimated_width(method_label.text()) <= method_label.rect().cx);
     let longest = estimated_width("Kiểu gõ riêng") + 16;
     assert!(longest <= label(ID_METHOD).cx, "the longest method");
+    for (_, name) in CHARSETS {
+        assert!(
+            estimated_width(name) + 16 <= label(ID_CHARSET).cx,
+            "the charset {name}"
+        );
+    }
 }
 
 /// The examples in parentheses ("(oà, uý)", "(toans → toán)", "(Ko → Không, KO → KHÔNG)")

@@ -10,6 +10,7 @@ Các nguồn được phép dùng khi triển khai:
 - `docs/superpowers/plans/`
 - `docs/reference/evkey_clean_room_spec.md`
 - `docs/reference/evkey_compatibility_test_matrix.md`
+- `docs/reference/evkey_reconstruction/`
 - mã nguồn và test được tạo trong kho mã này
 - mã nguồn UniKey upstream có giấy phép hợp lệ, chỉ sau khi repository, commit và giấy phép của nó đã được ghi vào `THIRD_PARTY.md`
 

@@ -61,14 +61,25 @@ fn action() -> impl Strategy<Value = RuleAction> {
         option::of(any::<bool>()),
         option::of(any::<bool>()),
         option::of(any::<u32>()),
+        option::of(any::<bool>()),
     )
         .prop_map(
-            |(transport, reset_on_mouse, macros, vietnamese, max_delete_before)| RuleAction {
+            |(
                 transport,
                 reset_on_mouse,
                 macros,
                 vietnamese,
                 max_delete_before,
+                autocomplete_guard,
+            )| {
+                RuleAction {
+                    transport,
+                    reset_on_mouse,
+                    macros,
+                    vietnamese,
+                    max_delete_before,
+                    autocomplete_guard,
+                }
             },
         )
 }

@@ -61,10 +61,15 @@ impl Drop for Scratch {
 
 /// One of 256 valid configurations, chosen by `variant`.
 fn document(variant: u8) -> ConfigDocument {
-    const METHODS: [InputMethod; 3] = [InputMethod::Telex, InputMethod::Vni, InputMethod::Viqr];
+    const METHODS: [InputMethod; 4] = [
+        InputMethod::Telex,
+        InputMethod::Vni,
+        InputMethod::Viqr,
+        InputMethod::SimpleTelex,
+    ];
     let mut document = ConfigDocument::defaults();
     let input = &mut document.input;
-    input.method = METHODS[usize::from(variant % 3)];
+    input.method = METHODS[usize::from(variant % 4)];
     input.modern_tone = variant & 4 != 0;
     input.spell_check = variant & 8 != 0;
     input.free_marking = variant & 16 != 0;

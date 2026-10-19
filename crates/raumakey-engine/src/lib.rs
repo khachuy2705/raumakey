@@ -7,13 +7,17 @@
 //!
 //! Behavior follows the implementation plan §3:
 //!
-//! - Telex, VNI, VIQR, and validated user key maps map keys to semantic actions; a key whose
-//!   actions do not apply is typed literally (never swallowed).
+//! - Telex, Simple Telex (Telex without the standalone `w`, D53), VNI, VIQR, and validated
+//!   user key maps map keys to semantic actions; a key whose actions do not apply is typed
+//!   literally (never swallowed).
 //! - The word model keeps letters with marks plus one word-level tone placed by the old or
 //!   modern rule; a repeated action undoes itself and makes the rest of the word literal.
-//! - With spell checking, transformations stay inside the syllable grammar. A prefix may still
-//!   lack marks that later keys add (`ưo` → `ươ`, `tieng` → `tiêng`).
-//! - Boundaries expand macros, restore invalid transformed words to their raw keys, and reset
+//! - Transformations always keep the structure of a syllable (D52): Vietnamese consonants, one
+//!   group of vowels, and a coda of `c ch m n ng nh p t` or none, so `EVKey` stays `EVKey`.
+//!   With spell checking they also stay inside the syllable grammar. A prefix may still lack
+//!   marks that later keys add (`ưo` → `ươ`, `tieng` → `tiêng`).
+//! - Boundaries expand macros, restore invalid transformed words to their raw keys (not a
+//!   complete syllable with spell checking, without the structure of one otherwise), and reset
 //!   the state; Shift+Space and VIQR-escaped punctuation commit the word unchanged.
 //! - A whitespace boundary also looks up the token typed since the previous whitespace, so a
 //!   trigger with boundary punctuation (`v.v`) expands (plan D28). The engine tracks such a

@@ -342,6 +342,7 @@ fn options_override_defaults_v1() {
         normalization: Normalization::Nfd,
         modern_tone: true,
         context_limit_codepoints: 64,
+        charset: Default::default(),
         enabled: false,
         macros_when_disabled: true,
         ..EngineOptions::defaults_v1()
@@ -379,6 +380,7 @@ fn options_override_defaults_v1() {
             auto_case_macro: false,
             user_keymap_id: None,
             context_limit_codepoints: 8,
+            charset: Default::default(),
         }
     );
     assert_eq!(

@@ -225,6 +225,7 @@ fn script_options(line: &str) -> EngineOptions {
     for word in line.split_whitespace() {
         match word {
             "telex" => options.input_method = InputMethod::Telex,
+            "simple-telex" => options.input_method = InputMethod::SimpleTelex,
             "vni" => options.input_method = InputMethod::Vni,
             "viqr" => options.input_method = InputMethod::Viqr,
             "user" => options.input_method = InputMethod::UserDefined,
@@ -255,6 +256,7 @@ fn decode_options(reader: &mut Reader<'_>) -> EngineOptions {
         InputMethod::Telex,
         InputMethod::Telex,
         InputMethod::Telex,
+        InputMethod::SimpleTelex,
         InputMethod::Vni,
         InputMethod::Viqr,
         InputMethod::UserDefined,
@@ -285,6 +287,7 @@ fn decode_options(reader: &mut Reader<'_>) -> EngineOptions {
         auto_case_macro: flags & 64 == 0,
         user_keymap_id,
         context_limit_codepoints: reader.pick(&[32, 32, 8, 12, 128, 0, 7, 129, 1_000, u32::MAX]),
+        charset: Default::default(),
     }
 }
 
@@ -742,7 +745,7 @@ impl Session {
         let words = match self.options.input_method {
             InputMethod::Vni => VNI_WORDS,
             InputMethod::Viqr => VIQR_WORDS,
-            InputMethod::Telex | InputMethod::UserDefined => TELEX_WORDS,
+            InputMethod::Telex | InputMethod::SimpleTelex | InputMethod::UserDefined => TELEX_WORDS,
         };
         let word = reader.pick(words);
         for key in word.chars() {
@@ -771,6 +774,7 @@ impl Session {
             1 => {
                 options.input_method = reader.pick(&[
                     InputMethod::Telex,
+                    InputMethod::SimpleTelex,
                     InputMethod::Vni,
                     InputMethod::Viqr,
                     InputMethod::UserDefined,

@@ -45,10 +45,10 @@ use raumakey_controller::notice::{
     Notice, NoticeKind, Question, save_error_notice, temporary_exe_notice,
 };
 use raumakey_controller::panel::{
-    ID_AUTO_RESTORE, ID_CLOSE, ID_CONFIG_FILE, ID_CONFIG_LOCATION, ID_EXCLUSIONS, ID_FREE_MARKING,
-    ID_HINT, ID_MACRO_AUTO_CASE, ID_MACRO_LIST, ID_MACROS, ID_MACROS_WHEN_ENGLISH, ID_METHOD,
-    ID_MODERN_TONE, ID_OPEN_CONFIG, ID_SHOW_ON_START, ID_SPELL_CHECK, ID_STARTUP, ID_VIETNAMESE,
-    PanelRequest, PanelState, panel_title,
+    ID_AUTO_RESTORE, ID_CHARSET, ID_CONFIG_FILE, ID_CONFIG_LOCATION, ID_EXCLUSIONS, ID_EXIT,
+    ID_FREE_MARKING, ID_HINT, ID_MACRO_AUTO_CASE, ID_MACRO_LIST, ID_MACROS, ID_MACROS_WHEN_ENGLISH,
+    ID_METHOD, ID_MINIMIZE, ID_MODERN_TONE, ID_OPEN_CONFIG, ID_SHOW_ON_START, ID_SPELL_CHECK,
+    ID_STARTUP, ID_VIETNAMESE, PanelRequest, PanelState, panel_title,
 };
 use raumakey_controller::settings::{Change, DocumentStatus, Location, Status};
 use raumakey_controller::tray::{
@@ -59,7 +59,7 @@ use raumakey_controller::tray::{
 use raumakey_controller::worker::{Answer, Outcome, PollReport, WorkerCommand};
 use raumakey_ipc::message::RuntimeSnapshot;
 use raumakey_model::host::ExeName;
-use raumakey_model::options::InputMethod;
+use raumakey_model::options::{InputMethod, OutputCharset};
 use raumakey_model::policy::{AppRule, RuleAction};
 use raumakey_windows::dialog_box::notifications::{BN_CLICKED, CBN_SELCHANGE};
 use raumakey_windows::dialog_template::{IDCANCEL, styles};
@@ -1770,8 +1770,9 @@ fn arrow_targets(dialog: HWND, id: u16) -> Vec<i32> {
 /// state it was opened with; clicks and a new selection become requests in the inbox; a
 /// refresh puts every control to the new state (a refused click is put back, "Kiểu gõ riêng"
 /// appears, the footer and the disabled buttons of a run without a folder); opening it again
-/// shows the new state in the same window; "Đóng" closes it with its latest number; the exit
-/// closes a panel without waiting.
+/// shows the new state in the same window; "Đóng" asks the tray to exit and leaves the panel
+/// to it (D50); "Thu nhỏ" closes it with its latest number; the exit closes a panel without
+/// waiting.
 #[test]
 fn the_real_panel_shows_the_state_sends_requests_and_closes() {
     let (inbox, events) = mpsc::channel();
@@ -1782,7 +1783,7 @@ fn the_real_panel_shows_the_state_sends_requests_and_closes() {
     // The controls show the state.
     assert_eq!(shown_checks(panel), checks_of(&state));
     let methods = item(panel, ID_METHOD);
-    assert_eq!(send_to(methods, CB_GETCOUNT, 0, 0), 3);
+    assert_eq!(send_to(methods, CB_GETCOUNT, 0, 0), 4);
     assert_eq!(send_to(methods, CB_GETCURSEL, 0, 0), 0);
     assert_eq!(window_text(item(panel, ID_HINT)), state.hint());
     assert_eq!(
@@ -1812,12 +1813,26 @@ fn the_real_panel_shows_the_state_sends_requests_and_closes() {
         next_event(&events),
         Event::Panel(PanelRequest::Startup(true))
     );
-    send_to(methods, CB_SETCURSEL, 2, 0);
+    send_to(methods, CB_SETCURSEL, 3, 0);
     let wparam = usize::from(ID_METHOD) | (usize::from(CBN_SELCHANGE) << 16);
     send_to(panel, WM_COMMAND, wparam, methods.0 as isize);
     assert_eq!(
         next_event(&events),
         Event::Panel(PanelRequest::Change(Change::InputMethod(InputMethod::Viqr)))
+    );
+    // D54: the charset list holds the five charsets, Unicode selected; a new selection asks
+    // for its charset.
+    let charsets = item(panel, ID_CHARSET);
+    assert_eq!(send_to(charsets, CB_GETCOUNT, 0, 0), 5);
+    assert_eq!(send_to(charsets, CB_GETCURSEL, 0, 0), 0);
+    send_to(charsets, CB_SETCURSEL, 2, 0);
+    let wparam = usize::from(ID_CHARSET) | (usize::from(CBN_SELCHANGE) << 16);
+    send_to(panel, WM_COMMAND, wparam, charsets.0 as isize);
+    assert_eq!(
+        next_event(&events),
+        Event::Panel(PanelRequest::Change(Change::Charset(
+            OutputCharset::VniWindows
+        )))
     );
     send_to(item(panel, ID_OPEN_CONFIG), BM_CLICK, 0, 0);
     assert_eq!(next_event(&events), Event::Panel(PanelRequest::OpenConfig));
@@ -1826,6 +1841,10 @@ fn the_real_panel_shows_the_state_sends_requests_and_closes() {
     assert!(is_enabled(item(panel, ID_EXCLUSIONS)));
     send_to(item(panel, ID_EXCLUSIONS), BM_CLICK, 0, 0);
     assert_eq!(next_event(&events), Event::Panel(PanelRequest::Exclusions));
+    // "Đóng" asks the tray to exit; the tray closes the panel with the rest (D50).
+    send_to(item(panel, ID_EXIT), BM_CLICK, 0, 0);
+    assert_eq!(next_event(&events), Event::Panel(PanelRequest::Exit));
+    assert!(is_window(panel));
     // A command of a label asks nothing.
     let wparam = usize::from(ID_HINT) | (usize::from(BN_CLICKED) << 16);
     send_to(panel, WM_COMMAND, wparam, 0);
@@ -1842,11 +1861,11 @@ fn the_real_panel_shows_the_state_sends_requests_and_closes() {
     refreshed.config_path = None;
     shell.refresh_panel(refreshed.clone());
     wait_until("the refresh was shown", || {
-        send_to(methods, CB_GETCOUNT, 0, 0) == 4
+        send_to(methods, CB_GETCOUNT, 0, 0) == 5
     });
     assert_eq!(shown_checks(panel), checks_of(&refreshed));
     assert_eq!(send_to(item(panel, ID_STARTUP), BM_GETCHECK, 0, 0), 0);
-    assert_eq!(send_to(methods, CB_GETCURSEL, 0, 0), 3);
+    assert_eq!(send_to(methods, CB_GETCURSEL, 0, 0), 4);
     assert_eq!(
         window_text(item(panel, ID_HINT)),
         "Bật/tắt nhanh: nhấp biểu tượng V/E"
@@ -1869,14 +1888,14 @@ fn the_real_panel_shows_the_state_sends_requests_and_closes() {
     again.user_defined_listed = false;
     shell.open_panel(2, again.clone());
     wait_until("the second opening was shown", || {
-        send_to(methods, CB_GETCOUNT, 0, 0) == 3
+        send_to(methods, CB_GETCOUNT, 0, 0) == 4
     });
     assert_eq!(shown_checks(panel), checks_of(&again));
-    assert_eq!(send_to(methods, CB_GETCURSEL, 0, 0), 1);
+    assert_eq!(send_to(methods, CB_GETCURSEL, 0, 0), 2);
     assert_eq!(panel_windows(), [panel]);
 
-    // "Đóng" closes it; the close names the latest opening.
-    send_to(item(panel, ID_CLOSE), BM_CLICK, 0, 0);
+    // "Thu nhỏ" closes it; the close names the latest opening.
+    send_to(item(panel, ID_MINIMIZE), BM_CLICK, 0, 0);
     assert_eq!(next_event(&events), Event::PanelClosed(2));
     wait_until("the panel was destroyed", || !is_window(panel));
     // Refreshing or closing a panel that is gone does nothing.
@@ -2142,9 +2161,11 @@ fn the_real_panel_and_editor_leave_windows_nothing_to_wrap() {
         }
     }
     assert_eq!(found, Vec::<String>::new());
-    // The panel's ten check boxes, three labels, and five push buttons; the editor's five
-    // labels and four push buttons; the exclusions dialog's three labels and six push buttons.
-    assert_eq!(checked, 18 + 5 + 4 + 3 + 6);
+    // The panel's ten check boxes, four labels ("Bảng mã:" among them, D54), and six push
+    // buttons ("Thu nhỏ" and "Đóng" among them, D50); the editor's five labels and four push
+    // buttons; the exclusions dialog's five statics (the window picker and its hint among
+    // them, D55) and six push buttons.
+    assert_eq!(checked, 20 + 5 + 4 + 5 + 6);
 
     shell.close_panel();
     assert_eq!(next_event(&events), Event::PanelClosed(1));

@@ -4,7 +4,7 @@
 mod common;
 
 use common::*;
-use raumakey_converter::{Charset, decode, encode, encode_with_report};
+use raumakey_converter::{Charset, decode, encode, encode_bytes, encode_with_report, typed_text};
 
 fn assert_exact(text: &str, charset: Charset, expected: &str) {
     let report = encode_with_report(text, charset).unwrap();
@@ -192,5 +192,42 @@ fn windows_1252_characters_on_taken_positions_are_replaced_and_reported() {
         let report = encode_with_report(&format!("a{text}b"), charset).unwrap();
         assert!(report.lossy, "{charset} {text:?}");
         assert_eq!(report.text, "a?b", "{charset} {text:?}");
+    }
+}
+
+/// D54: what a keyboard types for a charset. Windows-1258 is a code page of Vietnamese letters,
+/// so its bytes are typed as the characters the code page gives them (precomposed where it has
+/// them, else the letter and a combining tone mark), never as Windows-1252 characters, which an
+/// application would show as `êì`. The other charsets are typed as `encode` writes them: the
+/// fonts made for TCVN3 and VNI Windows show their Windows-1252 characters as Vietnamese.
+#[test]
+fn typed_text_holds_what_an_application_of_the_charset_holds() {
+    assert_eq!(
+        typed_text("tiếng", Charset::Cp1258).unwrap(),
+        "tiê\u{301}ng"
+    );
+    assert_eq!(
+        typed_text("đường", Charset::Cp1258).unwrap(),
+        "đươ\u{300}ng"
+    );
+    assert_eq!(typed_text("và", Charset::Cp1258).unwrap(), "và");
+    // One character per byte of the encoding, so that a Backspace per character deletes it.
+    for text in [LETTERS, SENTENCE] {
+        let typed = typed_text(text, Charset::Cp1258).unwrap();
+        let bytes = encode_bytes(text, Charset::Cp1258).unwrap();
+        assert_eq!(typed.chars().count(), bytes.len());
+        assert_eq!(decode(&typed, Charset::Unicode).unwrap(), text);
+    }
+    for charset in [
+        Charset::Unicode,
+        Charset::UnicodeNfd,
+        Charset::Tcvn3,
+        Charset::VniWindows,
+    ] {
+        assert_eq!(
+            typed_text("Tiếng Việt", charset).unwrap(),
+            encode("Tiếng Việt", charset).unwrap(),
+            "{charset}"
+        );
     }
 }

@@ -7,10 +7,11 @@
 use raumakey_controller::exclusions::{ExclusionsState, default_apps};
 use raumakey_controller::exclusions_dialog::{
     APP_LABEL, BROWSE_FAILED, COLUMNS, DEFAULTS_QUESTION, DIALOG_SIZE, EXCLUSIONS_REFRESH, Entered,
-    ID_ADD, ID_APP, ID_BROWSE, ID_DEFAULTS, ID_INTRO, ID_LIST, ID_NOT_SAVED, ID_REFRESH, ID_REMOVE,
-    INTRO, INVALID_NAME, NOT_SAVED, PROGRAMS, Program, TITLE, browse_error_prompt,
-    builtin_description, can_add, defaults_prompt, entered, invalid_name_prompt, neighbour,
-    not_saved_text, picked_text, program_entry, row_cells, selection_after, template,
+    ID_ADD, ID_APP, ID_BROWSE, ID_DEFAULTS, ID_INTRO, ID_LIST, ID_NOT_SAVED, ID_PICKER,
+    ID_PICKER_HINT, ID_REFRESH, ID_REMOVE, INTRO, INVALID_NAME, NOT_SAVED, PICKER_HINT, PROGRAMS,
+    Program, TITLE, browse_error_prompt, builtin_description, can_add, defaults_prompt, entered,
+    invalid_name_prompt, neighbour, not_saved_text, picked_text, program_entry, row_cells,
+    selection_after, template,
 };
 use raumakey_controller::macro_dialog::{Placement, PromptKind};
 use raumakey_model::host::ExeName;
@@ -346,6 +347,24 @@ fn the_template_lays_out_the_dialog_with_its_controls_and_texts() {
     assert_eq!(note.text(), "");
     assert!(note.rect().cy >= 16, "two lines");
 
+    // D55: the window picker, and its hint on two lines.
+    let picker = find(controls, ID_PICKER);
+    assert_eq!(picker.class(), ControlClass::Static);
+    assert_eq!(picker.style() & 0x0F, styles::SS_ICON);
+    assert_eq!(
+        picker.style() & styles::SS_NOTIFY,
+        0,
+        "the dialog gets the press"
+    );
+    let hint = find(controls, ID_PICKER_HINT);
+    assert_eq!(hint.class(), ControlClass::Static);
+    assert_eq!(hint.text(), PICKER_HINT);
+    assert!(hint.rect().cy >= 16, "two lines");
+    assert!(
+        estimated_width(PICKER_HINT) <= hint.rect().cx * 2,
+        "the hint fits its two lines"
+    );
+
     let list = find(controls, ID_LIST);
     assert_eq!(list.class(), ControlClass::ListView);
     assert_ne!(list.style() & styles::LVS_OWNERDATA, 0, "a virtual list");
@@ -547,8 +566,8 @@ mod win {
     use raumakey_controller::exclusions::{ExclusionsRequest, ExclusionsState};
     use raumakey_controller::exclusions_dialog::{
         DEFAULTS_QUESTION, EXCLUSIONS_REFRESH, ExclusionsLink, ID_ADD, ID_APP, ID_BROWSE,
-        ID_DEFAULTS, ID_INTRO, ID_LIST, ID_NOT_SAVED, ID_REFRESH, ID_REMOVE, INTRO, INVALID_NAME,
-        NOT_SAVED, Program, Programs, TITLE, browse_error_prompt, program_entry,
+        ID_DEFAULTS, ID_INTRO, ID_LIST, ID_NOT_SAVED, ID_PICKER, ID_REFRESH, ID_REMOVE, INTRO,
+        INVALID_NAME, NOT_SAVED, Program, Programs, TITLE, browse_error_prompt, program_entry,
         spawn_exclusions_with,
     };
     use raumakey_controller::macro_dialog::{Placement, Prompt, PromptKind, Prompter};
@@ -558,7 +577,9 @@ mod win {
     use raumakey_windows::error::{E_ABORT, WinError, WinResult};
     use raumakey_windows::file_dialog::FileFilter;
     use raumakey_windows::strings::until_nul;
-    use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+    use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
+    use windows::Win32::Graphics::Gdi::ScreenToClient;
+    use windows::Win32::System::Threading::GetCurrentProcessId;
     use windows::Win32::UI::Controls::{
         LVIS_SELECTED, LVITEMW, LVM_GETITEMCOUNT, LVM_GETITEMTEXTW, LVM_GETNEXTITEM,
         LVM_SETITEMSTATE, LVNI_SELECTED,
@@ -571,7 +592,12 @@ mod win {
         SendMessageTimeoutW, SetWindowPos, WM_CHAR, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN,
         WM_NEXTDLGCTL, WM_NULL,
     };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, WM_CAPTURECHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP,
+        WM_MOUSEMOVE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_VISIBLE,
+    };
     use windows::core::PWSTR;
+    use windows::core::w;
 
     use super::common_controls_v6::{CCM_GETVERSION, CommonControls6};
     use super::{exe, program, state};
@@ -687,6 +713,13 @@ mod win {
             apps.iter()
                 .map(|app| self.descriptions.get(app.as_str()).cloned())
                 .collect()
+        }
+
+        /// The windows of the test process belong to `putty.exe`; no other process is known.
+        fn process_exe(&mut self, process_id: u32) -> Option<ExeName> {
+            // SAFETY: no preconditions.
+            let own = unsafe { GetCurrentProcessId() };
+            (process_id == own).then(|| exe("putty.exe"))
         }
     }
 
@@ -1537,5 +1570,134 @@ mod win {
                 let _ = dialog.post(EXCLUSIONS_REFRESH, 0, 0);
             }
         }
+    }
+
+    /// Where the target window of the picker tests lies: far off every monitor, apart from the
+    /// dialog.
+    const TARGET: (i32, i32) = (-20_000, -20_000);
+
+    /// A plain top-level window of the test process at [`TARGET`], visible but off every
+    /// monitor and never activated; a button, so that hit testing finds it.
+    struct Target(HWND);
+
+    impl Target {
+        fn new() -> Self {
+            // SAFETY: creates a window of a system class with no extra data; it is destroyed
+            // on drop.
+            let hwnd = unsafe {
+                CreateWindowExW(
+                    WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                    w!("BUTTON"),
+                    w!("Raumakey target"),
+                    WS_POPUP | WS_VISIBLE,
+                    TARGET.0,
+                    TARGET.1,
+                    200,
+                    200,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            }
+            .unwrap();
+            Self(hwnd)
+        }
+
+        fn inside(&self) -> (i32, i32) {
+            (TARGET.0 + 100, TARGET.1 + 100)
+        }
+    }
+
+    impl Drop for Target {
+        fn drop(&mut self) {
+            // SAFETY: a window this thread created.
+            let _ = unsafe { DestroyWindow(self.0) };
+        }
+    }
+
+    /// The center of control `id` of `dialog`, on the screen.
+    fn center(dialog: HWND, id: u16) -> (i32, i32) {
+        let mut frame = RECT::default();
+        // SAFETY: `frame` is a valid out pointer.
+        unsafe { GetWindowRect(item(dialog, id), &mut frame) }.unwrap();
+        (
+            (frame.left + frame.right) / 2,
+            (frame.top + frame.bottom) / 2,
+        )
+    }
+
+    /// Sends the mouse `message` at `screen` to `dialog`, as the pointer would.
+    fn mouse(dialog: HWND, message: u32, screen: (i32, i32)) {
+        let mut point = POINT {
+            x: screen.0,
+            y: screen.1,
+        };
+        // SAFETY: `point` is a valid in/out pointer.
+        assert!(unsafe { ScreenToClient(dialog, &mut point) }.as_bool());
+        let x = (point.x as i16 as u16) as isize;
+        let y = (point.y as i16 as u16) as isize;
+        let keys = if message == WM_LBUTTONUP { 0 } else { 1 };
+        send(dialog, message, keys, x | (y << 16));
+    }
+
+    /// D55: a drag from the picker puts the executable of the window under the pointer into
+    /// the edit while it goes on and the text typed before over no window (or the dialog
+    /// itself); a lost capture puts the typed text back; a drop keeps the executable, with
+    /// "Thêm" enabled and the focus in the edit, ready to add it.
+    #[test]
+    fn d55_a_drag_from_the_picker_puts_the_executable_into_the_edit() {
+        let target = Target::new();
+        let opened = open(state(&["mstsc.exe"], true), None);
+        let hwnd = opened.hwnd;
+        // A place of its own, which no dialog of another test covers (they lie at -32000).
+        // SAFETY: moves a window without activating it; no pointers.
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                None,
+                -26_000,
+                -26_000,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+        }
+        .unwrap();
+        let picker = center(hwnd, ID_PICKER);
+        type_into_edit(hwnd, "abc");
+
+        mouse(hwnd, WM_LBUTTONDOWN, picker);
+        mouse(hwnd, WM_MOUSEMOVE, target.inside());
+        assert_eq!(text(combo_edit(hwnd)), "putty.exe");
+        mouse(hwnd, WM_MOUSEMOVE, picker);
+        assert_eq!(text(combo_edit(hwnd)), "abc");
+        mouse(hwnd, WM_MOUSEMOVE, target.inside());
+        assert_eq!(text(combo_edit(hwnd)), "putty.exe");
+        send(hwnd, WM_CAPTURECHANGED, 0, 0);
+        assert_eq!(
+            text(combo_edit(hwnd)),
+            "abc",
+            "a cancelled drag puts the text back"
+        );
+
+        mouse(hwnd, WM_LBUTTONDOWN, picker);
+        mouse(hwnd, WM_MOUSEMOVE, target.inside());
+        mouse(hwnd, WM_LBUTTONUP, target.inside());
+        assert_eq!(text(combo_edit(hwnd)), "putty.exe");
+        assert!(is_enabled(hwnd, ID_ADD));
+        assert_eq!(focus_of(hwnd), combo_edit(hwnd));
+        assert_eq!(opened.waiting(), [], "a drop adds nothing by itself");
+        click(hwnd, ID_ADD);
+        assert_eq!(
+            opened.waiting(),
+            [Event::Request(ExclusionsRequest::Add(exe("putty.exe")))]
+        );
+
+        // A drop over no known program puts the text back.
+        type_into_edit(hwnd, "xyz");
+        mouse(hwnd, WM_LBUTTONDOWN, picker);
+        mouse(hwnd, WM_LBUTTONUP, picker);
+        assert_eq!(text(combo_edit(hwnd)), "xyz");
     }
 }

@@ -18,11 +18,18 @@
 //!   | msrdc.exe            | Remote Desktop / Windows App       |
 //!   +----------------------+------------------------------------+
 //!   Ứng dụng: [notepad.exe                            v] [Làm mới]
-//!             [Duyệt…] [Thêm]
+//!             [Duyệt…] [Thêm]  [⌖] Kéo hình này vào cửa sổ để lấy
+//!                                  tên chương trình
 //!   (Không có thư mục để lưu cấu hình, …: without a folder only)
 //!   [Xoá] [Mặc định]                                       [Đóng]
 //!   ```
 //!
+//! - The window picker (D55): a picture of the pointer's cross beside "Thêm", with the hint
+//!   [`PICKER_HINT`]. Dragged onto a window, it shows the executable of the window under the
+//!   pointer in the edit while the button is held, and leaves it there on the release, ready
+//!   for "Thêm" (as AutoIt's Window Info tool picks a window). Over no window, over Raumakey's
+//!   own windows, or over a program that cannot be queried, and when the drag is cancelled,
+//!   the edit shows again what it held before the drag.
 //! - What a row shows: [`row_cells`], the executable and its description, which is the
 //!   `FileDescription` of a running program of that name when one runs, else the product name
 //!   of the four defaults ([`builtin_description`], in English: these are product names),
@@ -165,6 +172,14 @@ pub const ID_NOT_SAVED: u16 = 107;
 pub const ID_REMOVE: u16 = 108;
 /// "Mặc định".
 pub const ID_DEFAULTS: u16 = 109;
+/// The window picker: the picture to drag onto a window (D55).
+pub const ID_PICKER: u16 = 110;
+/// The hint beside the window picker (label, two lines).
+pub const ID_PICKER_HINT: u16 = 111;
+
+/// The hint of the window picker: "Drag this picture onto a window to get the name of its
+/// program."
+pub const PICKER_HINT: &str = "Kéo hình này vào cửa sổ để lấy tên chương trình";
 
 /// The introduction: "In the applications below, Raumakey always types English and expands no
 /// macro. Every change takes effect and is saved at once."
@@ -387,6 +402,11 @@ pub fn template(placement: Placement) -> DialogTemplate {
             "Thêm",
             rect(107, 155, 56, 14),
         ))
+        .with_control(Control::window_picker(ID_PICKER, rect(171, 152, 20, 20)).group())
+        .with_control(
+            Control::label(ID_PICKER_HINT, PICKER_HINT, rect(195, 154, 98, 16))
+                .with_style(styles::SS_NOPREFIX),
+        )
         .with_control(
             Control::label(ID_NOT_SAVED, "", rect(7, 175, 286, 16))
                 .with_style(styles::SS_NOPREFIX)
@@ -418,9 +438,10 @@ mod win {
 
     use raumakey_model::host::ExeName;
     use raumakey_windows::dialog_box::{
-        DetachedDialog, Dialog, DialogHandler, notifications, spawn_dialog,
+        DetachedDialog, Dialog, DialogHandler, WindowPick, notifications, spawn_dialog,
     };
     use raumakey_windows::error::{WinErrorKind, WinResult};
+    use raumakey_windows::foreground::process_image_basename;
     use raumakey_windows::module::Module;
     use raumakey_windows::programs::{
         process_description, running_applications, running_processes,
@@ -429,9 +450,10 @@ mod win {
 
     use super::{
         COLUMNS, EXCLUSIONS_REFRESH, Entered, ID_ADD, ID_APP, ID_BROWSE, ID_DEFAULTS, ID_INTRO,
-        ID_LIST, ID_NOT_SAVED, ID_REFRESH, ID_REMOVE, INTRO, PROGRAMS, Placement, Program,
-        browse_error_prompt, can_add, defaults_prompt, entered, invalid_name_prompt, neighbour,
-        not_saved_text, picked_text, program_entry, row_cells, selection_after, template,
+        ID_LIST, ID_NOT_SAVED, ID_PICKER, ID_PICKER_HINT, ID_REFRESH, ID_REMOVE, INTRO,
+        PICKER_HINT, PROGRAMS, Placement, Program, browse_error_prompt, can_add, defaults_prompt,
+        entered, invalid_name_prompt, neighbour, not_saved_text, picked_text, program_entry,
+        row_cells, selection_after, template,
     };
     use crate::exclusions::{ExclusionsRequest, ExclusionsState};
     use crate::macro_dialog::{APP_ICON_ID, MessageBoxes, Prompter};
@@ -501,6 +523,10 @@ mod win {
         /// For each of `apps`, the description of a running program of that name, if one
         /// runs and has one.
         fn descriptions(&mut self, apps: &[ExeName]) -> Vec<Option<String>>;
+
+        /// The executable of process `process_id`, the window picker's find (D55); `None`
+        /// for Raumakey itself and for a process that cannot be queried.
+        fn process_exe(&mut self, process_id: u32) -> Option<ExeName>;
     }
 
     /// The real [`Programs`]: `raumakey_windows::programs` (the applications with an
@@ -519,6 +545,12 @@ mod win {
                     exe: program.exe,
                 })
                 .collect()
+        }
+
+        fn process_exe(&mut self, process_id: u32) -> Option<ExeName> {
+            (process_id != std::process::id())
+                .then(|| process_image_basename(process_id).ok())
+                .flatten()
         }
 
         fn descriptions(&mut self, apps: &[ExeName]) -> Vec<Option<String>> {
@@ -549,6 +581,8 @@ mod win {
         running: Vec<Program>,
         /// What the edit sent last waits for.
         awaited: Option<Awaited>,
+        /// While the window picker is dragged: what the edit held before the drag.
+        before_pick: Option<String>,
     }
 
     impl<P: Prompter, R: Programs, L: ExclusionsLink> fmt::Debug for ExclusionsDialog<P, R, L> {
@@ -573,6 +607,7 @@ mod win {
                 descriptions: Descriptions::new(),
                 running: Vec::new(),
                 awaited: None,
+                before_pick: None,
             }
         }
 
@@ -740,6 +775,22 @@ mod win {
             }
         }
 
+        /// The window picker is over (or dropped on) a window of `process`: the edit shows its
+        /// executable ([`picked_text`]), else what it held before the drag.
+        fn show_pick(&mut self, dialog: &Dialog<'_>, process: Option<u32>) {
+            let found = process.and_then(|process| self.programs.process_exe(process));
+            let text = match found {
+                Some(exe) => picked_text(&Program {
+                    exe,
+                    description: None,
+                }),
+                None => self.before_pick.clone().unwrap_or_default(),
+            };
+            // An executable name holds no NUL; a text that cannot be set leaves the edit.
+            let _ = dialog.set_text(ID_APP, &text);
+            self.follow_edit(dialog);
+        }
+
         /// A choice from the list of running applications: its executable goes into the edit
         /// ([`picked_text`]).
         fn picked(&self, dialog: &Dialog<'_>) {
@@ -764,6 +815,9 @@ mod win {
             // Wrapped at spaces, since Windows would cut a Vietnamese word; a text that
             // cannot be measured stays as the template has it.
             let _ = dialog.set_text_wrapped(ID_INTRO, INTRO);
+            let _ = dialog.set_text_wrapped(ID_PICKER_HINT, PICKER_HINT);
+            // Without its picture the picker still picks; a failure leaves it blank.
+            let _ = dialog.enable_window_picker(ID_PICKER);
             self.fill_running(dialog);
             self.show(dialog);
             dialog.focus(ID_APP);
@@ -819,6 +873,28 @@ mod win {
                 self.show(dialog);
             } else if message.offset() == PICKED {
                 self.picked(dialog);
+            }
+        }
+
+        fn window_pick(&mut self, dialog: &Dialog<'_>, id: u16, pick: WindowPick) {
+            if id != ID_PICKER {
+                return;
+            }
+            self.link.reached();
+            match pick {
+                WindowPick::Started => {
+                    self.before_pick = Some(dialog.text(ID_APP).unwrap_or_default());
+                }
+                WindowPick::Over(process) => self.show_pick(dialog, process),
+                WindowPick::Dropped(process) => {
+                    self.show_pick(dialog, process);
+                    self.before_pick = None;
+                    dialog.focus(ID_APP);
+                }
+                WindowPick::Cancelled => {
+                    self.show_pick(dialog, None);
+                    self.before_pick = None;
+                }
             }
         }
 

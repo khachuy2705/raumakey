@@ -64,6 +64,7 @@ fn mutate(rng: &mut SplitMix64, mut bytes: Vec<u8>) -> Vec<u8> {
 const SCRIPT_OPTIONS: &[&str] = &[
     "telex",
     "telex",
+    "simple-telex",
     "vni",
     "viqr",
     "user",
@@ -300,6 +301,7 @@ const TABLES: &[(&str, &[&str])] = &[
             "spell_check",
             "auto_restore_invalid",
             "context_limit",
+            "charset",
             "x_new",
         ],
     ),
@@ -336,6 +338,7 @@ const ARRAYS: &[(&str, &[&str])] = &[
             "macros",
             "vietnamese",
             "max_delete_before",
+            "autocomplete_guard",
             "x_extra",
         ],
     ),

@@ -34,10 +34,88 @@ fn spell_check_on_and_off() {
     assert_eq!(type_keys(&off, "kw"), "kư");
     assert_eq!(type_keys(&telex(), "clas"), "clas");
     assert_eq!(type_keys(&telex(), "after"), "àter");
-    assert_eq!(type_keys(&off, "after"), "ảte");
-    // Without spell checking nothing is restored at the boundary.
-    assert_eq!(type_keys(&off, "after{SPACE}"), "ảte ");
+    // D52: without spell checking the structure check still stops at the second vowel group,
+    // and the transformed word is restored at the boundary.
+    assert_eq!(type_keys(&off, "after"), "àter");
+    assert_eq!(type_keys(&off, "after{SPACE}"), "after ");
     assert_eq!(type_keys(&off, "tieengs{SPACE}"), "tiếng ");
+}
+
+/// D52: with spell checking off the engine still checks the structure of a syllable:
+/// Vietnamese consonants, one group of vowels, and a coda of `c ch m n ng nh p t` (or none).
+/// A key that would leave another structure is typed as it is, and a transformed word that
+/// lost the structure is restored at the boundary (with `auto_restore_invalid`).
+#[test]
+fn d52_the_structure_check_keeps_english_words_without_spell_check() {
+    let mut off = telex();
+    off.spell_check = false;
+    for (keys, expected) in [
+        // The mark key would reach back over consonants that end no syllable.
+        ("EVKey", "EVKey"),
+        ("EVKey{SPACE}", "EVKey "),
+        // Telex tone keys inside an English word (`x r s`) transform it as with spell
+        // checking (`Êps`, `Ễcl`); the boundary restores the keys.
+        ("Express{SPACE}", "Express "),
+        ("Excel{SPACE}", "Excel "),
+        // The second group of vowels makes the word literal; the standalone `ư` of `W` is
+        // never taken back by a later `w`, and the boundary restores the keys.
+        ("Windows", "Ưindows"),
+        ("Windows{SPACE}", "Windows "),
+        ("Google", "Gôgle"),
+        ("Google{SPACE}", "Google "),
+        ("Vietnamese", "Vietnamese"),
+        // Letters that are not Vietnamese (`f j w z`) make no syllable.
+        ("fast", "fast"),
+        ("java", "java"),
+        // Vietnamese and spell-check-free words keep working.
+        ("tieengs vieetj{SPACE}", "tiếng việt "),
+        ("hoaf", "hòa"),
+        ("kw", "kư"),
+        // Marks need a Vietnamese onset (as before D52): `gr`, `str`, `kr` take none.
+        ("green{SPACE}", "green "),
+        ("street{SPACE}", "street "),
+        ("ddi", "đi"),
+    ] {
+        assert_eq!(type_keys(&off, keys), expected, "{keys}");
+    }
+    // At the boundary a transformed word must end as a Vietnamese rhyme (after its onset,
+    // `gi` and `qu` included) whose tone fits its coda; any other is restored, as with spell
+    // checking.
+    for (keys, expected) in [
+        ("were{SPACE}", "were "),
+        ("users{SPACE}", "users "),
+        ("text{SPACE}", "text "),
+        ("mouse{SPACE}", "mouse "),
+        ("sweet{SPACE}", "sweet "),
+        ("awesome{SPACE}", "awesome "),
+        ("Win{SPACE}", "Win "),
+        ("swim{SPACE}", "swim "),
+        ("nguwowif{SPACE}", "người "),
+        ("gieengs{SPACE}", "giếng "),
+        ("giuwax{SPACE}", "giữa "),
+        ("quoocs{SPACE}", "quốc "),
+        ("quyeets{SPACE}", "quyết "),
+        ("dduwowngf{SPACE}", "đường "),
+        ("xooong{SPACE}", "xoong "),
+        ("thuowr{SPACE}", "thuở "),
+        // Spell checking alone forbids these onsets; the rhyme is Vietnamese.
+        ("kaf{SPACE}", "kà "),
+    ] {
+        assert_eq!(type_keys(&off, keys), expected, "{keys}");
+    }
+    // Without auto-restore the word stays as it was typed.
+    let mut keep = off.clone();
+    keep.auto_restore_invalid = false;
+    assert_eq!(type_keys(&keep, "Google{SPACE}"), "Gôgle ");
+    // Spell checking is unchanged: still stricter than the structure check.
+    for (keys, expected) in [
+        ("EVKey", "EVKey"),
+        ("Windows{SPACE}", "Windows "),
+        ("Kroong", "Kroong"),
+        ("Google{SPACE}", "Google "),
+    ] {
+        assert_eq!(type_keys(&telex(), keys), expected, "spell check {keys}");
+    }
 }
 
 /// D34: with spell checking off, `Circumflex` (VNI `6`, VIQR `^`) applies to the rightmost
@@ -525,4 +603,53 @@ fn error_internal_invariant_for_malformed_events() {
         engine().process(&event, &telex(), &EngineState::new()),
         Err(EngineError::InternalInvariant)
     );
+}
+
+/// A second `w` that undoes a standalone `ư` (Telex `w`) away from the end of the word puts
+/// back the key that typed it: the letter is never lost (`wiw`, not `iw`). Right after it, the
+/// second `w` undoes it as before (`ww` is `w`).
+#[test]
+fn undoing_a_standalone_u_horn_puts_its_key_back() {
+    let mut off = telex();
+    off.spell_check = false;
+    for options in [&telex(), &off] {
+        for (keys, expected) in [("ww", "w"), ("wiw", "wiw"), ("Twiw", "Twiw")] {
+            assert_eq!(type_keys(options, keys), expected, "{keys}");
+        }
+    }
+    // With spell checking `ưe` is no syllable, so the `w` after it is typed as it is.
+    assert_eq!(type_keys(&off, "wew"), "wew");
+    assert_eq!(type_keys(&telex(), "wew"), "ưew");
+}
+
+/// D53: Simple Telex is Telex without the standalone `w`: `w` changes only a vowel before it
+/// (`aw` → `ă`, `ow` → `ơ`, `uw` → `ư`), and stays `w` everywhere else, with or without
+/// spell checking.
+#[test]
+fn d53_simple_telex_types_w_only_on_a_vowel() {
+    let mut simple = telex();
+    simple.input_method = InputMethod::SimpleTelex;
+    let mut simple_off = simple.clone();
+    simple_off.spell_check = false;
+    for options in [&simple, &simple_off] {
+        for (keys, expected) in [
+            ("w", "w"),
+            ("kw", "kw"),
+            ("Windows", "Windows"),
+            ("word{SPACE}", "word "),
+            ("aw", "ă"),
+            ("ow", "ơ"),
+            ("uw", "ư"),
+            ("tuwowngf", "tường"),
+            ("nguwowif", "người"),
+            ("dduwowngf", "đường"),
+            ("hoawcj", "hoặc"),
+            ("tieengs vieetj", "tiếng việt"),
+        ] {
+            assert_eq!(type_keys(options, keys), expected, "{keys}");
+        }
+    }
+    // Telex keeps the standalone `w`.
+    assert_eq!(type_keys(&telex(), "w"), "ư");
+    assert_eq!(type_keys(&telex(), "tw"), "tư");
 }

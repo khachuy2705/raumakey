@@ -21,6 +21,21 @@ const CHROMIUM_FAMILY: [&str; 9] = [
     "discord.exe",
 ];
 
+/// D49: the hosts that complete text inline (the default `autocomplete` named set).
+const AUTOCOMPLETE: [&str; 11] = [
+    "chrome.exe",
+    "msedge.exe",
+    "firefox.exe",
+    "brave.exe",
+    "opera.exe",
+    "vivaldi.exe",
+    "chromium.exe",
+    "browser.exe",
+    "waterfox.exe",
+    "whale.exe",
+    "excel.exe",
+];
+
 const TERMINALS: [&str; 4] = [
     "windowsterminal.exe",
     "wt.exe",
@@ -90,6 +105,7 @@ fn generic_host_gets_tsf_with_the_configured_defaults() {
             macro_allowed: true,
             secure_field_mode: SecureFieldMode::Restricted,
             vietnamese_allowed: true,
+            autocomplete_guard: false,
         }
     );
 }
@@ -106,11 +122,98 @@ fn b26_each_chromium_family_member_gets_mouse_reset_and_otherwise_generic_policy
         for member in CHROMIUM_FAMILY.iter().chain(TERMINALS.iter()) {
             let expected = HostPolicy {
                 reset_on_mouse: true,
+                autocomplete_guard: AUTOCOMPLETE.contains(member),
                 ..generic
             };
             assert_eq!(p.resolve(&host(member)), expected, "{member}");
         }
     }
+}
+
+/// D49: the browsers and Excel guard their blind edits against an inline completion; nothing
+/// else of their policy changes, and every other host keeps the guard off.
+#[test]
+fn d49_hosts_that_complete_inline_get_the_autocomplete_guard_and_nothing_else() {
+    let p = policy(CompatibilityConfig::defaults_v1());
+    let generic = p.resolve(&host("notepad.exe"));
+    assert!(!generic.autocomplete_guard);
+    for member in AUTOCOMPLETE {
+        let resolved = p.resolve(&host(member));
+        assert!(resolved.autocomplete_guard, "{member}");
+        assert_eq!(
+            resolved,
+            HostPolicy {
+                autocomplete_guard: true,
+                reset_on_mouse: resolved.reset_on_mouse,
+                ..generic
+            },
+            "{member}"
+        );
+    }
+    assert!(p.resolve(&host("Chrome.EXE")).autocomplete_guard);
+    for other in ["winword.exe", "slack.exe", "wt.exe", "game.exe"] {
+        assert!(!p.resolve(&host(other)).autocomplete_guard, "{other}");
+    }
+}
+
+/// D49: a rule decides the guard of its application before the named sets, both ways.
+#[test]
+fn d49_a_rule_turns_the_autocomplete_guard_on_or_off_for_its_application() {
+    let mut config = CompatibilityConfig::defaults_v1();
+    config.rules = vec![
+        rule(
+            "chrome.exe",
+            None,
+            RuleAction {
+                autocomplete_guard: Some(false),
+                ..RuleAction::default()
+            },
+        ),
+        rule(
+            "winword.exe",
+            None,
+            RuleAction {
+                autocomplete_guard: Some(true),
+                ..RuleAction::default()
+            },
+        ),
+        rule(
+            "excel.exe",
+            Some("EXCEL7"),
+            RuleAction {
+                autocomplete_guard: Some(false),
+                ..RuleAction::default()
+            },
+        ),
+    ];
+    let p = policy(config);
+    let chrome = p.resolve(&host("chrome.exe"));
+    assert!(!chrome.autocomplete_guard);
+    assert!(chrome.reset_on_mouse, "the other sets still apply");
+    assert!(p.resolve(&host("msedge.exe")).autocomplete_guard);
+    assert!(p.resolve(&host("winword.exe")).autocomplete_guard);
+    assert!(
+        !p.resolve(&host_with_class("excel.exe", "excel7"))
+            .autocomplete_guard
+    );
+    assert!(
+        p.resolve(&host_with_class("excel.exe", "XLMAIN"))
+            .autocomplete_guard
+    );
+}
+
+/// D49: the guard applies in a secure field whose mode lets Vietnamese through (`Restricted`);
+/// it adds no text of its own to the field.
+#[test]
+fn d49_the_autocomplete_guard_survives_a_restricted_secure_field() {
+    let mut config = CompatibilityConfig::defaults_v1();
+    config.secure_field_mode = SecureFieldMode::Restricted;
+    let p = policy(config);
+    let mut field = host("chrome.exe");
+    field.is_secure_field = true;
+    let resolved = p.resolve(&field);
+    assert!(resolved.vietnamese_allowed);
+    assert!(resolved.autocomplete_guard);
 }
 
 #[test]
@@ -359,6 +462,7 @@ fn app_rule_fields_apply_only_to_their_executable() {
             macros: Some(false),
             vietnamese: Some(false),
             max_delete_before: Some(9),
+            autocomplete_guard: Some(true),
         },
     ));
     let p = policy(config);
@@ -372,6 +476,7 @@ fn app_rule_fields_apply_only_to_their_executable() {
             macro_allowed: false,
             secure_field_mode: SecureFieldMode::Bypass,
             vietnamese_allowed: false,
+            autocomplete_guard: true,
         }
     );
     assert_eq!(p.resolve(&host("wordpad.exe")), HostPolicy::default_tsf());

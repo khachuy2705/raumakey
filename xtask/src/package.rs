@@ -160,7 +160,8 @@ Cách dùng
      hồ trên thanh tác vụ: V là đang gõ tiếng Việt, E là đang gõ tiếng Anh.
      Nếu không thấy, hãy bấm mũi tên ^ để xem các biểu tượng bị ẩn.
   3. Bảng cấu hình hiện ra. Chọn kiểu gõ và các tuỳ chọn ở đó; mỗi thay đổi
-     có hiệu lực ngay. Bấm Đóng: Raumakey vẫn chạy ở vùng thông báo.
+     có hiệu lực ngay. Bấm Thu nhỏ (hoặc Enter, Esc): bảng đóng lại, Raumakey
+     vẫn chạy ở vùng thông báo. Bấm Đóng để thoát Raumakey.
   4. Nhấp vào biểu tượng hoặc nhấn Ctrl+Shift để chuyển giữa tiếng Việt và
      tiếng Anh. Nhấp chuột phải vào biểu tượng để mở menu.
   5. Mở Notepad và gõ thử: tieengs vieetj
@@ -170,10 +171,13 @@ Bảng cấu hình
   Mở bảng bằng mục \"Bảng cấu hình…\" trong menu.
   Nhấp đúp vào biểu tượng V/E cũng mở bảng; chế độ gõ giữ nguyên.
   Nhấp đúp vào raumakey.exe lần nữa khi Raumakey đang chạy cũng mở bảng.
-  Bảng chỉnh kiểu gõ, cách đặt dấu, kiểm tra chính tả, gõ tắt và khởi động
-  cùng Windows. Bỏ chọn \"Mở bảng này khi Raumakey chạy\" nếu bạn không
-  muốn bảng hiện mỗi lần khởi động. Nút \"Danh sách gõ tắt…\" mở hộp thoại
-  thêm, sửa, xoá gõ tắt.
+  Bảng chỉnh kiểu gõ, bảng mã, cách đặt dấu, kiểm tra chính tả, gõ tắt và
+  khởi động cùng Windows. Bỏ chọn \"Mở bảng này khi Raumakey chạy\" nếu bạn
+  không muốn bảng hiện mỗi lần khởi động. Nút \"Danh sách gõ tắt…\" mở hộp
+  thoại thêm, sửa, xoá gõ tắt.
+  Bảng mã: Unicode (mặc định), TCVN3 (ABC), VNI Windows, Unicode tổ hợp,
+  Windows CP 1258. Chọn TCVN3 (ABC) hay VNI Windows khi soạn văn bản dùng
+  font .Vn hay font VNI.
 
 Cấu hình
   Lần chạy đầu tiên, Raumakey tạo file raumakey.toml cạnh raumakey.exe;
@@ -184,7 +188,8 @@ Cấu hình
 Menu (nhấp chuột phải vào biểu tượng V/E)
   Bảng cấu hình…               mở bảng cấu hình
   Gõ tiếng Việt (Ctrl+Shift)   bật hoặc tắt tiếng Việt
-  Telex, VNI, VIQR             chọn kiểu gõ
+  Telex, Telex đơn giản,       chọn kiểu gõ (Telex đơn giản: w chỉ có tác
+  VNI, VIQR                    dụng sau a, o, u; gõ tiếng Anh dễ hơn)
   Kiểm tra chính tả            chỉ bỏ dấu khi chữ đang gõ là tiếng Việt hợp lệ
   Đặt dấu kiểu mới (oà, uý)    đặt dấu kiểu mới: hoà, thuý thay cho hòa, thúy
   Gõ tắt (macro)               bật hoặc tắt gõ tắt
@@ -202,7 +207,17 @@ Loại trừ ứng dụng
   luôn gõ tiếng Anh và biểu tượng hiện E. Mặc định gồm các ứng dụng điều
   khiển máy từ xa như Remote Desktop Connection (mstsc.exe). Sửa danh sách
   bằng nút \"Ứng dụng loại trừ…\" của bảng cấu hình, hoặc thêm, bớt tên tệp
-  exe trong dòng apps = [...] rồi lưu raumakey.toml.
+  exe trong dòng apps = [...] rồi lưu raumakey.toml. Trong hộp thoại đó,
+  kéo hình tâm ngắm thả vào cửa sổ của ứng dụng cần loại trừ để lấy tên tệp
+  exe của nó, rồi bấm Thêm.
+
+Thanh địa chỉ trình duyệt và Excel
+  Thanh địa chỉ của trình duyệt và ô của Excel tự gợi ý phần còn lại của chữ
+  đang gõ và bôi đen phần đó. Trong Chrome, Edge, Firefox, Cốc Cốc, các
+  trình duyệt cùng loại và Excel, Raumakey gõ thêm một khoảng trắng hẹp rồi
+  xoá ngay mỗi lần sửa chữ, để phần gợi ý không làm chữ bị lặp (ví dụ \"aâ\"
+  thay cho \"â\"). Muốn bật hoặc tắt cho một ứng dụng khác, dùng file
+  raumakey-app-rules.toml; cách viết xem trong GUIDE.md.
 
 Gõ tắt (macro)
   Danh sách gõ tắt nằm trong file raumakey-macros.toml, cùng thư mục với
@@ -515,10 +530,11 @@ mod tests {
     }
 
     /// The tray menu labels (D42, D43), exactly as the menu shows them.
-    const MENU_LABELS: [&str; 12] = [
+    const MENU_LABELS: [&str; 13] = [
         "Bảng cấu hình…",
         "Gõ tiếng Việt (Ctrl+Shift)",
         "Telex",
+        "Telex đơn giản",
         "VNI",
         "VIQR",
         "Kiểm tra chính tả",
@@ -575,6 +591,18 @@ mod tests {
             "luôn gõ tiếng Anh",
             // The exclusions dialog (D48).
             "Ứng dụng loại trừ…",
+            // The charset (D54) and the window picker of the exclusions dialog (D55).
+            "Bảng mã",
+            "TCVN3 (ABC)",
+            "VNI Windows",
+            "kéo hình tâm ngắm",
+            // "Thu nhỏ" leaves Raumakey in the tray, "Đóng" exits it (D50).
+            "Bấm Thu nhỏ",
+            "Bấm Đóng để thoát Raumakey",
+            // Inline completion in the browsers and Excel (D49).
+            "Thanh địa chỉ trình duyệt và Excel",
+            "\"aâ\"",
+            "raumakey-app-rules.toml",
             // Macros.
             "raumakey-macros.toml",
             "GUIDE.md",
@@ -614,6 +642,7 @@ mod tests {
             "regsvr32",
             "Add a keyboard",
             "Windows+Space",
+            "Bấm Đóng: Raumakey vẫn chạy",
         ] {
             assert!(!x64.contains(stale), "x64 README still mentions {stale}");
         }

@@ -328,7 +328,7 @@ fn a_change_that_cannot_be_saved_stays_in_effect_and_is_answered_with_the_error(
     let folder = Folder::new();
     fs::write(folder.config(), "[[[ damaged").unwrap();
     let mut worker = worker(&folder, FakePorts::new(&Log::default()));
-    let change = Change::SpellCheck(false);
+    let change = Change::SpellCheck(true);
     let answer = worker.handle(4, WorkerCommand::Apply(change));
     assert_eq!(
         answer.outcome,
@@ -337,7 +337,7 @@ fn a_change_that_cannot_be_saved_stays_in_effect_and_is_answered_with_the_error(
             result: Err(ConfigError::Corrupt)
         }
     );
-    assert!(!state(&answer).runtime.options.spell_check);
+    assert!(state(&answer).runtime.options.spell_check);
     assert_eq!(fs::read(folder.config()).unwrap(), b"[[[ damaged");
 }
 
@@ -496,7 +496,7 @@ fn a_poll_retries_a_change_that_could_not_be_saved() {
     fs::write(folder.config(), "[[[ damaged").unwrap();
     let mut worker = worker(&folder, FakePorts::new(&Log::default()))
         .with_reread_delay(Duration::from_millis(10));
-    worker.handle(1, WorkerCommand::Apply(Change::SpellCheck(false)));
+    worker.handle(1, WorkerCommand::Apply(Change::SpellCheck(true)));
     let answer = worker.handle(2, WorkerCommand::Poll);
     assert_eq!(polled(&answer).retry, Some(Err(ConfigError::Corrupt)));
     fs::write(
@@ -507,7 +507,7 @@ fn a_poll_retries_a_change_that_could_not_be_saved() {
     let answer = worker.handle(3, WorkerCommand::Poll);
     assert_eq!(polled(&answer).retry, Some(Ok(())));
     let stored = folder.stored();
-    assert!(!stored.input.spell_check);
+    assert!(stored.input.spell_check);
     assert!(stored.input.modern_tone);
     assert_eq!(
         polled(&worker.handle(4, WorkerCommand::Poll)).retry,
@@ -879,13 +879,13 @@ fn the_worker_thread_answers_in_order_and_finishes_its_queue() {
     .unwrap();
     assert!(thread.send(1, WorkerCommand::Apply(Change::ModernTone(true))));
     assert!(thread.send(2, WorkerCommand::Poll));
-    assert!(thread.send(3, WorkerCommand::Apply(Change::SpellCheck(false))));
+    assert!(thread.send(3, WorkerCommand::Apply(Change::SpellCheck(true))));
     assert!(thread.finish(Duration::from_secs(20)));
     let seqs: Vec<u64> = answers.try_iter().map(|answer| answer.seq).collect();
     assert_eq!(seqs, [1, 2, 3]);
     let stored = folder.stored();
     assert!(stored.input.modern_tone);
-    assert!(!stored.input.spell_check);
+    assert!(stored.input.spell_check);
 }
 
 /// A command that panics is contained on the worker thread: it is answered as failed (so the
